@@ -1,0 +1,118 @@
+:root {
+  --bg: #f4f7fb;
+  --card: #ffffff;
+  --text: #0f172a;
+  --muted: #475569;
+  --brand: #0ea5e9;
+  --brand-dark: #0284c7;
+  --line: #dbe6f2;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", "Inter", system-ui, -apple-system, sans-serif;
+  background: radial-gradient(circle at top right, #e0f2fe 0%, var(--bg) 45%, #eef2ff 100%);
+  color: var(--text);
+}
+
+.app {
+  width: min(980px, 100%);
+  margin: 0 auto;
+  padding: 16px 14px 28px;
+}
+
+.header h1 {
+  margin: 0 0 6px;
+  font-size: 24px;
+}
+
+.header p {
+  margin: 0 0 14px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.chips {
+  display: flex;
+  gap: 8px;
+  overflow: auto;
+  padding-bottom: 8px;
+  margin-bottom: 12px;
+}
+
+.chip {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--text);
+  border-radius: 999px;
+  padding: 8px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chip.active {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+}
+
+.preview {
+  width: 100%;
+  height: 240px;
+  object-fit: contain;
+  object-position: center;
+  background: #eef2f7;
+}
+
+.content {
+  padding: 10px;
+}
+
+.title {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.btn {
+  width: 100%;
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  color: #fff;
+  background: linear-gradient(180deg, var(--brand) 0%, var(--brand-dark) 100%);
+  font-weight: 600;
+}
+
+.empty {
+  margin-top: 10px;
+  color: var(--muted);
+}
+
+.hidden {
+  display: none;
+}
+
+@media (max-width: 650px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1059,6 +1059,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     pl_admin_mode = context.user_data.get("pl_admin_mode")
     if pl_admin_mode:
+        if not is_admin(user.id):
+            context.user_data.pop("pl_admin_mode", None)
+            context.user_data.pop("pl_admin_rename_old", None)
+            await update.message.reply_text("У тебя нет доступа к этой операции.")
+            return
+
         if text.lower() in {"отмена", "cancel", "/cancel"}:
             context.user_data.pop("pl_admin_mode", None)
             context.user_data.pop("pl_admin_rename_old", None)
@@ -1539,6 +1545,12 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    user = update.effective_user
+
+    admin_only_callback_prefixes = ("pladm_", "plhist_", "plsave_")
+    if query.data and query.data.startswith(admin_only_callback_prefixes) and not is_admin(user.id):
+        await query.message.reply_text("У тебя нет доступа к этой операции.")
+        return
 
     if query.data == "pladm_open":
         await query.message.reply_text(
@@ -2306,13 +2318,16 @@ async def prompt_library_admin_help_legacy(update: Update, context: ContextTypes
 
 async def prompt_library_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    message = update.effective_message
+    if not message:
+        return
     if not is_admin(user.id):
-        await update.message.reply_text("У тебя нет доступа к этой команде.")
+        await message.reply_text("У тебя нет доступа к этой команде.")
         return
 
     data = load_prompt_library()
     if not data:
-        await update.message.reply_text("Библиотека пока пустая.")
+        await message.reply_text("Библиотека пока пустая.")
         return
 
     lines = ["Категории библиотеки:\n"]
@@ -2322,13 +2337,16 @@ async def prompt_library_list(update: Update, context: ContextTypes.DEFAULT_TYPE
         items_count = len(cat.get("items") or [])
         lines.append(f"{idx}. {emoji} {title} — {items_count} шаблон(ов)")
 
-    await send_long_text(update.message, "\n".join(lines))
+    await send_long_text(message, "\n".join(lines))
 
 
 async def prompt_library_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    message = update.effective_message
+    if not message:
+        return
     if not is_admin(user.id):
-        await update.message.reply_text("У тебя нет доступа к этой команде.")
+        await message.reply_text("У тебя нет доступа к этой команде.")
         return
 
     try:
@@ -2341,7 +2359,7 @@ async def prompt_library_export(update: Update, context: ContextTypes.DEFAULT_TY
 
         doc = io.BytesIO(payload)
         doc.name = "prompt_library.json"
-        await update.message.reply_document(
+        await message.reply_document(
             document=doc,
             caption=(
                 "Готово ✅ Экспорт свежий.\n"
@@ -2350,7 +2368,7 @@ async def prompt_library_export(update: Update, context: ContextTypes.DEFAULT_TY
         )
     except Exception:
         logger.exception("Failed to export prompt library")
-        await update.message.reply_text("Не удалось сделать экспорт библиотеки.")
+        await message.reply_text("Не удалось сделать экспорт библиотеки.")
 
 
 async def prompt_library_history(update: Update, context: ContextTypes.DEFAULT_TYPE, offset: int = 0):

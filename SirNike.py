@@ -1070,9 +1070,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if pl_admin_mode == "new":
             context.user_data.pop("pl_admin_mode", None)
-            context.args = text.split()
-            await prompt_library_new_category(update, context)
-            await update.message.reply_text("Что дальше делаем?", reply_markup=prompt_library_admin_kb())
+            try:
+                if not is_admin(user.id):
+                    await update.message.reply_text("У тебя нет доступа к этой операции.")
+                    return
+                _, message = _create_prompt_library_category(text.strip())
+                await update.message.reply_text(message, reply_markup=prompt_library_admin_kb())
+            except Exception:
+                logger.exception("Failed to create prompt category from admin text mode")
+                await update.message.reply_text(
+                    "Не удалось создать категорию. Попробуй еще раз.",
+                    reply_markup=prompt_library_admin_kb(),
+                )
             return
 
         if pl_admin_mode == "rename_old":
@@ -2144,6 +2153,42 @@ def _find_category_index_by_title(data: list, title: str) -> int:
     return -1
 
 
+def _looks_like_emoji_token(token: str) -> bool:
+    token = (token or "").strip()
+    if not token or len(token) > 5:
+        return False
+    if any(ch.isalnum() for ch in token):
+        return False
+    return any(ord(ch) > 127 for ch in token)
+
+
+def _parse_category_title_and_emoji(raw: str) -> tuple[str, str]:
+    title = (raw or "").strip()
+    emoji = "📁"
+    parts = title.split(maxsplit=1)
+    if len(parts) == 2:
+        maybe_emoji = parts[0]
+        if _looks_like_emoji_token(maybe_emoji):
+            emoji = maybe_emoji
+            title = parts[1].strip()
+    return title, emoji
+
+
+def _create_prompt_library_category(raw_title: str) -> tuple[bool, str]:
+    title, emoji = _parse_category_title_and_emoji(raw_title)
+    if not title:
+        return False, "Название категории пустое."
+
+    data = load_prompt_library()
+    if _find_category_index_by_title(data, title) >= 0:
+        return False, f"Категория «{title}» уже существует."
+
+    data.append({"title": title, "emoji": emoji, "items": []})
+    save_prompt_library(data)
+    refresh_prompt_library()
+    return True, f"Готово ✅ Категория «{title}» создана."
+
+
 async def prompt_library_new_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id):
@@ -2160,29 +2205,9 @@ async def prompt_library_new_category(update: Update, context: ContextTypes.DEFA
         )
         return
 
-    title = raw
-    emoji = "📁"
-    parts = raw.split(maxsplit=1)
-    if len(parts) == 2 and len(parts[0]) <= 3:
-        maybe_emoji = parts[0]
-        if any(ord(ch) > 127 for ch in maybe_emoji):
-            emoji = maybe_emoji
-            title = parts[1].strip()
-
-    if not title:
-        await update.message.reply_text("Название категории пустое.")
-        return
-
     try:
-        data = load_prompt_library()
-        if _find_category_index_by_title(data, title) >= 0:
-            await update.message.reply_text("Категория с таким названием уже есть.")
-            return
-
-        data.append({"title": title, "emoji": emoji, "items": []})
-        save_prompt_library(data)
-        refresh_prompt_library()
-        await update.message.reply_text(f"Готово ✅ Категория «{title}» создана.")
+        _, message = _create_prompt_library_category(raw)
+        await update.message.reply_text(message)
     except Exception:
         logger.exception("Failed to create prompt library category")
         await update.message.reply_text("Не удалось создать категорию. Попробуй еще раз.")

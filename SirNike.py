@@ -114,6 +114,7 @@ class UserState:
     references: List[str] = field(default_factory=list)
     animation_source_url: Optional[str] = None
     waiting_for_avatar_upload: bool = False
+    waiting_for_problem_report: bool = False
     motion_prompt: str = ""
     motion_video_url: Optional[str] = None
     waiting_for_motion_prompt: bool = False
@@ -382,6 +383,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("Сохранить / сменить аватар 👤", callback_data="set_avatar")],
         [InlineKeyboardButton("Показать аватар 👀", callback_data="show_avatar")],
         [InlineKeyboardButton("Удалить аватар 🗑", callback_data="delete_avatar")],
+        [InlineKeyboardButton("Сообщить о проблеме 🚨", callback_data="report_problem")],
         [InlineKeyboardButton("Сбросить всё❌", callback_data="reset")],
     ])
     return InlineKeyboardMarkup(rows)
@@ -389,6 +391,12 @@ def main_menu_kb() -> InlineKeyboardMarkup:
 def promo_try_kb(promo_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Попробовать", callback_data=f"promo_try_{promo_id}")]
+    ])
+
+
+def support_report_admin_kb(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Ответить пользователю 💬", callback_data=f"support_reply_{user_id}")]
     ])
 
 
@@ -673,7 +681,10 @@ async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not MASHAGPT_API_KEY:
-        await update.message.reply_text("Не настроен MASHAGPT_API_KEY для текстового режима /ai.")
+        await update.message.reply_text(
+            "Текстовый помощник /ai сейчас временно отключен.\n"
+            "Генерация изображений работает в обычном режиме."
+        )
         return
 
     request_url = build_mashagpt_url(MASHAGPT_API_BASE, "/v1/chat/completions")
@@ -708,11 +719,32 @@ async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ) as resp:
                 response_text = await resp.text()
                 if not (200 <= resp.status < 300):
+                    lowered = response_text.lower()
+                    quota_like = (
+                        resp.status in (402, 429)
+                        or "insufficient_quota" in lowered
+                        or "недостаточно энергии" in lowered
+                        or "not_enough" in lowered
+                    )
+
+                    if quota_like:
+                        logger.warning(f"/ai quota exhausted: {resp.status}. {response_text}")
+                        await update.message.reply_text(
+                            "Баланс текстового /ai закончился, поэтому команда временно недоступна.\n"
+                            "Генерация изображений продолжает работать."
+                        )
+                        return
+
                     logger.error(f"/ai request failed: {resp.status}. {response_text}")
                     await update.message.reply_text("Сервис /ai сейчас недоступен. Попробуй чуть позже.")
                     return
 
-                data = json.loads(response_text)
+                try:
+                    data = json.loads(response_text)
+                except json.JSONDecodeError:
+                    logger.error(f"/ai non-JSON response: {response_text}")
+                    await update.message.reply_text("Сервис /ai вернул некорректный ответ. Попробуй позже.")
+                    return
 
         answer = extract_chat_completion_text(data)
         if not answer:
@@ -722,6 +754,9 @@ async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await send_long_text(update.message, answer)
 
+    except asyncio.TimeoutError:
+        logger.warning("/ai request timeout")
+        await update.message.reply_text("Сервис /ai отвечает слишком долго. Попробуй еще раз через минуту.")
     except Exception:
         logger.exception("/ai request error")
         await update.message.reply_text("Ошибка при обращении к /ai. Попробуй еще раз через минуту.")
@@ -967,6 +1002,41 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = get_or_init_state(context)
 
+    pending_support_reply_user_id = context.user_data.get("pending_support_reply_user_id")
+    if pending_support_reply_user_id is not None:
+        if not is_admin(user.id):
+            context.user_data.pop("pending_support_reply_user_id", None)
+            await update.message.reply_text("Нет доступа к режиму ответа пользователю.")
+            return
+
+        if text.lower() in {"отмена", "cancel", "/cancel"}:
+            context.user_data.pop("pending_support_reply_user_id", None)
+            await update.message.reply_text("Ок, отмена ответа пользователю.")
+            return
+
+        context.user_data.pop("pending_support_reply_user_id", None)
+        try:
+            target_user_id = int(pending_support_reply_user_id)
+        except (TypeError, ValueError):
+            await update.message.reply_text("Не удалось определить пользователя для ответа.")
+            return
+        support_text = (
+            "Ответ от поддержки Сырника 💬\n\n"
+            f"{text.strip()}"
+        )
+        try:
+            await context.bot.send_message(chat_id=target_user_id, text=support_text)
+            await update.message.reply_text(
+                f"Ответ отправлен пользователю {target_user_id} ✅"
+            )
+        except Exception:
+            logger.exception(f"Failed to send support reply to user_id={target_user_id}")
+            await update.message.reply_text(
+                "Не получилось отправить ответ пользователю.\n"
+                "Возможно, пользователь заблокировал бота или чат недоступен."
+            )
+        return
+
     pl_admin_mode = context.user_data.get("pl_admin_mode")
     if pl_admin_mode:
         if text.lower() in {"отмена", "cancel", "/cancel"}:
@@ -1007,6 +1077,54 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await prompt_library_delete_category(update, context)
             await update.message.reply_text("Удаление обработано. Что дальше?", reply_markup=prompt_library_admin_kb())
             return
+
+    if state.waiting_for_problem_report:
+        if text.lower() in {"отмена", "cancel", "/cancel"}:
+            state.waiting_for_problem_report = False
+            await update.message.reply_text(
+                "Ок, отмена. Если что — кнопку «Сообщить о проблеме 🚨» можно нажать снова.",
+                reply_markup=main_menu_kb(),
+            )
+            return
+
+        state.waiting_for_problem_report = False
+        username = f"@{user.username}" if user.username else "нет"
+        full_name = (user.full_name or "").strip() or "нет"
+        report_text = text.strip()
+        admin_message = (
+            "🚨 Сообщение о проблеме\n\n"
+            f"user_id: {user.id}\n"
+            f"username: {username}\n"
+            f"name: {full_name}\n"
+            f"chat_id: {update.effective_chat.id}\n\n"
+            f"Текст:\n{report_text}"
+        )
+
+        delivered = 0
+        for admin_id in ADMIN_IDS:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=admin_message,
+                    reply_markup=support_report_admin_kb(user.id),
+                )
+                delivered += 1
+            except Exception:
+                logger.exception(f"Failed to forward problem report to admin_id={admin_id}")
+
+        if delivered > 0:
+            await update.message.reply_text(
+                "Спасибо, отправила в поддержку ✅\n"
+                "Если хочешь, можешь добавить скриншот следующим сообщением.",
+                reply_markup=main_menu_kb(),
+            )
+        else:
+            await update.message.reply_text(
+                "Не получилось передать сообщение в поддержку прямо сейчас.\n"
+                "Попробуй еще раз через минуту.",
+                reply_markup=main_menu_kb(),
+            )
+        return
 
     if state.waiting_for_motion_prompt:
         state.motion_prompt = text
@@ -1429,6 +1547,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Админ-режим закрыт.")
         return
 
+    if query.data.startswith("support_reply_"):
+        if not is_admin(update.effective_user.id):
+            await query.message.reply_text("У тебя нет доступа к этой кнопке.")
+            return
+
+        try:
+            target_user_id = int(query.data.replace("support_reply_", "", 1))
+        except ValueError:
+            await query.message.reply_text("Не удалось открыть режим ответа: неверный user_id.")
+            return
+
+        context.user_data["pending_support_reply_user_id"] = target_user_id
+        await query.message.reply_text(
+            f"Напиши ответ пользователю {target_user_id} одним сообщением.\n"
+            "Для отмены отправь: отмена"
+        )
+        return
+
     if query.data.startswith("plhist_open_"):
         try:
             offset = int(query.data.replace("plhist_open_", "", 1))
@@ -1716,6 +1852,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "mc_start":
         await run_motion_control(update, context)
+        return
+
+    if query.data == "report_problem":
+        state = get_or_init_state(context)
+        state.waiting_for_problem_report = True
+        await query.message.reply_text(
+            "Опиши проблему одним сообщением.\n"
+            "Я передам это в поддержку прямо сейчас.\n\n"
+            "Если передумала, отправь: отмена"
+        )
         return
 
     if query.data == "reset":

@@ -577,7 +577,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/balance — баланс\n"
         f"/buy — купить изюминки\n"
         f"/ref — реферальная ссылка\n"
-        f"/ai — текстовый AI-помощник\n\n"
+        f"/ai — текстовый AI-помощник\n"
+        f"/report — сообщить о проблеме\n\n"
         f"Совет: открой «Библиотека промптов 📚», если нужна готовая идея.\n\n"
         f"Сейчас в буфере:\n"
         f"• промт: {'есть' if state.prompt else 'нет'}\n"
@@ -621,6 +622,18 @@ async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Ты получишь {REFERRAL_BONUS_REFERRER} изюминок за приглашённого друга.\n"
         f"Друг получит {REFERRAL_BONUS_NEW_USER} изюминок."
     )    
+
+
+async def report_problem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    create_user_if_not_exists(user.id, user.username, START_BONUS)
+    state = get_or_init_state(context)
+    state.waiting_for_problem_report = True
+    await update.message.reply_text(
+        "Опиши проблему одним сообщением.\n"
+        "Я передам это в поддержку прямо сейчас.\n\n"
+        "Если передумала, отправь: отмена"
+    )
 
 
 def extract_chat_completion_text(data: dict) -> str:
@@ -3479,6 +3492,7 @@ def main():
     app.add_handler(CommandHandler("balance", balance))
     app.add_handler(CommandHandler("buy", buy))
     app.add_handler(CommandHandler("ref", referral))
+    app.add_handler(CommandHandler("report", report_problem_command))
     app.add_handler(CommandHandler("ai", ai_chat))
     app.add_handler(CommandHandler("admin_add", admin_add))
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))

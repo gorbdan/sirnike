@@ -380,9 +380,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     motion_label = "Motion Control 🎞" if MOTION_CONTROL_ENABLED else "Motion Control 🚧 (в разработке)"
     rows.append([InlineKeyboardButton(motion_label, callback_data="motion_control")])
     rows.extend([
-        [InlineKeyboardButton("Сохранить / сменить аватар 👤", callback_data="set_avatar")],
-        [InlineKeyboardButton("Показать аватар 👀", callback_data="show_avatar")],
-        [InlineKeyboardButton("Удалить аватар 🗑", callback_data="delete_avatar")],
+        [InlineKeyboardButton("Действия с аватаром 👤", callback_data="avatar_actions")],
         [InlineKeyboardButton("Сообщить о проблеме 🚨", callback_data="report_problem")],
         [InlineKeyboardButton("Сбросить всё❌", callback_data="reset")],
     ])
@@ -397,6 +395,15 @@ def promo_try_kb(promo_id: str) -> InlineKeyboardMarkup:
 def support_report_admin_kb(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Ответить пользователю 💬", callback_data=f"support_reply_{user_id}")]
+    ])
+
+
+def avatar_actions_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Заменить аватар 🔁", callback_data="set_avatar")],
+        [InlineKeyboardButton("Показать аватар 👀", callback_data="show_avatar")],
+        [InlineKeyboardButton("Удалить аватар 🗑", callback_data="delete_avatar")],
+        [InlineKeyboardButton("Назад в меню ↩️", callback_data="avatar_back_menu")],
     ])
 
 
@@ -1865,6 +1872,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "mc_start":
         await run_motion_control(update, context)
+        return
+
+    if query.data == "avatar_actions":
+        await query.message.reply_text(
+            "Выбери действие с аватаром:",
+            reply_markup=avatar_actions_kb(),
+        )
+        return
+
+    if query.data == "avatar_back_menu":
+        await query.message.reply_text(
+            "Главное меню:",
+            reply_markup=main_menu_kb(),
+        )
         return
 
     if query.data == "report_problem":

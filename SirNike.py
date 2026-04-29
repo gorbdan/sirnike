@@ -452,7 +452,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
         [prompt_library_button],
     ]
     motion_label = "Seedance 2 🎞" if SEEDANCE_ENABLED else "Seedance 🚧 (в разработке)"
-    rows.append([InlineKeyboardButton(motion_label, callback_data="motion_control")])
+    rows.append([InlineKeyboardButton(motion_label, callback_data="seedance_control")])
     rows.extend([
         [InlineKeyboardButton("Действия с аватаром 👤", callback_data="avatar_actions")],
         [InlineKeyboardButton("Сообщить о проблеме 🚨", callback_data="report_problem")],
@@ -750,6 +750,21 @@ def result_actions_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("В меню", callback_data="reset")],
     ])
 
+
+
+def seedance_retry_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Повторить 🔁", callback_data="seedance_retry")],
+        [InlineKeyboardButton("В меню", callback_data="reset")],
+    ])
+
+
+# Override label to keep retry wording consistent after failed image generation.
+def result_actions_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Повторить 🔁", callback_data="generate_again")],
+        [InlineKeyboardButton("В меню", callback_data="reset")],
+    ])
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2050,7 +2065,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("Не удалось сохранить шаблон. Попробуй ещё раз.")
             return
 
-    motion_callbacks = {"motion_control", "mc_set_prompt", "mc_set_image", "mc_set_video", "mc_start"}
+    motion_callbacks = {"seedance_control", "motion_control", "mc_set_prompt", "mc_set_image", "mc_set_video", "mc_start", "seedance_retry"}
     is_motion_callback = (
         query.data in motion_callbacks
         or query.data.startswith("mc_duration_")
@@ -2084,7 +2099,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await run_generation(update, context)
         return
     
-    if query.data == "motion_control":
+    if query.data in {"seedance_control", "motion_control"}:
         state = get_or_init_state(context)
         if not state.animation_source_url:
             state.animation_source_url = last_generated_image_url.get(update.effective_user.id)
@@ -2152,7 +2167,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "mc_start":
-        await run_motion_control(update, context)
+        await run_seedance(update, context)
+        return
+
+    if query.data == "seedance_retry":
+        await run_seedance(update, context)
         return
 
     if query.data == "avatar_actions":
@@ -3205,8 +3224,57 @@ async def validate_image_url(image_url: str) -> tuple[bool, str]:
                 return True, "ok"
     except Exception as e:
         return False, str(e)        
+
+
+async def download_video_bytes_with_fallback(video_url: str) -> bytes:
+    if not isinstance(video_url, str) or not video_url.strip():
+        raise Exception("Пустой URL видео")
+
+    raw_url = video_url.strip()
+    candidate_urls = [raw_url]
+    if not raw_url.startswith("http://") and not raw_url.startswith("https://"):
+        candidate_urls.append(build_zveno_url(ZVENO_API_BASE, raw_url))
+
+    auth_headers = {
+        "x-api-key": ZVENO_API_KEY,
+        "Authorization": f"Bearer {ZVENO_API_KEY}",
+    }
+    headers_variants = [None, auth_headers]
+
+    last_error = "unknown"
+    async with aiohttp.ClientSession() as session:
+        for candidate_url in candidate_urls:
+            for headers in headers_variants:
+                try:
+                    logger.info(
+                        f"Seedance download attempt: url={candidate_url}, auth={'yes' if headers else 'no'}"
+                    )
+                    async with session.get(
+                        candidate_url,
+                        headers=headers,
+                        allow_redirects=True,
+                        timeout=aiohttp.ClientTimeout(total=180),
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.read()
+                            if data:
+                                return data
+                            last_error = "empty body"
+                            continue
+                        body = await resp.text()
+                        last_error = f"{resp.status}. {body[:500]}"
+                        logger.warning(
+                            f"Seedance download failed: status={resp.status}, url={candidate_url}, auth={'yes' if headers else 'no'}"
+                        )
+                except Exception as e:
+                    last_error = str(e)
+                    logger.warning(
+                        f"Seedance download exception: url={candidate_url}, auth={'yes' if headers else 'no'}, error={e}"
+                    )
+
+    raise Exception(f"Не удалось скачать видео: {last_error}")
         
-async def run_motion_control(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     create_user_if_not_exists(user.id, user.username, START_BONUS)
     reply_target = update.callback_query.message if update.callback_query else update.message
@@ -3286,8 +3354,10 @@ async def run_motion_control(update: Update, context: ContextTypes.DEFAULT_TYPE)
             max_attempts=SEEDANCE_MAX_POLL_ATTEMPTS,
             poll_interval=SEEDANCE_POLL_INTERVAL,
         )
+        video_bytes = await download_video_bytes_with_fallback(video_url)
 
-        async with aiohttp.ClientSession() as session:
+        if False:
+            async with aiohttp.ClientSession() as session: pass
             async with session.get(
                 video_url,
                 timeout=aiohttp.ClientTimeout(total=180),
@@ -3297,7 +3367,7 @@ async def run_motion_control(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 video_bytes = await resp.read()
 
         video_buffer = io.BytesIO(video_bytes)
-        video_buffer.name = "motion_control.mp4"
+        video_buffer.name = "seedance.mp4"
 
         await context.bot.send_video(
             chat_id=update.effective_chat.id,
@@ -3329,6 +3399,10 @@ async def run_motion_control(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"Не удалось выполнить {selected_model_label}.\n"
             f"Причина: {str(e)}\n\n"
             "Списанные изюминки возвращены на баланс."
+        )
+        await reply_target.reply_text(
+            "Попробовать еще раз?",
+            reply_markup=seedance_retry_kb(),
         )
     finally:
         processing_user_ids.discard(user.id)
@@ -3615,7 +3689,8 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
 
             await app.bot.send_message(
                 chat_id=chat_id,
-                text=generation_failure_user_text(refunded)
+                text=generation_failure_user_text(refunded),
+                reply_markup=result_actions_kb(),
             )
             log_generation_event(
                 user_id=user_id,
@@ -3852,7 +3927,8 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
 
             await app.bot.send_message(
                 chat_id=chat_id,
-                text=generation_failure_user_text(refunded)
+                text=generation_failure_user_text(refunded),
+                reply_markup=result_actions_kb(),
             )
             log_generation_event(
                 user_id=user_id,
@@ -4032,7 +4108,8 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
 
         await app.bot.send_message(
             chat_id=chat_id,
-            text=generation_failure_user_text(refunded)
+            text=generation_failure_user_text(refunded),
+            reply_markup=result_actions_kb(),
         )
         log_generation_event(
             user_id=user_id,

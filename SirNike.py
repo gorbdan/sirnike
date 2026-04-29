@@ -143,6 +143,7 @@ photo_counts = {}
 last_generated_image_url = {}
 last_generated_prompt = {}
 last_generation_references = {}
+MAX_SEEDANCE_IMAGE_REFERENCES = 9
 
 
 @dataclass
@@ -150,6 +151,7 @@ class UserState:
     prompt: str = ""
     references: List[str] = field(default_factory=list)
     animation_source_url: Optional[str] = None
+    animation_source_urls: List[str] = field(default_factory=list)
     waiting_for_avatar_upload: bool = False
     waiting_for_problem_report: bool = False
     motion_prompt: str = ""
@@ -367,6 +369,43 @@ def get_selected_seedance_duration(state: UserState) -> int:
     if selected not in options:
         selected = default_sec
     return selected
+
+
+def get_motion_image_urls(state: UserState) -> List[str]:
+    urls: List[str] = []
+    for item in state.animation_source_urls:
+        if isinstance(item, str):
+            candidate = item.strip()
+            if candidate and candidate not in urls:
+                urls.append(candidate)
+    if isinstance(state.animation_source_url, str):
+        candidate = state.animation_source_url.strip()
+        if candidate and candidate not in urls:
+            urls.append(candidate)
+    return urls[:MAX_SEEDANCE_IMAGE_REFERENCES]
+
+
+def set_motion_image_urls(state: UserState, image_urls: List[str]) -> None:
+    clean_urls: List[str] = []
+    for item in image_urls:
+        if isinstance(item, str):
+            candidate = item.strip()
+            if candidate and candidate not in clean_urls:
+                clean_urls.append(candidate)
+    clean_urls = clean_urls[:MAX_SEEDANCE_IMAGE_REFERENCES]
+    state.animation_source_urls = clean_urls
+    state.animation_source_url = clean_urls[-1] if clean_urls else None
+
+
+def add_motion_image_url(state: UserState, image_url: str) -> int:
+    current = get_motion_image_urls(state)
+    candidate = image_url.strip()
+    if candidate and candidate not in current:
+        if len(current) >= MAX_SEEDANCE_IMAGE_REFERENCES:
+            current = current[-(MAX_SEEDANCE_IMAGE_REFERENCES - 1):]
+        current.append(candidate)
+    set_motion_image_urls(state, current)
+    return len(state.animation_source_urls)
 
 
 def get_motion_model(state: UserState) -> str:
@@ -609,7 +648,12 @@ def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
 
 def motion_control_status_text(state: UserState) -> str:
     prompt_state = "добавлен" if state.motion_prompt.strip() else "необязательно"
-    image_state = "добавлено" if state.animation_source_url else "не добавлено"
+    motion_images = get_motion_image_urls(state)
+    image_state = (
+        f"{len(motion_images)} шт. (макс. {MAX_SEEDANCE_IMAGE_REFERENCES})"
+        if motion_images
+        else "не добавлено"
+    )
     selected_duration = SEEDANCE_DURATION
     eta_min = max(2, int(selected_duration * 0.8))
     eta_max = max(eta_min + 1, int(selected_duration * 2.0))
@@ -617,9 +661,9 @@ def motion_control_status_text(state: UserState) -> str:
     return (
         "Seedance 1.5 Pro (тест для админа)\n"
         "Генерация видео через MashaGPT.\n"
-        "Можно запустить только с промптом, но лучше добавить изображение-референс.\n\n"
+        f"Можно запустить только с промптом, но лучше добавить фото-референсы (до {MAX_SEEDANCE_IMAGE_REFERENCES}).\n\n"
         "1. Нажми «Промпт» (необязательно)\n"
-        "2. Добавь «Изображение» (необязательно)\n"
+        f"2. Добавь «Изображение» (можно до {MAX_SEEDANCE_IMAGE_REFERENCES} фото)\n"
         "3. Запусти генерацию\n\n"
         f"Промпт: {prompt_state}\n"
         f"Изображение: {image_state}\n"
@@ -657,7 +701,12 @@ def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
 
 def motion_control_status_text(state: UserState) -> str:
     prompt_state = "добавлен" if state.motion_prompt.strip() else "необязательно"
-    image_state = "добавлено" if state.animation_source_url else "не добавлено"
+    motion_images = get_motion_image_urls(state)
+    image_state = (
+        f"{len(motion_images)} шт. (макс. {MAX_SEEDANCE_IMAGE_REFERENCES})"
+        if motion_images
+        else "не добавлено"
+    )
     selected_duration = get_selected_seedance_duration(state)
     selected_model = get_motion_model(state)
     selected_model_label = get_motion_model_label(selected_model)
@@ -673,9 +722,9 @@ def motion_control_status_text(state: UserState) -> str:
     return (
         "Seedance 2 (тест для админа)\n"
         "Генерация видео через Zveno.\n"
-        "Можно запустить только с промптом, но лучше добавить изображение-референс.\n\n"
+        f"Можно запустить только с промптом, но лучше добавить фото-референсы (до {MAX_SEEDANCE_IMAGE_REFERENCES}).\n\n"
         "1. Нажми «Промпт» (необязательно)\n"
-        "2. Добавь «Изображение» (необязательно)\n"
+        f"2. Добавь «Изображение» (можно до {MAX_SEEDANCE_IMAGE_REFERENCES} фото)\n"
         "3. Выбери длительность ролика\n"
         "4. Запусти генерацию\n\n"
         f"Промпт: {prompt_state}\n"
@@ -721,6 +770,7 @@ def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton("Промпт ✍️", callback_data="mc_set_prompt")],
         [InlineKeyboardButton("Изображение 🌄", callback_data="mc_set_image")],
+        [InlineKeyboardButton("Очистить фото-референсы 🧹", callback_data="mc_clear_images")],
         model_buttons,
     ]
     if duration_buttons:
@@ -733,7 +783,12 @@ def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
 
 def motion_control_status_text(state: UserState) -> str:
     prompt_state = "добавлен" if state.motion_prompt.strip() else "необязательно"
-    image_state = "добавлено" if state.animation_source_url else "не добавлено"
+    motion_images = get_motion_image_urls(state)
+    image_state = (
+        f"{len(motion_images)} шт. (макс. {MAX_SEEDANCE_IMAGE_REFERENCES})"
+        if motion_images
+        else "не добавлено"
+    )
     selected_duration = get_selected_seedance_duration(state)
     selected_model = get_motion_model(state)
     model_label = get_motion_model_label(selected_model)
@@ -748,9 +803,9 @@ def motion_control_status_text(state: UserState) -> str:
     return (
         f"{model_label}{fast_hint}\n"
         "Генерация видео через Zveno.\n"
-        "Можно запустить только с промптом, но лучше добавить изображение-референс.\n\n"
+        f"Можно запустить только с промптом, но лучше добавить фото-референсы (до {MAX_SEEDANCE_IMAGE_REFERENCES}).\n\n"
         "1. Нажми «Промпт» (необязательно)\n"
-        "2. Добавь «Изображение» (необязательно)\n"
+        f"2. Добавь «Изображение» (можно до {MAX_SEEDANCE_IMAGE_REFERENCES} фото)\n"
         "3. Выбери модель и длительность\n"
         "4. Запусти генерацию\n\n"
         f"Модель: {model_label}\n"
@@ -1503,9 +1558,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
 
                 if state.waiting_for_motion_image:
-                    state.waiting_for_motion_image = False
+                    total_refs = add_motion_image_url(state, direct_url)
                     await update.message.reply_text(
-                        "Изображение для Seedance добавлено ✅",
+                        f"Фото для Seedance добавлено ✅\n"
+                        f"Сейчас загружено: {total_refs}/{MAX_SEEDANCE_IMAGE_REFERENCES}\n"
+                        "Можешь отправить еще фото или запускать генерацию.",
                         reply_markup=motion_control_kb(state),
                     )
                     return
@@ -2088,7 +2145,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("Не удалось сохранить шаблон. Попробуй ещё раз.")
             return
 
-    motion_callbacks = {"seedance_control", "motion_control", "mc_set_prompt", "mc_set_image", "mc_set_video", "mc_start", "seedance_retry"}
+    motion_callbacks = {"seedance_control", "motion_control", "mc_set_prompt", "mc_set_image", "mc_clear_images", "mc_set_video", "mc_start", "seedance_retry"}
     is_motion_callback = (
         query.data in motion_callbacks
         or query.data.startswith("mc_duration_")
@@ -2124,8 +2181,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if query.data in {"seedance_control", "motion_control"}:
         state = get_or_init_state(context)
-        if not state.animation_source_url:
-            state.animation_source_url = last_generated_image_url.get(update.effective_user.id)
+        if not get_motion_image_urls(state):
+            last_image = last_generated_image_url.get(update.effective_user.id)
+            if isinstance(last_image, str) and last_image.strip():
+                add_motion_image_url(state, last_image)
         state.waiting_for_motion_prompt = False
         state.waiting_for_motion_image = False
         state.waiting_for_motion_video = False
@@ -2149,8 +2208,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = get_or_init_state(context)
         state.waiting_for_motion_image = True
         await query.message.reply_text(
-            "Отправь изображение для Seedance 2.\n"
-            "Можно также использовать только что сгенерированное фото."
+            "Отправляй фото для Seedance (можно несколько подряд).\n"
+            f"Лимит: {MAX_SEEDANCE_IMAGE_REFERENCES} фото.\n"
+            "Когда всё загрузишь, нажми «Запустить ⚡»."
+        )
+        return
+
+    if query.data == "mc_clear_images":
+        state = get_or_init_state(context)
+        set_motion_image_urls(state, [])
+        state.waiting_for_motion_image = False
+        await query.message.reply_text(
+            "Фото-референсы очищены ✅\n\n" + motion_control_status_text(state),
+            reply_markup=motion_control_kb(state),
         )
         return
 
@@ -2190,6 +2260,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "mc_start":
+        state = get_or_init_state(context)
+        state.waiting_for_motion_image = False
         await run_seedance(update, context)
         return
 
@@ -3043,6 +3115,7 @@ async def start_seedance_task(
     endpoint: Optional[str] = None,
     mode: Optional[str] = None,
     model_slug: Optional[str] = None,
+    image_urls: Optional[List[str]] = None,
 ) -> str:
     if not ZVENO_API_KEY:
         raise Exception("ZVENO_API_KEY is empty")
@@ -3075,12 +3148,41 @@ async def start_seedance_task(
     }
     model_value = legacy_model_map.get(model_value.lower(), model_value)
     model_value_lower = model_value.lower()
-    prompt_text = (prompt or "").strip()
+    combined_image_urls: List[str] = []
+    if image_urls:
+        for item in image_urls:
+            if isinstance(item, str):
+                candidate = item.strip()
+                if candidate and candidate not in combined_image_urls:
+                    combined_image_urls.append(candidate)
     if image_url:
+        candidate = image_url.strip()
+        if candidate and candidate not in combined_image_urls:
+            combined_image_urls.append(candidate)
+    combined_image_urls = combined_image_urls[:MAX_SEEDANCE_IMAGE_REFERENCES]
+
+    # Route to the right Seedance mode:
+    # - single image -> image-to-video
+    # - 2+ images -> reference-to-video
+    if len(combined_image_urls) > 1:
+        if "fast" in model_value_lower:
+            model_value = "bytedance/seedance-2.0/fast/reference-to-video"
+        else:
+            model_value = "bytedance/seedance-2.0/reference-to-video"
+    elif combined_image_urls:
+        if model_value_lower in {"bytedance/seedance-2.0-fast", "seedance-2.0-fast", "seedance-2-0-fast"}:
+            model_value = "bytedance/seedance-2.0/fast/image-to-video"
+        elif model_value_lower in {"bytedance/seedance-2.0", "seedance-2.0", "seedance-2-0"}:
+            model_value = "bytedance/seedance-2.0/image-to-video"
+    model_value_lower = model_value.lower()
+
+    prompt_text = (prompt or "").strip()
+    if combined_image_urls:
         if not prompt_text:
             prompt_text = "Animate the provided photo naturally. Keep the same person, face, clothes, and background."
-        elif "reference-to-video" in model_value_lower and "@image1" not in prompt_text.lower():
-            prompt_text = f"@Image1 {prompt_text}"
+        if "reference-to-video" in model_value_lower and "@image1" not in prompt_text.lower():
+            tags = " ".join([f"@Image{i}" for i in range(1, len(combined_image_urls) + 1)])
+            prompt_text = f"{tags} {prompt_text}".strip()
     elif not prompt_text:
         prompt_text = "Create a natural cinematic video."
 
@@ -3097,13 +3199,14 @@ async def start_seedance_task(
             "resolution": mode_value,
         }
     payload_variants = []
-    if image_url:
+    if combined_image_urls:
+        primary_image_url = combined_image_urls[0]
         if is_video_jobs_endpoint:
             base_refs = [
-                {"image_url": image_url},
-                {"image_urls": [image_url]},
-                {"input_references": [{"type": "image", "url": image_url}]},
-                {"reference_images": [{"role": "reference", "url": image_url}]},
+                {"image_url": primary_image_url},
+                {"image_urls": combined_image_urls},
+                {"input_references": [{"type": "image", "url": u} for u in combined_image_urls]},
+                {"reference_images": [{"role": "reference", "url": u} for u in combined_image_urls]},
             ]
             timing_variants = [
                 {"duration": duration},
@@ -3113,11 +3216,11 @@ async def start_seedance_task(
                 for timing in timing_variants:
                     payload_variants.append({**payload_base, **timing, **refs})
         else:
-            payload_variants.append({**payload_base, "inputUrls": [image_url]})
-            payload_variants.append({**payload_base, "imageUrls": [image_url]})
-            payload_variants.append({**payload_base, "inputUrl": image_url})
-            payload_variants.append({**payload_base, "imageUrl": image_url})
-            payload_variants.append({**payload_base, "inputUrls": [image_url], "imageUrls": [image_url]})
+            payload_variants.append({**payload_base, "inputUrls": combined_image_urls})
+            payload_variants.append({**payload_base, "imageUrls": combined_image_urls})
+            payload_variants.append({**payload_base, "inputUrl": primary_image_url})
+            payload_variants.append({**payload_base, "imageUrl": primary_image_url})
+            payload_variants.append({**payload_base, "inputUrls": combined_image_urls, "imageUrls": combined_image_urls})
     else:
         if is_video_jobs_endpoint:
             payload_variants.append(payload_base)
@@ -3132,7 +3235,7 @@ async def start_seedance_task(
             for payload in payload_variants:
                 ref_keys = [k for k in ("image_url", "image_urls", "input_references", "reference_images") if k in payload]
                 logger.info(
-                    f"Seedance create payload: model={payload.get('model')}, duration={payload.get('duration') or payload.get('seconds')}, refs={ref_keys}"
+                    f"Seedance create payload: model={payload.get('model')}, duration={payload.get('duration') or payload.get('seconds')}, refs={ref_keys}, refs_count={len(combined_image_urls)}"
                 )
                 async with session.post(
                     create_url,
@@ -3358,20 +3461,24 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if not state.animation_source_url:
-        state.animation_source_url = last_generated_image_url.get(user.id)
+    motion_images = get_motion_image_urls(state)
+    if not motion_images:
+        last_image = last_generated_image_url.get(user.id)
+        if isinstance(last_image, str) and last_image.strip():
+            add_motion_image_url(state, last_image)
+            motion_images = get_motion_image_urls(state)
 
     prompt_text = (state.motion_prompt or "").strip()
-    if not state.animation_source_url and not prompt_text:
+    if not motion_images and not prompt_text:
         await reply_target.reply_text(
             "Для Seedance добавь изображение и/или промпт, затем запусти снова."
         )
         return
 
-    if state.animation_source_url:
-        ok_img, reason_img = await validate_image_url(state.animation_source_url)
+    for idx, img_url in enumerate(motion_images, start=1):
+        ok_img, reason_img = await validate_image_url(img_url)
         if not ok_img:
-            await reply_target.reply_text(f"Изображение недоступно для обработки: {reason_img}")
+            await reply_target.reply_text(f"Фото-референс #{idx} недоступен: {reason_img}")
             return
 
     selected_duration = get_selected_seedance_duration(state)
@@ -3405,7 +3512,8 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         task_id = await start_seedance_task(
             prompt=prompt_text,
-            image_url=state.animation_source_url,
+            image_url=motion_images[0] if motion_images else None,
+            image_urls=motion_images,
             user_id=user.id,
             duration=selected_duration,
             endpoint=selected_endpoint,
@@ -3449,7 +3557,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             provider="ZVENO",
             cost=selected_cost,
             was_free=False,
-            references_count=1 if state.animation_source_url else 0,
+            references_count=len(motion_images),
         )
     except Exception as e:
         add_izyminki(user.id, selected_cost)
@@ -3460,7 +3568,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             provider="ZVENO",
             cost=selected_cost,
             was_free=False,
-            references_count=1 if state.animation_source_url else 0,
+            references_count=len(motion_images),
         )
         await reply_target.reply_text(
             f"Не удалось выполнить {selected_model_label}.\n"

@@ -91,7 +91,8 @@ SEEDANCE_POLL_INTERVAL = int(
 )
 SEEDANCE_ENABLED = os.getenv("SEEDANCE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
 SEEDANCE_FAST_ENABLED = os.getenv("SEEDANCE_FAST_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
-SEEDANCE_FAST_ENDPOINT = os.getenv("SEEDANCE_FAST_ENDPOINT", "/v1/tasks/seedance-2-0-fast")
+SEEDANCE_FAST_ENDPOINT = os.getenv("SEEDANCE_FAST_ENDPOINT", "/v1/videos")
+SEEDANCE_FAST_MODEL = os.getenv("SEEDANCE_FAST_MODEL", "bytedance/seedance-2.0-fast")
 SEEDANCE_FAST_MODE = os.getenv("SEEDANCE_FAST_MODE", "720p")
 SEEDANCE_FAST_COST_PER_SECOND = float(
     os.getenv("SEEDANCE_FAST_COST_PER_SECOND", "1.95")

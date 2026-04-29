@@ -73,6 +73,7 @@ from config import (
     SEEDANCE_ENABLED,
     SEEDANCE_FAST_ENABLED,
     SEEDANCE_FAST_ENDPOINT,
+    SEEDANCE_FAST_MODEL,
     SEEDANCE_FAST_MODE,
     SEEDANCE_FAST_COST_PER_SECOND,
 )
@@ -636,6 +637,7 @@ def motion_control_status_text(state: UserState) -> str:
     selected_cost = calc_seedance_cost(selected_duration, selected_cps)
     selected_endpoint = SEEDANCE_FAST_ENDPOINT if selected_model == "seedance2_fast" else SEEDANCE_ENDPOINT
     selected_mode = SEEDANCE_FAST_MODE if selected_model == "seedance2_fast" else SEEDANCE_MODE
+    selected_model_slug = SEEDANCE_FAST_MODEL if selected_model == "seedance2_fast" else None
     eta_min = max(2, int(selected_duration * 0.8))
     eta_max = max(eta_min + 1, int(selected_duration * 2.0))
     options_text = ", ".join([f"{sec}с" for sec in get_seedance_duration_options()])
@@ -2992,6 +2994,7 @@ async def start_seedance_task(
     duration: Optional[int] = None,
     endpoint: Optional[str] = None,
     mode: Optional[str] = None,
+    model_slug: Optional[str] = None,
 ) -> str:
     if not ZVENO_API_KEY:
         raise Exception("ZVENO_API_KEY is empty")
@@ -3001,7 +3004,10 @@ async def start_seedance_task(
 
     endpoint_path = "/" + endpoint_value.strip("/")
     create_paths = [endpoint_path]
-    if endpoint_path.startswith("/v1/tasks/"):
+    is_video_jobs_endpoint = endpoint_path in ("/v1/videos", "/videos")
+    if is_video_jobs_endpoint:
+        create_paths = ["/v1/videos", "/videos"]
+    elif endpoint_path.startswith("/v1/tasks/"):
         create_paths.append("/tasks/" + endpoint_path.split("/v1/tasks/", 1)[1])
 
     create_urls = []
@@ -3018,13 +3024,25 @@ async def start_seedance_task(
         "duration": duration,
         "mode": mode_value,
     }
+    if is_video_jobs_endpoint:
+        payload_base = {
+            "model": (model_slug or "bytedance/seedance-2.0-fast"),
+            "prompt": prompt or "Create a natural cinematic video.",
+            "duration": duration,
+        }
     payload_variants = []
     if image_url:
-        payload_variants.append({**payload_base, "inputUrls": [image_url]})
-        payload_variants.append({**payload_base, "imageUrls": [image_url]})
-        payload_variants.append({**payload_base, "inputUrl": image_url})
-        payload_variants.append({**payload_base, "imageUrl": image_url})
-        payload_variants.append({**payload_base, "inputUrls": [image_url], "imageUrls": [image_url]})
+        if is_video_jobs_endpoint:
+            payload_variants.append({**payload_base, "input_references": [{"type": "image", "url": image_url}]})
+            payload_variants.append({**payload_base, "reference_images": [{"role": "reference", "url": image_url}]})
+            payload_variants.append({**payload_base, "image_urls": [image_url]})
+            payload_variants.append(payload_base)
+        else:
+            payload_variants.append({**payload_base, "inputUrls": [image_url]})
+            payload_variants.append({**payload_base, "imageUrls": [image_url]})
+            payload_variants.append({**payload_base, "inputUrl": image_url})
+            payload_variants.append({**payload_base, "imageUrl": image_url})
+            payload_variants.append({**payload_base, "inputUrls": [image_url], "imageUrls": [image_url]})
     else:
         payload_variants.append(payload_base)
 
@@ -3053,6 +3071,9 @@ async def start_seedance_task(
                         last_error = f"Non-JSON response: {response_text}"
                         continue
                     task_id = data.get("id")
+                    polling_url = data.get("polling_url")
+                    if is_video_jobs_endpoint and isinstance(polling_url, str) and polling_url.strip():
+                        return "__POLL_URL__:" + polling_url.strip()
                     if task_id:
                         return str(task_id)
                     last_error = f"Task id missing in response: {data}"
@@ -3064,12 +3085,20 @@ async def poll_seedance_task(task_id: str, max_attempts: int, poll_interval: int
     if not ZVENO_API_KEY:
         raise Exception("ZVENO_API_KEY is empty")
 
-    poll_paths = [
-        f"/v1/tasks/{task_id}",
-        f"/tasks/{task_id}",
-        f"/api/v1/tasks/{task_id}",
-    ]
-    poll_urls = [build_zveno_url(ZVENO_API_BASE, path) for path in poll_paths]
+    poll_urls = []
+    if task_id.startswith("__POLL_URL__:"):
+        raw_poll_url = task_id.split("__POLL_URL__:", 1)[1].strip()
+        if raw_poll_url.startswith("http://") or raw_poll_url.startswith("https://"):
+            poll_urls = [raw_poll_url]
+        else:
+            poll_urls = [build_zveno_url(ZVENO_API_BASE, raw_poll_url)]
+    else:
+        poll_paths = [
+            f"/v1/tasks/{task_id}",
+            f"/tasks/{task_id}",
+            f"/api/v1/tasks/{task_id}",
+        ]
+        poll_urls = [build_zveno_url(ZVENO_API_BASE, path) for path in poll_paths]
 
     async with aiohttp.ClientSession() as session:
         for attempt in range(max_attempts):
@@ -3101,18 +3130,28 @@ async def poll_seedance_task(task_id: str, max_attempts: int, poll_interval: int
             if not data:
                 continue
 
-            status = str(data.get("status", "")).upper()
+            status_raw = str(data.get("status", ""))
+            status = status_raw.upper()
             logger.info(f"Seedance task {task_id}: attempt={attempt + 1}/{max_attempts}, status={status}")
 
-            if status == "COMPLETED":
-                video_url = extract_task_video_url(data)
+            if status in ("COMPLETED", "SUCCEEDED"):
+                video_url = None
+                unsigned_urls = data.get("unsigned_urls")
+                if isinstance(unsigned_urls, list):
+                    for item in unsigned_urls:
+                        if isinstance(item, str) and item.startswith("http"):
+                            video_url = item
+                            break
+                if not video_url:
+                    video_url = extract_task_video_url(data)
                 if not video_url:
                     raise Exception(f"Seedance task completed but video URL missing: {data}")
                 return video_url
 
             if status in ("FAILED", "CANCELLED", "ERROR"):
                 raise Exception(
-                    data.get("message")
+                    data.get("error")
+                    or data.get("message")
                     or data.get("error")
                     or data.get("details")
                     or f"Seedance task failed with status {status}"
@@ -3181,6 +3220,7 @@ async def run_motion_control(update: Update, context: ContextTypes.DEFAULT_TYPE)
     selected_cost = calc_seedance_cost(selected_duration, selected_cps)
     selected_endpoint = SEEDANCE_FAST_ENDPOINT if selected_model == "seedance2_fast" else SEEDANCE_ENDPOINT
     selected_mode = SEEDANCE_FAST_MODE if selected_model == "seedance2_fast" else SEEDANCE_MODE
+    selected_model_slug = SEEDANCE_FAST_MODEL if selected_model == "seedance2_fast" else None
 
     bal = get_balance(user.id)
     if bal < selected_cost:
@@ -3209,6 +3249,7 @@ async def run_motion_control(update: Update, context: ContextTypes.DEFAULT_TYPE)
             duration=selected_duration,
             endpoint=selected_endpoint,
             mode=selected_mode,
+            model_slug=selected_model_slug,
         )
 
         video_url = await poll_seedance_task(

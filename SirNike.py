@@ -660,7 +660,7 @@ def motion_control_status_text(state: UserState) -> str:
 
     return (
         "Seedance 1.5 Pro (тест для админа)\n"
-        "Генерация видео через MashaGPT.\n"
+        "Генерация видео с помощью нейросети.\n"
         f"Можно запустить только с промптом, но лучше добавить фото-референсы (до {MAX_SEEDANCE_IMAGE_REFERENCES}).\n\n"
         "1. Нажми «Промпт» (необязательно)\n"
         f"2. Добавь «Изображение» (можно до {MAX_SEEDANCE_IMAGE_REFERENCES} фото)\n"
@@ -721,7 +721,7 @@ def motion_control_status_text(state: UserState) -> str:
 
     return (
         "Seedance 2 (тест для админа)\n"
-        "Генерация видео через Zveno.\n"
+        "Генерация видео с помощью нейросети.\n"
         f"Можно запустить только с промптом, но лучше добавить фото-референсы (до {MAX_SEEDANCE_IMAGE_REFERENCES}).\n\n"
         "1. Нажми «Промпт» (необязательно)\n"
         f"2. Добавь «Изображение» (можно до {MAX_SEEDANCE_IMAGE_REFERENCES} фото)\n"
@@ -802,7 +802,7 @@ def motion_control_status_text(state: UserState) -> str:
 
     return (
         f"{model_label}{fast_hint}\n"
-        "Генерация видео через Zveno.\n"
+        "Генерация видео с помощью нейросети.\n"
         f"Можно запустить только с промптом, но лучше добавить фото-референсы (до {MAX_SEEDANCE_IMAGE_REFERENCES}).\n\n"
         "1. Нажми «Промпт» (необязательно)\n"
         f"2. Добавь «Изображение» (можно до {MAX_SEEDANCE_IMAGE_REFERENCES} фото)\n"
@@ -3210,7 +3210,6 @@ async def start_seedance_task(
             ]
             timing_variants = [
                 {"duration": duration},
-                {"duration": str(duration)},
             ]
             for refs in base_refs:
                 for timing in timing_variants:
@@ -3224,7 +3223,6 @@ async def start_seedance_task(
     else:
         if is_video_jobs_endpoint:
             payload_variants.append(payload_base)
-            payload_variants.append({**payload_base, "duration": str(duration)})
         else:
             payload_variants.append(payload_base)
 
@@ -3560,6 +3558,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             references_count=len(motion_images),
         )
     except Exception as e:
+        logger.exception("Seedance generation failed")
         add_izyminki(user.id, selected_cost)
         log_generation_event(
             user_id=user.id,
@@ -3572,7 +3571,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await reply_target.reply_text(
             f"Не удалось выполнить {selected_model_label}.\n"
-            f"Причина: {str(e)}\n\n"
+            "Временный технический сбой. Попробуй еще раз через минуту.\n\n"
             "Списанные изюминки возвращены на баланс."
         )
         await reply_target.reply_text(

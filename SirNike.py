@@ -68,6 +68,7 @@ from config import (
     SEEDANCE_MODE,
     SEEDANCE_DURATION,
     SEEDANCE_DURATION_OPTIONS,
+    SEEDANCE_FAST_DURATION_OPTIONS,
     SEEDANCE_COST_PER_SECOND,
     SEEDANCE_MAX_POLL_ATTEMPTS,
     SEEDANCE_POLL_INTERVAL,
@@ -314,9 +315,10 @@ def ru_plural(value: int, one: str, few: str, many: str) -> str:
     return many
 
 
-def get_seedance_duration_options() -> List[int]:
+def get_seedance_duration_options(model_code: Optional[str] = None) -> List[int]:
+    raw_options = SEEDANCE_FAST_DURATION_OPTIONS if model_code == "seedance2_fast" else SEEDANCE_DURATION_OPTIONS
     parsed: List[int] = []
-    for raw in str(SEEDANCE_DURATION_OPTIONS).split(","):
+    for raw in str(raw_options).split(","):
         raw = raw.strip()
         if not raw:
             continue
@@ -336,11 +338,12 @@ def get_seedance_duration_options() -> List[int]:
 
 
 def get_selected_seedance_duration(state: UserState) -> int:
-    options = get_seedance_duration_options()
-    default_sec = max(3, min(int(SEEDANCE_DURATION), 30))
+    model_code = get_motion_model(state)
+    options = get_seedance_duration_options(model_code)
+    default_sec = options[0] if options else max(3, min(int(SEEDANCE_DURATION), 30))
     selected = state.motion_duration if isinstance(state.motion_duration, int) else default_sec
     if selected not in options:
-        selected = default_sec if default_sec in options else options[0]
+        selected = default_sec
     return selected
 
 
@@ -605,8 +608,9 @@ def motion_control_status_text(state: UserState) -> str:
 # Override legacy motion UI helpers with Seedance 2 + variable duration/cost.
 def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
     selected_duration = get_selected_seedance_duration(state)
+    selected_model = get_motion_model(state)
     duration_buttons = []
-    for sec in get_seedance_duration_options():
+    for sec in get_seedance_duration_options(selected_model):
         cost = calc_seedance_cost(sec)
         prefix = "● " if sec == selected_duration else ""
         duration_buttons.append(
@@ -641,7 +645,7 @@ def motion_control_status_text(state: UserState) -> str:
     selected_model_slug = SEEDANCE_FAST_MODEL if selected_model == "seedance2_fast" else SEEDANCE_MODEL
     eta_min = max(2, int(selected_duration * 0.8))
     eta_max = max(eta_min + 1, int(selected_duration * 2.0))
-    options_text = ", ".join([f"{sec}с" for sec in get_seedance_duration_options()])
+    options_text = ", ".join([f"{sec}с" for sec in get_seedance_duration_options(selected_model)])
 
     return (
         "Seedance 2 (тест для админа)\n"
@@ -667,7 +671,7 @@ def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
     cps = get_motion_model_cost_per_second(selected_model)
 
     duration_buttons = []
-    for sec in get_seedance_duration_options():
+    for sec in get_seedance_duration_options(selected_model):
         cost = calc_seedance_cost(sec, cps)
         prefix = "● " if sec == selected_duration else ""
         duration_buttons.append(
@@ -715,7 +719,7 @@ def motion_control_status_text(state: UserState) -> str:
     selected_cost = calc_seedance_cost(selected_duration, cps)
     eta_min = max(2, int(selected_duration * 0.8))
     eta_max = max(eta_min + 1, int(selected_duration * 2.0))
-    options_text = ", ".join([f"{sec}с" for sec in get_seedance_duration_options()])
+    options_text = ", ".join([f"{sec}с" for sec in get_seedance_duration_options(selected_model)])
     fast_hint = " (для быстрого теста промптов)" if selected_model == "seedance2_fast" else ""
 
     return (
@@ -2136,7 +2140,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             picked = get_selected_seedance_duration(state)
 
-        if picked not in get_seedance_duration_options():
+        selected_model = get_motion_model(state)
+        if picked not in get_seedance_duration_options(selected_model):
             picked = get_selected_seedance_duration(state)
 
         state.motion_duration = picked
@@ -3029,15 +3034,25 @@ async def start_seedance_task(
         payload_base = {
             "model": (model_slug or "bytedance/seedance-2.0-fast"),
             "prompt": prompt or "Create a natural cinematic video.",
-            "duration": duration,
+            "seconds": duration,
         }
     payload_variants = []
     if image_url:
         if is_video_jobs_endpoint:
-            payload_variants.append({**payload_base, "input_references": [{"type": "image", "url": image_url}]})
-            payload_variants.append({**payload_base, "reference_images": [{"role": "reference", "url": image_url}]})
-            payload_variants.append({**payload_base, "image_urls": [image_url]})
-            payload_variants.append(payload_base)
+            base_refs = [
+                {"input_references": [{"type": "image", "url": image_url}]},
+                {"reference_images": [{"role": "reference", "url": image_url}]},
+                {"image_urls": [image_url]},
+                {},
+            ]
+            timing_variants = [
+                {},
+                {"seconds": duration},
+                {"duration": duration},
+            ]
+            for refs in base_refs:
+                for timing in timing_variants:
+                    payload_variants.append({**payload_base, **timing, **refs})
         else:
             payload_variants.append({**payload_base, "inputUrls": [image_url]})
             payload_variants.append({**payload_base, "imageUrls": [image_url]})
@@ -3045,7 +3060,12 @@ async def start_seedance_task(
             payload_variants.append({**payload_base, "imageUrl": image_url})
             payload_variants.append({**payload_base, "inputUrls": [image_url], "imageUrls": [image_url]})
     else:
-        payload_variants.append(payload_base)
+        if is_video_jobs_endpoint:
+            payload_variants.append(payload_base)
+            payload_variants.append({**payload_base, "duration": duration})
+            payload_variants.append({k: v for k, v in payload_base.items() if k != "seconds"})
+        else:
+            payload_variants.append(payload_base)
 
     last_error = "unknown"
     async with aiohttp.ClientSession() as session:
@@ -3063,6 +3083,7 @@ async def start_seedance_task(
                     timeout=aiohttp.ClientTimeout(total=90),
                 ) as resp:
                     response_text = await resp.text()
+                    logger.info(f"Seedance create response: status={resp.status}, endpoint={create_url}")
                     if not (200 <= resp.status < 300):
                         last_error = f"{resp.status}. {response_text}"
                         continue
@@ -3074,8 +3095,10 @@ async def start_seedance_task(
                     task_id = data.get("id")
                     polling_url = data.get("polling_url")
                     if is_video_jobs_endpoint and isinstance(polling_url, str) and polling_url.strip():
+                        logger.info(f"Seedance create accepted: polling_url={polling_url.strip()}")
                         return "__POLL_URL__:" + polling_url.strip()
                     if task_id:
+                        logger.info(f"Seedance create accepted: task_id={task_id}")
                         return str(task_id)
                     last_error = f"Task id missing in response: {data}"
 
@@ -3101,8 +3124,13 @@ async def poll_seedance_task(task_id: str, max_attempts: int, poll_interval: int
         ]
         poll_urls = [build_zveno_url(ZVENO_API_BASE, path) for path in poll_paths]
 
+    logger.info(
+        f"Seedance polling started: task_ref={task_id}, max_attempts={max_attempts}, interval={poll_interval}s, urls={poll_urls}"
+    )
+
     async with aiohttp.ClientSession() as session:
         for attempt in range(max_attempts):
+            logger.info(f"Seedance poll tick: attempt={attempt + 1}/{max_attempts}")
             await asyncio.sleep(poll_interval)
 
             data = None

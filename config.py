@@ -45,6 +45,7 @@ MASHAGPT_CHAT_MODEL = os.getenv("MASHAGPT_CHAT_MODEL", "gpt-4o-mini")
 ZVENO_API_BASE = os.getenv("ZVENO_API_BASE", "https://api.zveno.ai/v1")
 ZVENO_API_KEY = os.getenv("ZVENO_API_KEY", "")
 ZVENO_IMAGE_MODEL = os.getenv("ZVENO_IMAGE_MODEL", "google/gemini-3-pro-image-preview")
+ZVENO_CHAT_MODEL = os.getenv("ZVENO_CHAT_MODEL", "google/gemini-2.5-flash")
 
 PROMPT_WEBAPP_URL = os.getenv("PROMPT_WEBAPP_URL", "").strip()
 

@@ -38,10 +38,10 @@ from config import (
     MASHAGPT_API_BASE,
     MASHAGPT_API_KEY,
     MASHAGPT_IMAGE_MODEL,
-    MASHAGPT_CHAT_MODEL,
     ZVENO_API_BASE,
     ZVENO_API_KEY,
     ZVENO_IMAGE_MODEL,
+    ZVENO_CHAT_MODEL,
     PROMPT_WEBAPP_URL,
     IMGBB_API_KEY,
     START_BONUS,
@@ -703,17 +703,17 @@ async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if not MASHAGPT_API_KEY:
+    if not ZVENO_API_KEY:
         await update.message.reply_text(
             "Текстовый помощник /ai сейчас временно отключен.\n"
             "Генерация изображений работает в обычном режиме."
         )
         return
 
-    request_url = build_mashagpt_url(MASHAGPT_API_BASE, "/v1/chat/completions")
+    request_url = build_zveno_url(ZVENO_API_BASE, "/v1/chat/completions")
 
     payload = {
-        "model": MASHAGPT_CHAT_MODEL,
+        "model": ZVENO_CHAT_MODEL,
         "messages": [
             {
                 "role": "system",
@@ -733,8 +733,8 @@ async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             async with session.post(
                 request_url,
                 headers={
-                    "x-api-key": MASHAGPT_API_KEY,
-                    "Authorization": f"Bearer {MASHAGPT_API_KEY}",
+                    "x-api-key": ZVENO_API_KEY,
+                    "Authorization": f"Bearer {ZVENO_API_KEY}",
                     "Content-Type": "application/json",
                 },
                 json=payload,
@@ -2755,8 +2755,8 @@ def extract_task_video_url(task_data: dict) -> Optional[str]:
 
 
 async def start_seedance_task(prompt: str, image_url: Optional[str], user_id: int) -> str:
-    if not MASHAGPT_API_KEY:
-        raise Exception("MASHAGPT_API_KEY is empty")
+    if not ZVENO_API_KEY:
+        raise Exception("ZVENO_API_KEY is empty")
     if not SEEDANCE_ENDPOINT:
         raise Exception("SEEDANCE_ENDPOINT is empty")
 
@@ -2767,7 +2767,7 @@ async def start_seedance_task(prompt: str, image_url: Optional[str], user_id: in
 
     create_urls = []
     for path in create_paths:
-        url = build_mashagpt_url(MASHAGPT_API_BASE, path)
+        url = build_zveno_url(ZVENO_API_BASE, path)
         if url not in create_urls:
             create_urls.append(url)
 
@@ -2797,8 +2797,8 @@ async def start_seedance_task(prompt: str, image_url: Optional[str], user_id: in
                 async with session.post(
                     create_url,
                     headers={
-                        "x-api-key": MASHAGPT_API_KEY,
-                        "Authorization": f"Bearer {MASHAGPT_API_KEY}",
+                        "x-api-key": ZVENO_API_KEY,
+                        "Authorization": f"Bearer {ZVENO_API_KEY}",
                         "Content-Type": "application/json",
                     },
                     json=payload,
@@ -2822,15 +2822,15 @@ async def start_seedance_task(prompt: str, image_url: Optional[str], user_id: in
 
 
 async def poll_seedance_task(task_id: str, max_attempts: int, poll_interval: int) -> str:
-    if not MASHAGPT_API_KEY:
-        raise Exception("MASHAGPT_API_KEY is empty")
+    if not ZVENO_API_KEY:
+        raise Exception("ZVENO_API_KEY is empty")
 
     poll_paths = [
         f"/v1/tasks/{task_id}",
         f"/tasks/{task_id}",
         f"/api/v1/tasks/{task_id}",
     ]
-    poll_urls = [build_mashagpt_url(MASHAGPT_API_BASE, path) for path in poll_paths]
+    poll_urls = [build_zveno_url(ZVENO_API_BASE, path) for path in poll_paths]
 
     async with aiohttp.ClientSession() as session:
         for attempt in range(max_attempts):
@@ -2841,8 +2841,8 @@ async def poll_seedance_task(task_id: str, max_attempts: int, poll_interval: int
                 async with session.get(
                     poll_url,
                     headers={
-                        "x-api-key": MASHAGPT_API_KEY,
-                        "Authorization": f"Bearer {MASHAGPT_API_KEY}",
+                        "x-api-key": ZVENO_API_KEY,
+                        "Authorization": f"Bearer {ZVENO_API_KEY}",
                     },
                     timeout=aiohttp.ClientTimeout(total=60),
                 ) as resp:
@@ -2989,7 +2989,7 @@ async def run_motion_control(update: Update, context: ContextTypes.DEFAULT_TYPE)
             user_id=user.id,
             kind="motion",
             status="success",
-            provider="MASHAGPT",
+            provider="ZVENO",
             cost=SEEDANCE_COST,
             was_free=False,
             references_count=1 if state.animation_source_url else 0,
@@ -3000,7 +3000,7 @@ async def run_motion_control(update: Update, context: ContextTypes.DEFAULT_TYPE)
             user_id=user.id,
             kind="motion",
             status="failed",
-            provider="MASHAGPT",
+            provider="ZVENO",
             cost=SEEDANCE_COST,
             was_free=False,
             references_count=1 if state.animation_source_url else 0,

@@ -348,11 +348,11 @@ def get_seedance_duration_options(model_code: Optional[str] = None) -> List[int]
             sec = int(raw)
         except ValueError:
             continue
-        sec = max(3, min(sec, 30))
+        sec = max(4, min(sec, 15))
         if sec not in parsed:
             parsed.append(sec)
 
-    default_sec = max(3, min(int(SEEDANCE_DURATION), 30))
+    default_sec = max(4, min(int(SEEDANCE_DURATION), 15))
     if default_sec not in parsed:
         parsed.append(default_sec)
     parsed.sort()
@@ -362,7 +362,7 @@ def get_seedance_duration_options(model_code: Optional[str] = None) -> List[int]
 def get_selected_seedance_duration(state: UserState) -> int:
     model_code = get_motion_model(state)
     options = get_seedance_duration_options(model_code)
-    default_sec = options[0] if options else max(3, min(int(SEEDANCE_DURATION), 30))
+    default_sec = options[0] if options else max(4, min(int(SEEDANCE_DURATION), 15))
     selected = state.motion_duration if isinstance(state.motion_duration, int) else default_sec
     if selected not in options:
         selected = default_sec
@@ -390,7 +390,8 @@ def calc_seedance_cost(duration_sec: int, cost_per_second: Optional[float] = Non
         cost_per_second if cost_per_second is not None else SEEDANCE_COST_PER_SECOND,
         0.01,
     )
-    return max(1, int(round(max(3, duration_sec) * cps)))
+    safe_duration = max(4, min(int(duration_sec), 15))
+    return max(1, int(round(safe_duration * cps)))
 
 
 def build_mashagpt_url(base: str, path: str) -> str:
@@ -3064,32 +3065,49 @@ async def start_seedance_task(
             create_urls.append(url)
 
     mode_value = "1080p" if str(mode or SEEDANCE_MODE).lower() == "1080p" else "720p"
-    duration = max(3, min(int(duration if duration is not None else SEEDANCE_DURATION), 30))
+    duration = max(4, min(int(duration if duration is not None else SEEDANCE_DURATION), 15))
+    model_value = str(model_slug or "bytedance/seedance-2.0-fast").strip()
+    legacy_model_map = {
+        "seedance-2-0": "bytedance/seedance-2.0",
+        "seedance-2.0": "bytedance/seedance-2.0",
+        "seedance-2-0-fast": "bytedance/seedance-2.0-fast",
+        "seedance-2.0-fast": "bytedance/seedance-2.0-fast",
+    }
+    model_value = legacy_model_map.get(model_value.lower(), model_value)
+    model_value_lower = model_value.lower()
+    prompt_text = (prompt or "").strip()
+    if image_url:
+        if not prompt_text:
+            prompt_text = "Animate the provided photo naturally. Keep the same person, face, clothes, and background."
+        elif "reference-to-video" in model_value_lower and "@image1" not in prompt_text.lower():
+            prompt_text = f"@Image1 {prompt_text}"
+    elif not prompt_text:
+        prompt_text = "Create a natural cinematic video."
 
     payload_base = {
-        "prompt": prompt or "",
+        "prompt": prompt_text,
         "duration": duration,
         "mode": mode_value,
     }
     if is_video_jobs_endpoint:
         payload_base = {
-            "model": (model_slug or "bytedance/seedance-2.0-fast"),
-            "prompt": prompt or "Create a natural cinematic video.",
-            "seconds": duration,
+            "model": model_value,
+            "prompt": prompt_text,
+            "duration": duration,
+            "resolution": mode_value,
         }
     payload_variants = []
     if image_url:
         if is_video_jobs_endpoint:
             base_refs = [
+                {"image_url": image_url},
+                {"image_urls": [image_url]},
                 {"input_references": [{"type": "image", "url": image_url}]},
                 {"reference_images": [{"role": "reference", "url": image_url}]},
-                {"image_urls": [image_url]},
-                {},
             ]
             timing_variants = [
-                {},
-                {"seconds": duration},
                 {"duration": duration},
+                {"duration": str(duration)},
             ]
             for refs in base_refs:
                 for timing in timing_variants:
@@ -3103,8 +3121,7 @@ async def start_seedance_task(
     else:
         if is_video_jobs_endpoint:
             payload_variants.append(payload_base)
-            payload_variants.append({**payload_base, "duration": duration})
-            payload_variants.append({k: v for k, v in payload_base.items() if k != "seconds"})
+            payload_variants.append({**payload_base, "duration": str(duration)})
         else:
             payload_variants.append(payload_base)
 
@@ -3113,6 +3130,10 @@ async def start_seedance_task(
         for create_url in create_urls:
             logger.info(f"Seedance create task endpoint: {create_url}")
             for payload in payload_variants:
+                ref_keys = [k for k in ("image_url", "image_urls", "input_references", "reference_images") if k in payload]
+                logger.info(
+                    f"Seedance create payload: model={payload.get('model')}, duration={payload.get('duration') or payload.get('seconds')}, refs={ref_keys}"
+                )
                 async with session.post(
                     create_url,
                     headers={
@@ -3176,26 +3197,33 @@ async def poll_seedance_task(task_id: str, max_attempts: int, poll_interval: int
 
             data = None
             for poll_url in poll_urls:
-                async with session.get(
-                    poll_url,
-                    headers={
+                headers_variants = [
+                    {
                         "x-api-key": ZVENO_API_KEY,
                         "Authorization": f"Bearer {ZVENO_API_KEY}",
                     },
-                    timeout=aiohttp.ClientTimeout(total=60),
-                ) as resp:
-                    response_text = await resp.text()
-                    if resp.status != 200:
-                        logger.warning(
-                            f"Seedance status check failed: {resp.status}, url={poll_url}, body={response_text}"
-                        )
-                        continue
-                    try:
-                        data = json.loads(response_text)
-                        break
-                    except json.JSONDecodeError:
-                        logger.warning(f"Seedance status non-JSON response: {response_text}")
-                        continue
+                    None,
+                ]
+                for headers in headers_variants:
+                    async with session.get(
+                        poll_url,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=60),
+                    ) as resp:
+                        response_text = await resp.text()
+                        if resp.status != 200:
+                            logger.warning(
+                                f"Seedance status check failed: {resp.status}, url={poll_url}, auth={'yes' if headers else 'no'}, body={response_text}"
+                            )
+                            continue
+                        try:
+                            data = json.loads(response_text)
+                            break
+                        except json.JSONDecodeError:
+                            logger.warning(f"Seedance status non-JSON response: {response_text}")
+                            continue
+                if data:
+                    break
 
             if not data:
                 continue

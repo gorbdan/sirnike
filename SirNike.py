@@ -3,6 +3,7 @@ import base64
 import io
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 from datetime import datetime
 from urllib.parse import urlsplit
@@ -107,7 +108,28 @@ from db import (
     get_generation_history_item,
 )
 
-logging.basicConfig(level=logging.INFO)
+BASE_DIR = os.path.dirname(__file__)
+OUTPUTS_DIR = os.path.join(BASE_DIR, "outputs")
+os.makedirs(OUTPUTS_DIR, exist_ok=True)
+
+log_handlers = [logging.StreamHandler()]
+try:
+    file_handler = RotatingFileHandler(
+        os.path.join(BASE_DIR, "bot.log"),
+        maxBytes=5 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    log_handlers.append(file_handler)
+except Exception:
+    # If file logging cannot be initialized, keep console logging alive.
+    pass
+
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=log_handlers,
+    format="%(asctime)s %(levelname)s:%(name)s:%(message)s",
+)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
@@ -3273,6 +3295,20 @@ async def download_video_bytes_with_fallback(video_url: str) -> bytes:
                     )
 
     raise Exception(f"Не удалось скачать видео: {last_error}")
+
+
+def save_video_debug_copy(video_bytes: bytes, user_id: int, model_label: str) -> Optional[str]:
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_model = "".join(ch if ch.isalnum() else "_" for ch in (model_label or "seedance")).strip("_")
+        filename = f"{timestamp}_u{user_id}_{safe_model}.mp4"
+        path = os.path.join(OUTPUTS_DIR, filename)
+        with open(path, "wb") as f:
+            f.write(video_bytes)
+        return path
+    except Exception:
+        logger.exception("Failed to save local video copy")
+        return None
         
 async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -3317,7 +3353,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     selected_cost = calc_seedance_cost(selected_duration, selected_cps)
     selected_endpoint = SEEDANCE_FAST_ENDPOINT if selected_model == "seedance2_fast" else SEEDANCE_ENDPOINT
     selected_mode = SEEDANCE_FAST_MODE if selected_model == "seedance2_fast" else SEEDANCE_MODE
-    selected_model_slug = SEEDANCE_FAST_MODEL if selected_model == "seedance2_fast" else None
+    selected_model_slug = SEEDANCE_FAST_MODEL if selected_model == "seedance2_fast" else SEEDANCE_MODEL
 
     bal = get_balance(user.id)
     if bal < selected_cost:
@@ -3355,6 +3391,9 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             poll_interval=SEEDANCE_POLL_INTERVAL,
         )
         video_bytes = await download_video_bytes_with_fallback(video_url)
+        saved_path = save_video_debug_copy(video_bytes, user.id, selected_model_label)
+        if saved_path:
+            logger.info(f"Seedance local copy saved: {saved_path}")
 
         if False:
             async with aiohttp.ClientSession() as session: pass

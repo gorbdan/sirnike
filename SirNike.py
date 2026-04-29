@@ -64,6 +64,7 @@ from config import (
     KLING_MOTION_POLL_INTERVAL,
     MOTION_CONTROL_ENABLED,
     SEEDANCE_ENDPOINT,
+    SEEDANCE_MODEL,
     SEEDANCE_MODE,
     SEEDANCE_DURATION,
     SEEDANCE_DURATION_OPTIONS,
@@ -637,7 +638,7 @@ def motion_control_status_text(state: UserState) -> str:
     selected_cost = calc_seedance_cost(selected_duration, selected_cps)
     selected_endpoint = SEEDANCE_FAST_ENDPOINT if selected_model == "seedance2_fast" else SEEDANCE_ENDPOINT
     selected_mode = SEEDANCE_FAST_MODE if selected_model == "seedance2_fast" else SEEDANCE_MODE
-    selected_model_slug = SEEDANCE_FAST_MODEL if selected_model == "seedance2_fast" else None
+    selected_model_slug = SEEDANCE_FAST_MODEL if selected_model == "seedance2_fast" else SEEDANCE_MODEL
     eta_min = max(2, int(selected_duration * 0.8))
     eta_max = max(eta_min + 1, int(selected_duration * 2.0))
     options_text = ", ".join([f"{sec}с" for sec in get_seedance_duration_options()])

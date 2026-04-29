@@ -71,6 +71,17 @@ KLING_MOTION_POLL_INTERVAL = int(
     os.getenv("KLING_MOTION_POLL_INTERVAL", str(KLING_POLL_INTERVAL))
 )
 MOTION_CONTROL_ENABLED = os.getenv("MOTION_CONTROL_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+SEEDANCE_ENDPOINT = os.getenv("SEEDANCE_ENDPOINT", "/v1/tasks/seedance-1-5-pro")
+SEEDANCE_COST = int(os.getenv("SEEDANCE_COST", str(KLING_VIDEO_COST)))
+SEEDANCE_MODE = os.getenv("SEEDANCE_MODE", "720p")
+SEEDANCE_DURATION = int(os.getenv("SEEDANCE_DURATION", "5"))
+SEEDANCE_MAX_POLL_ATTEMPTS = int(
+    os.getenv("SEEDANCE_MAX_POLL_ATTEMPTS", str(KLING_MAX_POLL_ATTEMPTS))
+)
+SEEDANCE_POLL_INTERVAL = int(
+    os.getenv("SEEDANCE_POLL_INTERVAL", str(KLING_POLL_INTERVAL))
+)
+SEEDANCE_ENABLED = os.getenv("SEEDANCE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
 
 if AI_PROVIDER == "ZVENO" and not ZVENO_API_KEY:
     raise RuntimeError("Missing required environment variable for ZVENO: ZVENO_API_KEY")

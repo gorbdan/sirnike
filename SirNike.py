@@ -63,6 +63,13 @@ from config import (
     KLING_MOTION_MAX_POLL_ATTEMPTS,
     KLING_MOTION_POLL_INTERVAL,
     MOTION_CONTROL_ENABLED,
+    SEEDANCE_ENDPOINT,
+    SEEDANCE_COST,
+    SEEDANCE_MODE,
+    SEEDANCE_DURATION,
+    SEEDANCE_MAX_POLL_ATTEMPTS,
+    SEEDANCE_POLL_INTERVAL,
+    SEEDANCE_ENABLED,
 )
 
 from db import (
@@ -377,7 +384,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("Запустить генерацию⚡", callback_data="generate")],
         [prompt_library_button],
     ]
-    motion_label = "Motion Control 🎞" if MOTION_CONTROL_ENABLED else "Motion Control 🚧 (в разработке)"
+    motion_label = "Seedance 1.5 Pro 🎞" if SEEDANCE_ENABLED else "Motion Control 🚧 (в разработке)"
     rows.append([InlineKeyboardButton(motion_label, callback_data="motion_control")])
     rows.extend([
         [InlineKeyboardButton("Действия с аватаром 👤", callback_data="avatar_actions")],
@@ -506,31 +513,27 @@ def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Промпт ✍️", callback_data="mc_set_prompt")],
         [InlineKeyboardButton("Изображение 🌄", callback_data="mc_set_image")],
-        [InlineKeyboardButton("Видео с движением 📹", callback_data="mc_set_video")],
-        [InlineKeyboardButton("Запустить Motion Control ⚡", callback_data="mc_start")],
+        [InlineKeyboardButton("Запустить Seedance 1.5 Pro ⚡", callback_data="mc_start")],
     ])
 
 
 def motion_control_status_text(state: UserState) -> str:
     prompt_state = "добавлен" if state.motion_prompt.strip() else "необязательно"
     image_state = "добавлено" if state.animation_source_url else "не добавлено"
-    motion_state = "добавлено" if state.motion_video_url else "не добавлено"
-    eta_min = max(1, int(KLING_MOTION_DURATION * 0.5))
-    eta_max = max(eta_min + 1, int(KLING_MOTION_DURATION * 1.2))
+    eta_min = max(2, int(SEEDANCE_DURATION * 0.8))
+    eta_max = max(eta_min + 1, int(SEEDANCE_DURATION * 2.0))
 
     return (
-        "Motion Control — премиум-анимация: модель переносит движение из референс-видео "
-        "на персонажа с твоего изображения.\n"
-        "На выходе ты получаешь аккуратный ролик с сохранением внешности, стиля и настроения кадра.\n\n"
-        "1. Нажми «Промпт» и опиши сцену (необязательно)\n"
-        "2. Добавь «Изображение» (кто/что будет в кадре)\n"
-        "3. Добавь «Видео с движением» (какую пластику перенести)\n\n"
+        "Seedance 1.5 Pro (тест для админа)\n"
+        "Генерация видео через MashaGPT.\n"
+        "Можно запустить только с промптом, но лучше добавить изображение-референс.\n\n"
+        "1. Нажми «Промпт» (необязательно)\n"
+        "2. Добавь «Изображение» (необязательно)\n"
+        "3. Запусти генерацию\n\n"
         f"Промпт: {prompt_state}\n"
         f"Изображение: {image_state}\n"
-        f"Видео с движением: {motion_state}\n"
-        f"Качество: {KLING_MOTION_MODE} (фиксировано)\n"
-        f"Ориентация: {KLING_MOTION_ORIENTATION} (фиксировано)\n"
-        f"Длительность: {KLING_MOTION_DURATION} сек\n"
+        f"Качество: {SEEDANCE_MODE} (фиксировано)\n"
+        f"Длительность: {SEEDANCE_DURATION} сек\n"
         f"Ожидание результата: обычно {eta_min}–{eta_max} мин"
     )
 
@@ -922,6 +925,7 @@ async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("У тебя нет доступа к этой команде.")
         return
 
+    source_message = update.message.reply_to_message
     raw_text = update.message.text or ""
     text = ""
     entities = update.message.entities or []
@@ -939,12 +943,14 @@ async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = parts[1] if len(parts) > 1 else ""
 
     text = text.rstrip()
-    if not text:
+    if not source_message and not text:
         await update.message.reply_text(
             "Использование:\n"
-            "/broadcast_text <текст сообщения>\n\n"
+            "1) Ответь командой /broadcast на любое сообщение (текст, фото, видео, опрос и т.д.)\n"
+            "или\n"
+            "2) /broadcast <текст сообщения>\n\n"
             "Пример:\n"
-            "/broadcast_text Привет! Сегодня добавили новые стили генерации."
+            "/broadcast Привет! Сегодня добавили новые стили генерации."
         )
         return
 
@@ -954,18 +960,32 @@ async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for target_user_id in users:
         try:
-            await context.bot.send_message(
-                chat_id=target_user_id,
-                text=text,
-            )
+            if source_message:
+                try:
+                    await context.bot.copy_message(
+                        chat_id=target_user_id,
+                        from_chat_id=source_message.chat_id,
+                        message_id=source_message.message_id,
+                    )
+                except Exception:
+                    await context.bot.forward_message(
+                        chat_id=target_user_id,
+                        from_chat_id=source_message.chat_id,
+                        message_id=source_message.message_id,
+                    )
+            else:
+                await context.bot.send_message(
+                    chat_id=target_user_id,
+                    text=text,
+                )
             sent += 1
             await asyncio.sleep(0.05)
         except Exception:
             failed += 1
-            logger.exception(f"Не удалось отправить текстовую рассылку пользователю {target_user_id}")
+            logger.exception(f"Не удалось отправить рассылку пользователю {target_user_id}")
 
     await update.message.reply_text(
-        "Текстовая рассылка завершена.\n"
+        "Рассылка завершена.\n"
         f"Отправлено: {sent}\n"
         f"Ошибок: {failed}"
     )
@@ -1166,7 +1186,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.waiting_for_motion_prompt = False
 
         await update.message.reply_text(
-            "Промпт для Motion Control сохранён ✅\n"
+            "Промпт для Seedance сохранён ✅\n"
             "Проверь параметры и нажми запуск.",
             reply_markup=motion_control_kb(state),
         )
@@ -1244,7 +1264,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if state.waiting_for_motion_image:
                     state.waiting_for_motion_image = False
                     await update.message.reply_text(
-                        "Изображение для Motion Control добавлено ✅",
+                        "Изображение для Seedance добавлено ✅",
                         reply_markup=motion_control_kb(state),
                     )
                     return
@@ -1827,7 +1847,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("Не удалось сохранить шаблон. Попробуй ещё раз.")
             return
 
-    if query.data in {"motion_control", "mc_set_prompt", "mc_set_image", "mc_set_video", "mc_start"} and not MOTION_CONTROL_ENABLED:
+    motion_callbacks = {"motion_control", "mc_set_prompt", "mc_set_image", "mc_set_video", "mc_start"}
+
+    if query.data in motion_callbacks and not is_admin(update.effective_user.id):
+        await query.message.reply_text("Эта функция пока доступна только администратору.")
+        return
+
+    if query.data in motion_callbacks and not SEEDANCE_ENABLED:
         await query.message.reply_text(motion_unavailable_text(), reply_markup=main_menu_kb())
         return
 
@@ -1877,18 +1903,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = get_or_init_state(context)
         state.waiting_for_motion_image = True
         await query.message.reply_text(
-            "Отправь изображение для Motion Control.\n"
+            "Отправь изображение для Seedance 1.5 Pro.\n"
             "Можно также использовать только что сгенерированное фото."
         )
         return
 
     if query.data == "mc_set_video":
-        state = get_or_init_state(context)
-        state.waiting_for_motion_video = True
-        await query.message.reply_text(
-            "Отправь видео-референс с нужным движением.\n"
-            "Даже без промпта результат будет: движение скопируется на внешность с фото."
-        )
+        await query.message.reply_text("Для Seedance 1.5 Pro этот шаг не нужен.")
         return
 
     if query.data == "mc_start":
@@ -2694,6 +2715,173 @@ async def poll_kling_animation_custom(animation_id: str, max_attempts: int, poll
 
         raise Exception("Превышено время ожидания анимации")
 
+def extract_task_video_url(task_data: dict) -> Optional[str]:
+    output = task_data.get("output")
+    keys = ("url", "videoUrl", "video_url", "resultUrl", "result_url")
+
+    for key in keys:
+        value = task_data.get(key)
+        if isinstance(value, str) and value.startswith("http"):
+            return value
+
+    if isinstance(output, str) and output.startswith("http"):
+        return output
+
+    if isinstance(output, dict):
+        for key in keys:
+            value = output.get(key)
+            if isinstance(value, str) and value.startswith("http"):
+                return value
+        videos = output.get("videos")
+        if isinstance(videos, list):
+            for item in videos:
+                if isinstance(item, str) and item.startswith("http"):
+                    return item
+                if isinstance(item, dict):
+                    value = item.get("url") or item.get("videoUrl") or item.get("video_url")
+                    if isinstance(value, str) and value.startswith("http"):
+                        return value
+
+    if isinstance(output, list):
+        for item in output:
+            if isinstance(item, str) and item.startswith("http"):
+                return item
+            if isinstance(item, dict):
+                value = item.get("url") or item.get("videoUrl") or item.get("video_url")
+                if isinstance(value, str) and value.startswith("http"):
+                    return value
+
+    return None
+
+
+async def start_seedance_task(prompt: str, image_url: Optional[str], user_id: int) -> str:
+    if not MASHAGPT_API_KEY:
+        raise Exception("MASHAGPT_API_KEY is empty")
+    if not SEEDANCE_ENDPOINT:
+        raise Exception("SEEDANCE_ENDPOINT is empty")
+
+    endpoint_path = "/" + str(SEEDANCE_ENDPOINT).strip("/")
+    create_paths = [endpoint_path]
+    if endpoint_path.startswith("/v1/tasks/"):
+        create_paths.append("/tasks/" + endpoint_path.split("/v1/tasks/", 1)[1])
+
+    create_urls = []
+    for path in create_paths:
+        url = build_mashagpt_url(MASHAGPT_API_BASE, path)
+        if url not in create_urls:
+            create_urls.append(url)
+
+    mode = "1080p" if str(SEEDANCE_MODE).lower() == "1080p" else "720p"
+    duration = max(3, min(int(SEEDANCE_DURATION), 30))
+
+    payload_base = {
+        "prompt": prompt or "",
+        "duration": duration,
+        "mode": mode,
+    }
+    payload_variants = []
+    if image_url:
+        payload_variants.append({**payload_base, "inputUrls": [image_url]})
+        payload_variants.append({**payload_base, "imageUrls": [image_url]})
+        payload_variants.append({**payload_base, "inputUrl": image_url})
+        payload_variants.append({**payload_base, "imageUrl": image_url})
+        payload_variants.append({**payload_base, "inputUrls": [image_url], "imageUrls": [image_url]})
+    else:
+        payload_variants.append(payload_base)
+
+    last_error = "unknown"
+    async with aiohttp.ClientSession() as session:
+        for create_url in create_urls:
+            logger.info(f"Seedance create task endpoint: {create_url}")
+            for payload in payload_variants:
+                async with session.post(
+                    create_url,
+                    headers={
+                        "x-api-key": MASHAGPT_API_KEY,
+                        "Authorization": f"Bearer {MASHAGPT_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=90),
+                ) as resp:
+                    response_text = await resp.text()
+                    if not (200 <= resp.status < 300):
+                        last_error = f"{resp.status}. {response_text}"
+                        continue
+                    try:
+                        data = json.loads(response_text)
+                    except json.JSONDecodeError:
+                        last_error = f"Non-JSON response: {response_text}"
+                        continue
+                    task_id = data.get("id")
+                    if task_id:
+                        return str(task_id)
+                    last_error = f"Task id missing in response: {data}"
+
+    raise Exception(f"Seedance create task error: {last_error}")
+
+
+async def poll_seedance_task(task_id: str, max_attempts: int, poll_interval: int) -> str:
+    if not MASHAGPT_API_KEY:
+        raise Exception("MASHAGPT_API_KEY is empty")
+
+    poll_paths = [
+        f"/v1/tasks/{task_id}",
+        f"/tasks/{task_id}",
+        f"/api/v1/tasks/{task_id}",
+    ]
+    poll_urls = [build_mashagpt_url(MASHAGPT_API_BASE, path) for path in poll_paths]
+
+    async with aiohttp.ClientSession() as session:
+        for attempt in range(max_attempts):
+            await asyncio.sleep(poll_interval)
+
+            data = None
+            for poll_url in poll_urls:
+                async with session.get(
+                    poll_url,
+                    headers={
+                        "x-api-key": MASHAGPT_API_KEY,
+                        "Authorization": f"Bearer {MASHAGPT_API_KEY}",
+                    },
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as resp:
+                    response_text = await resp.text()
+                    if resp.status != 200:
+                        logger.warning(
+                            f"Seedance status check failed: {resp.status}, url={poll_url}, body={response_text}"
+                        )
+                        continue
+                    try:
+                        data = json.loads(response_text)
+                        break
+                    except json.JSONDecodeError:
+                        logger.warning(f"Seedance status non-JSON response: {response_text}")
+                        continue
+
+            if not data:
+                continue
+
+            status = str(data.get("status", "")).upper()
+            logger.info(f"Seedance task {task_id}: attempt={attempt + 1}/{max_attempts}, status={status}")
+
+            if status == "COMPLETED":
+                video_url = extract_task_video_url(data)
+                if not video_url:
+                    raise Exception(f"Seedance task completed but video URL missing: {data}")
+                return video_url
+
+            if status in ("FAILED", "CANCELLED", "ERROR"):
+                raise Exception(
+                    data.get("message")
+                    or data.get("error")
+                    or data.get("details")
+                    or f"Seedance task failed with status {status}"
+                )
+
+    raise Exception("Превышено время ожидания генерации видео Seedance")
+
+
 async def validate_image_url(image_url: str) -> tuple[bool, str]:
     try:
         async with aiohttp.ClientSession() as session:
@@ -2717,7 +2905,11 @@ async def run_motion_control(update: Update, context: ContextTypes.DEFAULT_TYPE)
     reply_target = update.callback_query.message if update.callback_query else update.message
     state = get_or_init_state(context)
 
-    if not MOTION_CONTROL_ENABLED:
+    if not is_admin(user.id):
+        await reply_target.reply_text("Эта функция пока доступна только администратору.")
+        return
+
+    if not SEEDANCE_ENABLED:
         await reply_target.reply_text(motion_unavailable_text(), reply_markup=main_menu_kb())
         return
 
@@ -2730,50 +2922,49 @@ async def run_motion_control(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not state.animation_source_url:
         state.animation_source_url = last_generated_image_url.get(user.id)
 
-    if not state.animation_source_url:
-        await reply_target.reply_text("Сначала добавь изображение для Motion Control.")
-        return
-
-    if not state.motion_video_url:
-        await reply_target.reply_text("Сначала добавь видео с движением.")
-        return
-
-    ok_img, reason_img = await validate_image_url(state.animation_source_url)
-    if not ok_img:
-        await reply_target.reply_text(f"Изображение недоступно для обработки: {reason_img}")
-        return
-
-    bal = get_balance(user.id)
-    if bal < KLING_MOTION_COST:
+    prompt_text = (state.motion_prompt or "").strip()
+    if not state.animation_source_url and not prompt_text:
         await reply_target.reply_text(
-            f"Не хватает изюминок.\nНужно: {KLING_MOTION_COST}\nУ тебя: {bal}\n\nНапиши /buy."
+            "Для Seedance добавь изображение и/или промпт, затем запусти снова."
         )
         return
 
-    if not spend_izyminki(user.id, KLING_MOTION_COST):
+    if state.animation_source_url:
+        ok_img, reason_img = await validate_image_url(state.animation_source_url)
+        if not ok_img:
+            await reply_target.reply_text(f"Изображение недоступно для обработки: {reason_img}")
+            return
+
+    bal = get_balance(user.id)
+    if bal < SEEDANCE_COST:
+        await reply_target.reply_text(
+            f"Не хватает изюминок.\nНужно: {SEEDANCE_COST}\nУ тебя: {bal}\n\nНапиши /buy."
+        )
+        return
+
+    if not spend_izyminki(user.id, SEEDANCE_COST):
         await reply_target.reply_text("Не удалось списать изюминки. Попробуй ещё раз.")
         return
 
-    eta_min = max(1, int(KLING_MOTION_DURATION * 0.5))
-    eta_max = max(eta_min + 1, int(KLING_MOTION_DURATION * 1.2))
+    eta_min = max(2, int(SEEDANCE_DURATION * 0.8))
+    eta_max = max(eta_min + 1, int(SEEDANCE_DURATION * 2.0))
 
     processing_user_ids.add(user.id)
     try:
         await reply_target.reply_text(
-            "Запускаю Motion Control 🎬\n"
+            "Запускаю Seedance 1.5 Pro 🎬\n"
             f"Обычно это занимает {eta_min}–{eta_max} минут."
         )
-        animation_id = await start_kling_motion_control(
+        task_id = await start_seedance_task(
+            prompt=prompt_text,
             image_url=state.animation_source_url,
-            motion_video_url=state.motion_video_url,
-            prompt=state.motion_prompt.strip(),
             user_id=user.id,
         )
 
-        video_url = await poll_kling_animation_custom(
-            animation_id=animation_id,
-            max_attempts=KLING_MOTION_MAX_POLL_ATTEMPTS,
-            poll_interval=KLING_MOTION_POLL_INTERVAL,
+        video_url = await poll_seedance_task(
+            task_id=task_id,
+            max_attempts=SEEDANCE_MAX_POLL_ATTEMPTS,
+            poll_interval=SEEDANCE_POLL_INTERVAL,
         )
 
         async with aiohttp.ClientSession() as session:
@@ -2792,30 +2983,30 @@ async def run_motion_control(update: Update, context: ContextTypes.DEFAULT_TYPE)
             chat_id=update.effective_chat.id,
             video=video_buffer,
             supports_streaming=True,
-            caption="Готово 🎬\nMotion Control завершён.",
+            caption="Готово 🎬\nSeedance 1.5 Pro завершён.",
         )
         log_generation_event(
             user_id=user.id,
             kind="motion",
             status="success",
             provider="MASHAGPT",
-            cost=KLING_MOTION_COST,
+            cost=SEEDANCE_COST,
             was_free=False,
-            references_count=1,
+            references_count=1 if state.animation_source_url else 0,
         )
     except Exception as e:
-        add_izyminki(user.id, KLING_MOTION_COST)
+        add_izyminki(user.id, SEEDANCE_COST)
         log_generation_event(
             user_id=user.id,
             kind="motion",
             status="failed",
             provider="MASHAGPT",
-            cost=KLING_MOTION_COST,
+            cost=SEEDANCE_COST,
             was_free=False,
-            references_count=1,
+            references_count=1 if state.animation_source_url else 0,
         )
         await reply_target.reply_text(
-            "Не удалось выполнить Motion Control.\n"
+            "Не удалось выполнить Seedance 1.5 Pro.\n"
             f"Причина: {str(e)}\n\n"
             "Списанные изюминки возвращены на баланс."
         )
@@ -3563,6 +3754,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(CommandHandler("broadcast_promo", broadcast_promo))
+    app.add_handler(CommandHandler("broadcast", broadcast_text))
     app.add_handler(CommandHandler("broadcast_text", broadcast_text))
     app.add_handler(CommandHandler("audience_stats", audience_stats))
     app.add_handler(CommandHandler("pl_save", prompt_library_save_last))

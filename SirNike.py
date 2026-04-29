@@ -64,12 +64,17 @@ from config import (
     KLING_MOTION_POLL_INTERVAL,
     MOTION_CONTROL_ENABLED,
     SEEDANCE_ENDPOINT,
-    SEEDANCE_COST,
     SEEDANCE_MODE,
     SEEDANCE_DURATION,
+    SEEDANCE_DURATION_OPTIONS,
+    SEEDANCE_COST_PER_SECOND,
     SEEDANCE_MAX_POLL_ATTEMPTS,
     SEEDANCE_POLL_INTERVAL,
     SEEDANCE_ENABLED,
+    SEEDANCE_FAST_ENABLED,
+    SEEDANCE_FAST_ENDPOINT,
+    SEEDANCE_FAST_MODE,
+    SEEDANCE_FAST_COST_PER_SECOND,
 )
 
 from db import (
@@ -124,6 +129,8 @@ class UserState:
     waiting_for_problem_report: bool = False
     motion_prompt: str = ""
     motion_video_url: Optional[str] = None
+    motion_duration: Optional[int] = None
+    motion_model: str = "seedance2"
     waiting_for_motion_prompt: bool = False
     waiting_for_motion_image: bool = False
     waiting_for_motion_video: bool = False
@@ -304,6 +311,61 @@ def ru_plural(value: int, one: str, few: str, many: str) -> str:
         return few
     return many
 
+
+def get_seedance_duration_options() -> List[int]:
+    parsed: List[int] = []
+    for raw in str(SEEDANCE_DURATION_OPTIONS).split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            sec = int(raw)
+        except ValueError:
+            continue
+        sec = max(3, min(sec, 30))
+        if sec not in parsed:
+            parsed.append(sec)
+
+    default_sec = max(3, min(int(SEEDANCE_DURATION), 30))
+    if default_sec not in parsed:
+        parsed.append(default_sec)
+    parsed.sort()
+    return parsed
+
+
+def get_selected_seedance_duration(state: UserState) -> int:
+    options = get_seedance_duration_options()
+    default_sec = max(3, min(int(SEEDANCE_DURATION), 30))
+    selected = state.motion_duration if isinstance(state.motion_duration, int) else default_sec
+    if selected not in options:
+        selected = default_sec if default_sec in options else options[0]
+    return selected
+
+
+def get_motion_model(state: UserState) -> str:
+    if state.motion_model == "seedance2_fast" and SEEDANCE_FAST_ENABLED:
+        return "seedance2_fast"
+    return "seedance2"
+
+
+def get_motion_model_label(model_code: str) -> str:
+    return "Seedance 2.0 Fast" if model_code == "seedance2_fast" else "Seedance 2"
+
+
+def get_motion_model_cost_per_second(model_code: str) -> float:
+    if model_code == "seedance2_fast":
+        return max(SEEDANCE_FAST_COST_PER_SECOND, 0.01)
+    return max(SEEDANCE_COST_PER_SECOND, 0.01)
+
+
+def calc_seedance_cost(duration_sec: int, cost_per_second: Optional[float] = None) -> int:
+    cps = max(
+        cost_per_second if cost_per_second is not None else SEEDANCE_COST_PER_SECOND,
+        0.01,
+    )
+    return max(1, int(round(max(3, duration_sec) * cps)))
+
+
 def build_mashagpt_url(base: str, path: str) -> str:
     b = (base or "").strip()
     p = "/" + path.strip("/")
@@ -344,7 +406,7 @@ def generation_failure_user_text(refunded: bool) -> str:
 
 
 def motion_unavailable_text() -> str:
-    return "Motion Control в разработке 🚧\nСкоро включим эту функцию."
+    return "Seedance в разработке 🚧\nСкоро включим эту функцию."
 
 def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     old_task = photo_tasks.get(chat_id)
@@ -384,7 +446,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("Запустить генерацию⚡", callback_data="generate")],
         [prompt_library_button],
     ]
-    motion_label = "Seedance 1.5 Pro 🎞" if SEEDANCE_ENABLED else "Motion Control 🚧 (в разработке)"
+    motion_label = "Seedance 2 🎞" if SEEDANCE_ENABLED else "Seedance 🚧 (в разработке)"
     rows.append([InlineKeyboardButton(motion_label, callback_data="motion_control")])
     rows.extend([
         [InlineKeyboardButton("Действия с аватаром 👤", callback_data="avatar_actions")],
@@ -520,8 +582,9 @@ def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
 def motion_control_status_text(state: UserState) -> str:
     prompt_state = "добавлен" if state.motion_prompt.strip() else "необязательно"
     image_state = "добавлено" if state.animation_source_url else "не добавлено"
-    eta_min = max(2, int(SEEDANCE_DURATION * 0.8))
-    eta_max = max(eta_min + 1, int(SEEDANCE_DURATION * 2.0))
+    selected_duration = SEEDANCE_DURATION
+    eta_min = max(2, int(selected_duration * 0.8))
+    eta_max = max(eta_min + 1, int(selected_duration * 2.0))
 
     return (
         "Seedance 1.5 Pro (тест для админа)\n"
@@ -536,6 +599,139 @@ def motion_control_status_text(state: UserState) -> str:
         f"Длительность: {SEEDANCE_DURATION} сек\n"
         f"Ожидание результата: обычно {eta_min}–{eta_max} мин"
     )
+
+# Override legacy motion UI helpers with Seedance 2 + variable duration/cost.
+def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
+    selected_duration = get_selected_seedance_duration(state)
+    duration_buttons = []
+    for sec in get_seedance_duration_options():
+        cost = calc_seedance_cost(sec)
+        prefix = "● " if sec == selected_duration else ""
+        duration_buttons.append(
+            InlineKeyboardButton(
+                f"{prefix}{sec}с · {cost} изюминок",
+                callback_data=f"mc_duration_{sec}",
+            )
+        )
+
+    rows = [
+        [InlineKeyboardButton("Промпт ✍️", callback_data="mc_set_prompt")],
+        [InlineKeyboardButton("Изображение 🌄", callback_data="mc_set_image")],
+    ]
+    if duration_buttons:
+        rows.append(duration_buttons[:3])
+    if len(duration_buttons) > 3:
+        rows.append(duration_buttons[3:])
+    rows.append([InlineKeyboardButton("Запустить Seedance 2 ⚡", callback_data="mc_start")])
+    return InlineKeyboardMarkup(rows)
+
+
+def motion_control_status_text(state: UserState) -> str:
+    prompt_state = "добавлен" if state.motion_prompt.strip() else "необязательно"
+    image_state = "добавлено" if state.animation_source_url else "не добавлено"
+    selected_duration = get_selected_seedance_duration(state)
+    selected_model = get_motion_model(state)
+    selected_model_label = get_motion_model_label(selected_model)
+    selected_cps = get_motion_model_cost_per_second(selected_model)
+    selected_cost = calc_seedance_cost(selected_duration, selected_cps)
+    selected_endpoint = SEEDANCE_FAST_ENDPOINT if selected_model == "seedance2_fast" else SEEDANCE_ENDPOINT
+    selected_mode = SEEDANCE_FAST_MODE if selected_model == "seedance2_fast" else SEEDANCE_MODE
+    eta_min = max(2, int(selected_duration * 0.8))
+    eta_max = max(eta_min + 1, int(selected_duration * 2.0))
+    options_text = ", ".join([f"{sec}с" for sec in get_seedance_duration_options()])
+
+    return (
+        "Seedance 2 (тест для админа)\n"
+        "Генерация видео через Zveno.\n"
+        "Можно запустить только с промптом, но лучше добавить изображение-референс.\n\n"
+        "1. Нажми «Промпт» (необязательно)\n"
+        "2. Добавь «Изображение» (необязательно)\n"
+        "3. Выбери длительность ролика\n"
+        "4. Запусти генерацию\n\n"
+        f"Промпт: {prompt_state}\n"
+        f"Изображение: {image_state}\n"
+        f"Качество: {SEEDANCE_MODE} (фиксировано)\n"
+        f"Длительность: {selected_duration} сек (варианты: {options_text})\n"
+        f"Стоимость: {selected_cost} изюминок\n"
+        f"Ожидание результата: обычно {eta_min}–{eta_max} минут"
+    )
+
+
+# Final override: Seedance 2 + Seedance 2.0 Fast selector.
+def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
+    selected_duration = get_selected_seedance_duration(state)
+    selected_model = get_motion_model(state)
+    cps = get_motion_model_cost_per_second(selected_model)
+
+    duration_buttons = []
+    for sec in get_seedance_duration_options():
+        cost = calc_seedance_cost(sec, cps)
+        prefix = "● " if sec == selected_duration else ""
+        duration_buttons.append(
+            InlineKeyboardButton(
+                f"{prefix}{sec}с · {cost} изюминок",
+                callback_data=f"mc_duration_{sec}",
+            )
+        )
+
+    model_buttons = [
+        InlineKeyboardButton(
+            ("● " if selected_model == "seedance2" else "") + "Seedance 2",
+            callback_data="mc_model_seedance2",
+        )
+    ]
+    if SEEDANCE_FAST_ENABLED:
+        model_buttons.append(
+            InlineKeyboardButton(
+                ("● " if selected_model == "seedance2_fast" else "") + "Seedance 2.0 Fast",
+                callback_data="mc_model_seedance2_fast",
+            )
+        )
+
+    rows = [
+        [InlineKeyboardButton("Промпт ✍️", callback_data="mc_set_prompt")],
+        [InlineKeyboardButton("Изображение 🌄", callback_data="mc_set_image")],
+        model_buttons,
+    ]
+    if duration_buttons:
+        rows.append(duration_buttons[:3])
+    if len(duration_buttons) > 3:
+        rows.append(duration_buttons[3:])
+    rows.append([InlineKeyboardButton("Запустить ⚡", callback_data="mc_start")])
+    return InlineKeyboardMarkup(rows)
+
+
+def motion_control_status_text(state: UserState) -> str:
+    prompt_state = "добавлен" if state.motion_prompt.strip() else "необязательно"
+    image_state = "добавлено" if state.animation_source_url else "не добавлено"
+    selected_duration = get_selected_seedance_duration(state)
+    selected_model = get_motion_model(state)
+    model_label = get_motion_model_label(selected_model)
+    selected_mode = SEEDANCE_FAST_MODE if selected_model == "seedance2_fast" else SEEDANCE_MODE
+    cps = get_motion_model_cost_per_second(selected_model)
+    selected_cost = calc_seedance_cost(selected_duration, cps)
+    eta_min = max(2, int(selected_duration * 0.8))
+    eta_max = max(eta_min + 1, int(selected_duration * 2.0))
+    options_text = ", ".join([f"{sec}с" for sec in get_seedance_duration_options()])
+    fast_hint = " (для быстрого теста промптов)" if selected_model == "seedance2_fast" else ""
+
+    return (
+        f"{model_label}{fast_hint}\n"
+        "Генерация видео через Zveno.\n"
+        "Можно запустить только с промптом, но лучше добавить изображение-референс.\n\n"
+        "1. Нажми «Промпт» (необязательно)\n"
+        "2. Добавь «Изображение» (необязательно)\n"
+        "3. Выбери модель и длительность\n"
+        "4. Запусти генерацию\n\n"
+        f"Модель: {model_label}\n"
+        f"Промпт: {prompt_state}\n"
+        f"Изображение: {image_state}\n"
+        f"Качество: {selected_mode} (фиксировано)\n"
+        f"Длительность: {selected_duration} сек (варианты: {options_text})\n"
+        f"Стоимость: {selected_cost} изюминок\n"
+        f"Ожидание результата: обычно {eta_min}–{eta_max} минут"
+    )
+
 
 # ----------------------------
 # Commands
@@ -1293,7 +1489,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     video = update.message.video
     if not video:
-        await update.message.reply_text("Пришли обычное видеофайл-сообщение для Motion Control.")
+        await update.message.reply_text("Пришли обычное видеофайл-сообщение для Seedance.")
         return
 
     tg_file = await context.bot.get_file(video.file_id)
@@ -1848,12 +2044,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     motion_callbacks = {"motion_control", "mc_set_prompt", "mc_set_image", "mc_set_video", "mc_start"}
+    is_motion_callback = (
+        query.data in motion_callbacks
+        or query.data.startswith("mc_duration_")
+        or query.data.startswith("mc_model_")
+    )
 
-    if query.data in motion_callbacks and not is_admin(update.effective_user.id):
+    if is_motion_callback and not is_admin(update.effective_user.id):
         await query.message.reply_text("Эта функция пока доступна только администратору.")
         return
 
-    if query.data in motion_callbacks and not SEEDANCE_ENABLED:
+    if is_motion_callback and not SEEDANCE_ENABLED:
         await query.message.reply_text(motion_unavailable_text(), reply_markup=main_menu_kb())
         return
 
@@ -1903,13 +2104,43 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = get_or_init_state(context)
         state.waiting_for_motion_image = True
         await query.message.reply_text(
-            "Отправь изображение для Seedance 1.5 Pro.\n"
+            "Отправь изображение для Seedance 2.\n"
             "Можно также использовать только что сгенерированное фото."
         )
         return
 
     if query.data == "mc_set_video":
-        await query.message.reply_text("Для Seedance 1.5 Pro этот шаг не нужен.")
+        await query.message.reply_text("Для Seedance 2 этот шаг не нужен.")
+        return
+
+    if query.data.startswith("mc_model_"):
+        state = get_or_init_state(context)
+        picked_model = query.data.replace("mc_model_", "", 1)
+        if picked_model == "seedance2_fast" and SEEDANCE_FAST_ENABLED:
+            state.motion_model = "seedance2_fast"
+        else:
+            state.motion_model = "seedance2"
+        await query.message.reply_text(
+            motion_control_status_text(state),
+            reply_markup=motion_control_kb(state),
+        )
+        return
+
+    if query.data.startswith("mc_duration_"):
+        state = get_or_init_state(context)
+        try:
+            picked = int(query.data.replace("mc_duration_", "", 1))
+        except ValueError:
+            picked = get_selected_seedance_duration(state)
+
+        if picked not in get_seedance_duration_options():
+            picked = get_selected_seedance_duration(state)
+
+        state.motion_duration = picked
+        await query.message.reply_text(
+            motion_control_status_text(state),
+            reply_markup=motion_control_kb(state),
+        )
         return
 
     if query.data == "mc_start":
@@ -2754,13 +2985,21 @@ def extract_task_video_url(task_data: dict) -> Optional[str]:
     return None
 
 
-async def start_seedance_task(prompt: str, image_url: Optional[str], user_id: int) -> str:
+async def start_seedance_task(
+    prompt: str,
+    image_url: Optional[str],
+    user_id: int,
+    duration: Optional[int] = None,
+    endpoint: Optional[str] = None,
+    mode: Optional[str] = None,
+) -> str:
     if not ZVENO_API_KEY:
         raise Exception("ZVENO_API_KEY is empty")
-    if not SEEDANCE_ENDPOINT:
-        raise Exception("SEEDANCE_ENDPOINT is empty")
+    endpoint_value = str(endpoint or SEEDANCE_ENDPOINT).strip()
+    if not endpoint_value:
+        raise Exception("SEEDANCE endpoint is empty")
 
-    endpoint_path = "/" + str(SEEDANCE_ENDPOINT).strip("/")
+    endpoint_path = "/" + endpoint_value.strip("/")
     create_paths = [endpoint_path]
     if endpoint_path.startswith("/v1/tasks/"):
         create_paths.append("/tasks/" + endpoint_path.split("/v1/tasks/", 1)[1])
@@ -2771,13 +3010,13 @@ async def start_seedance_task(prompt: str, image_url: Optional[str], user_id: in
         if url not in create_urls:
             create_urls.append(url)
 
-    mode = "1080p" if str(SEEDANCE_MODE).lower() == "1080p" else "720p"
-    duration = max(3, min(int(SEEDANCE_DURATION), 30))
+    mode_value = "1080p" if str(mode or SEEDANCE_MODE).lower() == "1080p" else "720p"
+    duration = max(3, min(int(duration if duration is not None else SEEDANCE_DURATION), 30))
 
     payload_base = {
         "prompt": prompt or "",
         "duration": duration,
-        "mode": mode,
+        "mode": mode_value,
     }
     payload_variants = []
     if image_url:
@@ -2935,30 +3174,41 @@ async def run_motion_control(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await reply_target.reply_text(f"Изображение недоступно для обработки: {reason_img}")
             return
 
+    selected_duration = get_selected_seedance_duration(state)
+    selected_model = get_motion_model(state)
+    selected_model_label = get_motion_model_label(selected_model)
+    selected_cps = get_motion_model_cost_per_second(selected_model)
+    selected_cost = calc_seedance_cost(selected_duration, selected_cps)
+    selected_endpoint = SEEDANCE_FAST_ENDPOINT if selected_model == "seedance2_fast" else SEEDANCE_ENDPOINT
+    selected_mode = SEEDANCE_FAST_MODE if selected_model == "seedance2_fast" else SEEDANCE_MODE
+
     bal = get_balance(user.id)
-    if bal < SEEDANCE_COST:
+    if bal < selected_cost:
         await reply_target.reply_text(
-            f"Не хватает изюминок.\nНужно: {SEEDANCE_COST}\nУ тебя: {bal}\n\nНапиши /buy."
+            f"Не хватает изюминок.\nНужно: {selected_cost}\nУ тебя: {bal}\n\nНапиши /buy."
         )
         return
 
-    if not spend_izyminki(user.id, SEEDANCE_COST):
+    if not spend_izyminki(user.id, selected_cost):
         await reply_target.reply_text("Не удалось списать изюминки. Попробуй ещё раз.")
         return
 
-    eta_min = max(2, int(SEEDANCE_DURATION * 0.8))
-    eta_max = max(eta_min + 1, int(SEEDANCE_DURATION * 2.0))
+    eta_min = max(2, int(selected_duration * 0.8))
+    eta_max = max(eta_min + 1, int(selected_duration * 2.0))
 
     processing_user_ids.add(user.id)
     try:
         await reply_target.reply_text(
-            "Запускаю Seedance 1.5 Pro 🎬\n"
+            f"Запускаю {selected_model_label} 🎬\n"
             f"Обычно это занимает {eta_min}–{eta_max} минут."
         )
         task_id = await start_seedance_task(
             prompt=prompt_text,
             image_url=state.animation_source_url,
             user_id=user.id,
+            duration=selected_duration,
+            endpoint=selected_endpoint,
+            mode=selected_mode,
         )
 
         video_url = await poll_seedance_task(
@@ -2983,30 +3233,30 @@ async def run_motion_control(update: Update, context: ContextTypes.DEFAULT_TYPE)
             chat_id=update.effective_chat.id,
             video=video_buffer,
             supports_streaming=True,
-            caption="Готово 🎬\nSeedance 1.5 Pro завершён.",
+            caption=f"Готово 🎬\n{selected_model_label} завершён.",
         )
         log_generation_event(
             user_id=user.id,
             kind="motion",
             status="success",
             provider="ZVENO",
-            cost=SEEDANCE_COST,
+            cost=selected_cost,
             was_free=False,
             references_count=1 if state.animation_source_url else 0,
         )
     except Exception as e:
-        add_izyminki(user.id, SEEDANCE_COST)
+        add_izyminki(user.id, selected_cost)
         log_generation_event(
             user_id=user.id,
             kind="motion",
             status="failed",
             provider="ZVENO",
-            cost=SEEDANCE_COST,
+            cost=selected_cost,
             was_free=False,
             references_count=1 if state.animation_source_url else 0,
         )
         await reply_target.reply_text(
-            "Не удалось выполнить Seedance 1.5 Pro.\n"
+            f"Не удалось выполнить {selected_model_label}.\n"
             f"Причина: {str(e)}\n\n"
             "Списанные изюминки возвращены на баланс."
         )

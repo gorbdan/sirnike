@@ -3970,7 +3970,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         log_generation_event(
             user_id=user.id,
-            kind="motion",
+            kind="video",
             status="success",
             provider="ZVENO",
             cost=selected_cost,
@@ -3988,7 +3988,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         add_izyminki(user.id, selected_cost)
         log_generation_event(
             user_id=user.id,
-            kind="motion",
+            kind="video",
             status="failed",
             provider="ZVENO",
             cost=selected_cost,

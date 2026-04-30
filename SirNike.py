@@ -3284,6 +3284,7 @@ async def start_seedance_task(
         model_value = "bytedance/seedance-2.0-fast"
         model_value_lower = model_value.lower()
     is_wan_model = "wan-2.7" in model_value_lower or model_value_lower.startswith("alibaba/wan")
+    is_seedance2_model = model_value_lower in ("bytedance/seedance-2.0", "bytedance/seedance-2.0-fast")
     combined_image_urls: List[str] = []
     if image_urls:
         for item in image_urls:
@@ -3301,6 +3302,14 @@ async def start_seedance_task(
     if combined_image_urls:
         if not prompt_text:
             prompt_text = "Animate the provided photo naturally. Keep the same person, face, clothes, and background."
+        if len(combined_image_urls) > 1 and is_seedance2_model and SEEDANCE_VIDEO_REFERENCE_MODE != "timeline":
+            prompt_text = (
+                "Treat Image1 and Image2 as two mandatory character identity references. "
+                "Keep both characters in the video from start to finish. "
+                "Do not invent new people or animals not present in Image1/Image2. "
+                "Preserve face, hairstyle, body type, outfit, and overall identity for both characters. "
+                + prompt_text
+            )
         if len(combined_image_urls) > 1 and SEEDANCE_VIDEO_REFERENCE_MODE == "timeline":
             prompt_text = (
                 "Use the first uploaded image as the exact START frame and the second uploaded image as the exact END frame. "
@@ -3334,7 +3343,12 @@ async def start_seedance_task(
     if combined_image_urls:
         primary_image_url = combined_image_urls[0]
         reference_sheet_url = None
-        if is_video_jobs_endpoint and len(combined_image_urls) > 1 and SEEDANCE_VIDEO_REFERENCE_MODE != "timeline":
+        if (
+            is_video_jobs_endpoint
+            and is_wan_model
+            and len(combined_image_urls) > 1
+            and SEEDANCE_VIDEO_REFERENCE_MODE != "timeline"
+        ):
             reference_sheet_url = await build_seedance_reference_sheet_url(combined_image_urls)
         primary_frame_reference_url = reference_sheet_url or primary_image_url
         if is_video_jobs_endpoint:
@@ -3366,76 +3380,82 @@ async def start_seedance_task(
                 payload_variants.append({**payload_base, "frame_images": frame_images, "aspect_ratio": "16:9"})
                 payload_variants.append({**payload_base, "frame_images": frame_images})
             else:
+                # Seedance 2 on Zveno currently accepts image_urls most reliably.
+                # Keep a deterministic payload to avoid slow 400 retries.
+                if is_seedance2_model:
+                    payload_variants.append({**payload_base, "image_urls": combined_image_urls})
+                    payload_variants.append({**payload_base, "image_urls": combined_image_urls, "aspect_ratio": "16:9"})
+                else:
                 # Character-reference mode:
                 # input_references are soft style hints. To keep identity more reliably,
                 # anchor the first frame with a combined reference sheet when 2 photos are provided.
-                frame_anchor = [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": primary_frame_reference_url},
-                        "frame_type": "first_frame",
-                    }
-                ]
+                    frame_anchor = [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": primary_frame_reference_url},
+                            "frame_type": "first_frame",
+                        }
+                    ]
 
-                if is_wan_model:
-                    payload_variants.append(
-                        {
-                            **payload_base,
-                            "frame_images": frame_anchor,
-                            "image_urls": combined_image_urls,
-                            "aspect_ratio": "16:9",
-                        }
-                    )
-                    payload_variants.append(
-                        {
-                            **payload_base,
-                            "frame_images": frame_anchor,
-                            "image_urls": combined_image_urls,
-                        }
-                    )
-                    payload_variants.append(
-                        {
-                            **payload_base,
-                            "frame_images": frame_anchor,
-                            "input_references": refs_payload,
-                            "aspect_ratio": "16:9",
-                        }
-                    )
-                else:
-                    payload_variants.append(
-                        {
-                            **payload_base,
-                            "frame_images": frame_anchor,
-                            "input_references": refs_payload,
-                            "aspect_ratio": "16:9",
-                        }
-                    )
-                    payload_variants.append(
-                        {
-                            **payload_base,
-                            "frame_images": frame_anchor,
-                            "input_references": refs_payload,
-                        }
-                    )
-                    payload_variants.append(
-                        {
-                            **payload_base,
-                            "frame_images": frame_anchor,
-                            "image_urls": combined_image_urls,
-                            "aspect_ratio": "16:9",
-                        }
-                    )
-                payload_variants.append({**payload_base, "input_references": refs_payload, "aspect_ratio": "16:9"})
-                payload_variants.append({**payload_base, "input_references": refs_payload})
-                payload_variants.append({**payload_base, "image_urls": combined_image_urls})
+                    if is_wan_model:
+                        payload_variants.append(
+                            {
+                                **payload_base,
+                                "frame_images": frame_anchor,
+                                "image_urls": combined_image_urls,
+                                "aspect_ratio": "16:9",
+                            }
+                        )
+                        payload_variants.append(
+                            {
+                                **payload_base,
+                                "frame_images": frame_anchor,
+                                "image_urls": combined_image_urls,
+                            }
+                        )
+                        payload_variants.append(
+                            {
+                                **payload_base,
+                                "frame_images": frame_anchor,
+                                "input_references": refs_payload,
+                                "aspect_ratio": "16:9",
+                            }
+                        )
+                    else:
+                        payload_variants.append(
+                            {
+                                **payload_base,
+                                "frame_images": frame_anchor,
+                                "input_references": refs_payload,
+                                "aspect_ratio": "16:9",
+                            }
+                        )
+                        payload_variants.append(
+                            {
+                                **payload_base,
+                                "frame_images": frame_anchor,
+                                "input_references": refs_payload,
+                            }
+                        )
+                        payload_variants.append(
+                            {
+                                **payload_base,
+                                "frame_images": frame_anchor,
+                                "image_urls": combined_image_urls,
+                                "aspect_ratio": "16:9",
+                            }
+                        )
+                    payload_variants.append({**payload_base, "input_references": refs_payload, "aspect_ratio": "16:9"})
+                    payload_variants.append({**payload_base, "input_references": refs_payload})
+                    payload_variants.append({**payload_base, "image_urls": combined_image_urls})
 
                 # Compatibility fallback for gateways that prefer legacy nested format.
-                payload_variants.append(
-                    {
-                        **payload_base,
-                        "input_references": [{"type": "image", "url": u} for u in combined_image_urls],
-                    }
-                )
+                    payload_variants.append(
+                        {
+                            **payload_base,
+                            "input_references": [{"type": "image", "url": u} for u in combined_image_urls],
+                        }
+                    )
         else:
             payload_variants.append({**payload_base, "inputUrls": combined_image_urls})
             payload_variants.append({**payload_base, "imageUrls": combined_image_urls})
@@ -3470,6 +3490,11 @@ async def start_seedance_task(
                     response_text = await resp.text()
                     logger.info(f"Seedance create response: status={resp.status}, endpoint={create_url}")
                     if not (200 <= resp.status < 300):
+                        logger.warning(
+                            "Seedance create rejected: status=%s, body=%s",
+                            resp.status,
+                            response_text[:500],
+                        )
                         last_error = f"{resp.status}. {response_text}"
                         continue
                     try:

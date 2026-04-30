@@ -6,6 +6,14 @@ def _load_env_file() -> None:
     if not os.path.exists(env_path):
         return
 
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(env_path, override=True)
+        return
+    except ImportError:
+        pass
+
     with open(env_path, "r", encoding="utf-8") as f:
         for raw_line in f:
             line = raw_line.strip()
@@ -20,6 +28,9 @@ def _load_env_file() -> None:
 
 
 _load_env_file()
+
+BASE_DIR = os.path.dirname(__file__)
+DATA_DIR = os.getenv("DATA_DIR", BASE_DIR).strip() or BASE_DIR
 
 
 def _required_env(name: str) -> str:

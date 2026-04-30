@@ -110,10 +110,11 @@ from db import (
 )
 
 BASE_DIR = os.path.dirname(__file__)
-OUTPUTS_DIR = os.path.join(BASE_DIR, "outputs")
+RUNTIME_DIR = os.getenv("DATA_DIR", BASE_DIR).strip() or BASE_DIR
+OUTPUTS_DIR = os.path.join(RUNTIME_DIR, "outputs")
 os.makedirs(OUTPUTS_DIR, exist_ok=True)
 BUILD_ID = "2026-04-30-seedance-poll-probe-v2"
-LOG_DIR = os.getenv("BOT_LOG_DIR", BASE_DIR).strip() or BASE_DIR
+LOG_DIR = os.getenv("BOT_LOG_DIR", RUNTIME_DIR).strip() or RUNTIME_DIR
 LOG_FILE_PATH = os.path.join(LOG_DIR, "bot.log")
 LOG_FILE_ERROR: Optional[str] = None
 

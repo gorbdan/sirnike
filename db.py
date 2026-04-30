@@ -1,12 +1,23 @@
 import sqlite3
 import os
+import shutil
 from datetime import datetime, date, timedelta
 from typing import Optional
 
-DB_NAME = os.path.join(os.path.dirname(__file__), "syrochnik.db")
+BASE_DIR = os.path.dirname(__file__)
+DATA_DIR = os.getenv("DATA_DIR", BASE_DIR).strip() or BASE_DIR
+SEED_DB_NAME = os.path.join(BASE_DIR, "syrochnik.db")
+DB_NAME = os.path.join(DATA_DIR, "syrochnik.db")
+
+
+def _ensure_runtime_db():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    if DB_NAME != SEED_DB_NAME and not os.path.exists(DB_NAME) and os.path.exists(SEED_DB_NAME):
+        shutil.copy2(SEED_DB_NAME, DB_NAME)
 
 
 def get_conn():
+    _ensure_runtime_db()
     return sqlite3.connect(DB_NAME)
 
 

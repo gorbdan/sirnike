@@ -30,6 +30,7 @@ from telegram import (
     KeyboardButton,
     ReplyKeyboardRemove,
 )
+from telegram.error import BadRequest, Forbidden
 
 from config import (
     TOKEN,
@@ -143,7 +144,11 @@ photo_counts = {}
 last_generated_image_url = {}
 last_generated_prompt = {}
 last_generation_references = {}
-MAX_SEEDANCE_IMAGE_REFERENCES = 9
+MAX_SEEDANCE_IMAGE_REFERENCES = 2
+# Seedance behavior mode:
+# - "character": use input_references to preserve characters from photos
+# - "timeline": use frame_images as first/last frame interpolation
+SEEDANCE_VIDEO_REFERENCE_MODE = os.getenv("SEEDANCE_VIDEO_REFERENCE_MODE", "character").strip().lower()
 
 
 @dataclass
@@ -661,9 +666,10 @@ def motion_control_status_text(state: UserState) -> str:
     return (
         "Seedance 1.5 Pro (тест для админа)\n"
         "Генерация видео с помощью нейросети.\n"
-        f"Можно запустить только с промптом, но лучше добавить фото-референсы (до {MAX_SEEDANCE_IMAGE_REFERENCES}).\n\n"
+        "Можно запустить только с промптом, но лучше добавить 1–2 фото персонажа.\n"
+        "Фото используются как референсы внешности и стиля персонажа.\n\n"
         "1. Нажми «Промпт» (необязательно)\n"
-        f"2. Добавь «Изображение» (можно до {MAX_SEEDANCE_IMAGE_REFERENCES} фото)\n"
+        "2. Добавь «Изображение» (до 2 фото-референсов)\n"
         "3. Запусти генерацию\n\n"
         f"Промпт: {prompt_state}\n"
         f"Изображение: {image_state}\n"
@@ -722,9 +728,10 @@ def motion_control_status_text(state: UserState) -> str:
     return (
         "Seedance 2 (тест для админа)\n"
         "Генерация видео с помощью нейросети.\n"
-        f"Можно запустить только с промптом, но лучше добавить фото-референсы (до {MAX_SEEDANCE_IMAGE_REFERENCES}).\n\n"
+        "Можно запустить только с промптом, но лучше добавить 1–2 фото персонажа.\n"
+        "Фото используются как референсы внешности и стиля персонажа.\n\n"
         "1. Нажми «Промпт» (необязательно)\n"
-        f"2. Добавь «Изображение» (можно до {MAX_SEEDANCE_IMAGE_REFERENCES} фото)\n"
+        "2. Добавь «Изображение» (до 2 фото-референсов)\n"
         "3. Выбери длительность ролика\n"
         "4. Запусти генерацию\n\n"
         f"Промпт: {prompt_state}\n"
@@ -805,9 +812,10 @@ def motion_control_status_text(state: UserState) -> str:
         f"{model_label}{fast_hint}\n"
         "Генерация видео с помощью нейросети.\n"
         f"{fast_limit_hint}"
-        f"Можно запустить только с промптом, но лучше добавить фото-референсы (до {MAX_SEEDANCE_IMAGE_REFERENCES}).\n\n"
+        "Можно запустить только с промптом, но лучше добавить 1–2 фото персонажа.\n"
+        "Фото используются как референсы внешности и стиля персонажа.\n\n"
         "1. Нажми «Промпт» (необязательно)\n"
-        f"2. Добавь «Изображение» (можно до {MAX_SEEDANCE_IMAGE_REFERENCES} фото)\n"
+        "2. Добавь «Изображение» (до 2 фото-референсов)\n"
         "3. Выбери модель и длительность\n"
         "4. Запусти генерацию\n\n"
         f"Модель: {model_label}\n"
@@ -1560,10 +1568,19 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
 
                 if state.waiting_for_motion_image:
+                    current_refs = get_motion_image_urls(state)
+                    if len(current_refs) >= MAX_SEEDANCE_IMAGE_REFERENCES and direct_url not in current_refs:
+                        await update.message.reply_text(
+                            "Уже загружено 2 фото для Seedance.\n"
+                            "Очисти референсы или замени одно из фото, затем запускай генерацию.",
+                            reply_markup=motion_control_kb(state),
+                        )
+                        return
                     total_refs = add_motion_image_url(state, direct_url)
                     await update.message.reply_text(
                         f"Фото для Seedance добавлено ✅\n"
                         f"Сейчас загружено: {total_refs}/{MAX_SEEDANCE_IMAGE_REFERENCES}\n"
+                        "Использую фото как референсы персонажа.\n"
                         "Можешь отправить еще фото или запускать генерацию.",
                         reply_markup=motion_control_kb(state),
                     )
@@ -1864,7 +1881,14 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    try:
+        await query.answer()
+    except BadRequest as e:
+        err_text = str(e).lower()
+        if "query is too old" in err_text or "query id is invalid" in err_text:
+            logger.info("Ignoring stale callback query answer: %s", e)
+        else:
+            raise
     user = update.effective_user
 
     admin_only_callback_prefixes = ("pladm_", "plhist_", "plsave_")
@@ -2211,7 +2235,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.waiting_for_motion_image = True
         await query.message.reply_text(
             "Отправляй фото для Seedance (можно несколько подряд).\n"
-            f"Лимит: до {MAX_SEEDANCE_IMAGE_REFERENCES} фото.\n"
+            "Лимит: до 2 фото.\n"
+            "Фото используются как референсы персонажа.\n"
             "Когда всё загрузишь, нажми «Запустить ⚡»."
         )
         return
@@ -3182,6 +3207,19 @@ async def start_seedance_task(
     if combined_image_urls:
         if not prompt_text:
             prompt_text = "Animate the provided photo naturally. Keep the same person, face, clothes, and background."
+        if len(combined_image_urls) > 1 and SEEDANCE_VIDEO_REFERENCE_MODE == "timeline":
+            prompt_text = (
+                "Use the first uploaded image as the exact START frame and the second uploaded image as the exact END frame. "
+                "Keep character identity consistent across the entire video: same face, body, hair, outfit, and style. "
+                "Create smooth motion between these two frames without replacing characters. "
+                + prompt_text
+            )
+        elif len(combined_image_urls) > 1:
+            prompt_text = (
+                "Use uploaded images as character references. Preserve identity exactly: same face, hair, body, outfit, and style. "
+                "Do not swap or replace characters. Keep all key character traits consistent through the whole video. "
+                + prompt_text
+            )
     elif not prompt_text:
         prompt_text = "Create a natural cinematic video."
 
@@ -3201,16 +3239,6 @@ async def start_seedance_task(
     if combined_image_urls:
         primary_image_url = combined_image_urls[0]
         if is_video_jobs_endpoint:
-            # OpenRouter-compatible schema used by Zveno /v1/videos:
-            # - frame_images => image-to-video (exact first/last frame control)
-            # - input_references => reference-to-video (style/content references)
-            frame_first = [
-                {
-                    "type": "image_url",
-                    "image_url": {"url": primary_image_url},
-                    "frame_type": "first_frame",
-                }
-            ]
             refs_payload = [
                 {
                     "type": "image_url",
@@ -3219,20 +3247,38 @@ async def start_seedance_task(
                 for url in combined_image_urls
             ]
 
-            payload_variants.append({**payload_base, "frame_images": frame_first})
-            payload_variants.append({**payload_base, "input_references": refs_payload})
+            if SEEDANCE_VIDEO_REFERENCE_MODE == "timeline":
+                # 1 image -> first_frame, 2 images -> first+last interpolation
+                frame_images = [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": primary_image_url},
+                        "frame_type": "first_frame",
+                    }
+                ]
+                if len(combined_image_urls) > 1:
+                    frame_images.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": combined_image_urls[1]},
+                            "frame_type": "last_frame",
+                        }
+                    )
+                payload_variants.append({**payload_base, "frame_images": frame_images, "aspect_ratio": "16:9"})
+                payload_variants.append({**payload_base, "frame_images": frame_images})
+            else:
+                # Character-reference mode: use photo refs as identity anchors, not timeline endpoints.
+                payload_variants.append({**payload_base, "input_references": refs_payload, "aspect_ratio": "16:9"})
+                payload_variants.append({**payload_base, "input_references": refs_payload})
+                payload_variants.append({**payload_base, "image_urls": combined_image_urls})
 
-            # Compatibility fallback variants (legacy shapes some providers still accept).
-            base_refs = [
-                {"image_url": primary_image_url},
-                {"image_urls": combined_image_urls},
-                {"input_references": [{"type": "image", "url": u} for u in combined_image_urls]},
-                {"reference_images": [{"role": "reference", "url": u} for u in combined_image_urls]},
-            ]
-            timing_variants = [{"duration": duration}]
-            for refs in base_refs:
-                for timing in timing_variants:
-                    payload_variants.append({**payload_base, **timing, **refs})
+                # Compatibility fallback for gateways that prefer legacy nested format.
+                payload_variants.append(
+                    {
+                        **payload_base,
+                        "input_references": [{"type": "image", "url": u} for u in combined_image_urls],
+                    }
+                )
         else:
             payload_variants.append({**payload_base, "inputUrls": combined_image_urls})
             payload_variants.append({**payload_base, "imageUrls": combined_image_urls})
@@ -4317,7 +4363,16 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
     except Exception:
         logger.exception("Failed to send final generation error message")
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.exception("Ошибка во время обработки апдейта:", exc_info=context.error)
+    err = context.error
+    if isinstance(err, Forbidden):
+        logger.info("Telegram Forbidden ignored (user blocked bot or chat unavailable): %s", err)
+        return
+    if isinstance(err, BadRequest):
+        err_text = str(err).lower()
+        if "query is too old" in err_text or "query id is invalid" in err_text:
+            logger.info("Telegram stale callback ignored: %s", err)
+            return
+    logger.exception("Ошибка во время обработки апдейта:", exc_info=err)
 
 # ----------------------------
 # Main

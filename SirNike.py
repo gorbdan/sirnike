@@ -492,7 +492,7 @@ def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int
             if count > 0:
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text=f"Фото-референсы успешно загружены: {count} шт.",
+                    text=f"Фото успешно загружены: {count} шт.",
                     reply_markup=main_menu_kb()
                 )
                 photo_counts[chat_id] = 0
@@ -2273,13 +2273,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if isinstance(last_image, str) and last_image.strip():
                 add_motion_image_url(state, last_image)
         state.waiting_for_motion_prompt = False
-        state.waiting_for_motion_image = False
+        # Open video mode ready-to-upload, so users can send photos immediately.
+        state.waiting_for_motion_image = True
         state.waiting_for_motion_video = False
 
+        await query.message.reply_text(
+            "Загрузи 1-2 фото для видео. Я использую их как референсы персонажей.\n\n"
+            "После загрузки нажми «Запустить ⚡».",
+        )
         await query.message.reply_text(
             motion_control_status_text(state),
             reply_markup=motion_control_kb(state),
         )
+        return
+
+    if query.data == "mc_set_prompt":
+        state = get_or_init_state(context)
+        state.waiting_for_motion_prompt = True
+        await query.message.reply_text("Напиши промпт для итогового видео одним сообщением.")
         return
 
     if query.data == "mc_set_prompt":

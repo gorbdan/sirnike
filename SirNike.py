@@ -7,7 +7,7 @@ from logging.handlers import RotatingFileHandler
 import os
 from datetime import datetime
 from urllib.parse import urlsplit
-from PIL import Image
+from PIL import Image, ImageOps
 from dataclasses import dataclass, field
 from typing import List, Optional
 import aiohttp
@@ -1781,6 +1781,71 @@ async def upload_image_bytes_to_imgbb(image_bytes: bytes, filename: str = "impor
     except Exception:
         logger.exception("upload_image_bytes_to_imgbb failed")
         return None
+
+
+async def build_seedance_reference_sheet_url(image_urls: List[str]) -> Optional[str]:
+    clean_urls: List[str] = []
+    for item in image_urls:
+        if isinstance(item, str):
+            candidate = item.strip()
+            if candidate and candidate not in clean_urls:
+                clean_urls.append(candidate)
+    if len(clean_urls) < 2:
+        return None
+
+    loaded_images: List[Image.Image] = []
+    try:
+        async with aiohttp.ClientSession() as session:
+            for url in clean_urls[:MAX_SEEDANCE_IMAGE_REFERENCES]:
+                async with session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=60),
+                    allow_redirects=True,
+                ) as resp:
+                    if resp.status != 200:
+                        logger.warning(f"Seedance sheet source fetch failed: {resp.status}, url={url}")
+                        continue
+                    image_bytes = await resp.read()
+                try:
+                    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+                    loaded_images.append(image)
+                except Exception:
+                    logger.warning("Seedance sheet source decode failed")
+                    continue
+
+        if len(loaded_images) < 2:
+            return None
+
+        slot_w, slot_h = 832, 1216
+        gap = 16
+        canvas_w = slot_w * 2 + gap * 3
+        canvas_h = slot_h + gap * 2
+        canvas = Image.new("RGB", (canvas_w, canvas_h), (20, 20, 24))
+
+        for idx, src in enumerate(loaded_images[:2]):
+            fitted = ImageOps.contain(src, (slot_w, slot_h), Image.Resampling.LANCZOS)
+            x0 = gap + idx * (slot_w + gap)
+            y0 = gap
+            x = x0 + (slot_w - fitted.width) // 2
+            y = y0 + (slot_h - fitted.height) // 2
+            canvas.paste(fitted, (x, y))
+
+        out = io.BytesIO()
+        canvas.save(out, format="JPEG", quality=95, optimize=True)
+        out.seek(0)
+        sheet_url = await upload_image_bytes_to_imgbb(out.read(), filename="seedance_reference_sheet.jpg")
+        if sheet_url:
+            logger.info("Seedance reference sheet uploaded successfully")
+        return sheet_url
+    except Exception:
+        logger.exception("build_seedance_reference_sheet_url failed")
+        return None
+    finally:
+        for img in loaded_images:
+            try:
+                img.close()
+            except Exception:
+                pass
         
 # ----------------------------
 # Generation
@@ -3207,6 +3272,7 @@ async def start_seedance_task(
         if "fast" not in model_value_lower:
             model_value = "bytedance/seedance-2.0-fast"
             model_value_lower = model_value.lower()
+    is_wan_model = "wan-2.7" in model_value_lower or model_value_lower.startswith("alibaba/wan")
     combined_image_urls: List[str] = []
     if image_urls:
         for item in image_urls:
@@ -3219,8 +3285,6 @@ async def start_seedance_task(
         if candidate and candidate not in combined_image_urls:
             combined_image_urls.append(candidate)
     combined_image_urls = combined_image_urls[:MAX_SEEDANCE_IMAGE_REFERENCES]
-
-    model_value_lower = model_value.lower()
 
     prompt_text = (prompt or "").strip()
     if combined_image_urls:
@@ -3235,8 +3299,9 @@ async def start_seedance_task(
             )
         elif len(combined_image_urls) > 1:
             prompt_text = (
-                "Use uploaded images as character references. Preserve identity exactly: same face, hair, body, outfit, and style. "
-                "Do not swap or replace characters. Keep all key character traits consistent through the whole video. "
+                "Use BOTH uploaded images as explicit character references. Keep both characters in the same video. "
+                "Preserve identity exactly: same face, hair, body, outfit, and style for each character. "
+                "Do not merge, replace, or drop any character. Keep all key character traits consistent through the whole video. "
                 + prompt_text
             )
     elif not prompt_text:
@@ -3257,6 +3322,10 @@ async def start_seedance_task(
     payload_variants = []
     if combined_image_urls:
         primary_image_url = combined_image_urls[0]
+        reference_sheet_url = None
+        if is_video_jobs_endpoint and len(combined_image_urls) > 1 and SEEDANCE_VIDEO_REFERENCE_MODE != "timeline":
+            reference_sheet_url = await build_seedance_reference_sheet_url(combined_image_urls)
+        primary_frame_reference_url = reference_sheet_url or primary_image_url
         if is_video_jobs_endpoint:
             refs_payload = [
                 {
@@ -3286,7 +3355,65 @@ async def start_seedance_task(
                 payload_variants.append({**payload_base, "frame_images": frame_images, "aspect_ratio": "16:9"})
                 payload_variants.append({**payload_base, "frame_images": frame_images})
             else:
-                # Character-reference mode: use photo refs as identity anchors, not timeline endpoints.
+                # Character-reference mode:
+                # input_references are soft style hints. To keep identity more reliably,
+                # anchor the first frame with a combined reference sheet when 2 photos are provided.
+                frame_anchor = [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": primary_frame_reference_url},
+                        "frame_type": "first_frame",
+                    }
+                ]
+
+                if is_wan_model:
+                    payload_variants.append(
+                        {
+                            **payload_base,
+                            "frame_images": frame_anchor,
+                            "image_urls": combined_image_urls,
+                            "aspect_ratio": "16:9",
+                        }
+                    )
+                    payload_variants.append(
+                        {
+                            **payload_base,
+                            "frame_images": frame_anchor,
+                            "image_urls": combined_image_urls,
+                        }
+                    )
+                    payload_variants.append(
+                        {
+                            **payload_base,
+                            "frame_images": frame_anchor,
+                            "input_references": refs_payload,
+                            "aspect_ratio": "16:9",
+                        }
+                    )
+                else:
+                    payload_variants.append(
+                        {
+                            **payload_base,
+                            "frame_images": frame_anchor,
+                            "input_references": refs_payload,
+                            "aspect_ratio": "16:9",
+                        }
+                    )
+                    payload_variants.append(
+                        {
+                            **payload_base,
+                            "frame_images": frame_anchor,
+                            "input_references": refs_payload,
+                        }
+                    )
+                    payload_variants.append(
+                        {
+                            **payload_base,
+                            "frame_images": frame_anchor,
+                            "image_urls": combined_image_urls,
+                            "aspect_ratio": "16:9",
+                        }
+                    )
                 payload_variants.append({**payload_base, "input_references": refs_payload, "aspect_ratio": "16:9"})
                 payload_variants.append({**payload_base, "input_references": refs_payload})
                 payload_variants.append({**payload_base, "image_urls": combined_image_urls})
@@ -3425,9 +3552,11 @@ async def poll_seedance_task(
             if status in ("COMPLETED", "SUCCEEDED"):
                 if expected_refs_count > 1:
                     accepted_refs = extract_task_reference_count(data)
-                    if accepted_refs < expected_refs_count:
+                    # Some providers do not echo reference fields in poll responses.
+                    # Fail only when provider explicitly reports fewer refs than expected.
+                    if accepted_refs > 0 and accepted_refs < expected_refs_count:
                         raise Exception(
-                            f"Референсы не были корректно применены: ожидалось {expected_refs_count}, подтверждено {accepted_refs}."
+                            f"Референсы применились не полностью: ожидалось {expected_refs_count}, подтверждено {accepted_refs}."
                         )
                 video_url = None
                 unsigned_urls = data.get("unsigned_urls")
@@ -3615,11 +3744,16 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             model_code=selected_model,
         )
 
+        expected_refs_count = len(motion_images)
+        if SEEDANCE_VIDEO_REFERENCE_MODE != "timeline" and len(motion_images) > 1:
+            # In character mode we pack multiple references into one first-frame sheet.
+            expected_refs_count = 1
+
         video_url = await poll_seedance_task(
             task_id=task_id,
             max_attempts=SEEDANCE_MAX_POLL_ATTEMPTS,
             poll_interval=SEEDANCE_POLL_INTERVAL,
-            expected_refs_count=len(motion_images),
+            expected_refs_count=expected_refs_count,
         )
         video_bytes = await download_video_bytes_with_fallback(video_url)
         saved_path = save_video_debug_copy(video_bytes, user.id, selected_model_label)

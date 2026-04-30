@@ -167,7 +167,7 @@ class UserState:
     motion_prompt: str = ""
     motion_video_url: Optional[str] = None
     motion_duration: Optional[int] = None
-    motion_model: str = "seedance2"
+    motion_model: str = "seedance2_fast"
     waiting_for_motion_prompt: bool = False
     waiting_for_motion_image: bool = False
     waiting_for_motion_video: bool = False
@@ -3855,9 +3855,9 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     selected_mode = SEEDANCE_FAST_MODE if selected_model == "seedance2_fast" else SEEDANCE_MODE
     selected_model_slug = SEEDANCE_FAST_MODEL if selected_model == "seedance2_fast" else SEEDANCE_MODEL
 
-    if selected_model == "seedance2" and len(motion_images) < 2:
+    if selected_model in {"seedance2", "seedance2_fast"} and len(motion_images) < 2:
         await reply_target.reply_text(
-            "Для Seedance 2 нужно загрузить 2 фото-референса.\n"
+            "Для Seedance 2 / Seedance 2 Fast нужно загрузить 2 фото-референса.\n"
             "Добавь второе фото и запусти снова.",
             reply_markup=motion_control_kb(state),
         )
@@ -3957,6 +3957,18 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             was_free=False,
             references_count=len(motion_images),
         )
+        error_text = str(e).lower()
+        if "insufficient_funds" in error_text or "insufficient funds" in error_text:
+            await reply_target.reply_text(
+                f"Не удалось выполнить {selected_model_label}.\n"
+                "У провайдера видео сейчас закончился баланс (insufficient funds).\n"
+                "Списанные изюминки возвращены на баланс."
+            )
+            await reply_target.reply_text(
+                "Попробовать еще раз?",
+                reply_markup=seedance_retry_kb(),
+            )
+            return
         await reply_target.reply_text(
             f"Не удалось выполнить {selected_model_label}.\n"
             "Временный технический сбой. Попробуй еще раз через минуту.\n\n"

@@ -3892,13 +3892,18 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         restart_after_seconds = 10 * 60
         per_attempt_max_polls = max(1, restart_after_seconds // max(1, int(SEEDANCE_POLL_INTERVAL)))
         per_attempt_max_polls = min(SEEDANCE_MAX_POLL_ATTEMPTS, per_attempt_max_polls)
-        max_seedance_attempts = 2
+        max_seedance_attempts = 3
+        active_prompt = prompt_text
+        safety_suffix = (
+            "Generate a silent video only. No speech, no voice-over, no subtitles, "
+            "no readable text, no letters, no logos, no captions."
+        )
 
         video_url = None
         last_seedance_error: Optional[Exception] = None
         for seedance_attempt in range(1, max_seedance_attempts + 1):
             task_id = await start_seedance_task(
-                prompt=prompt_text,
+                prompt=active_prompt,
                 image_url=motion_images[0] if motion_images else None,
                 image_urls=motion_images,
                 user_id=user.id,
@@ -3920,6 +3925,10 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 last_seedance_error = e
                 err_text = str(e).lower()
+                sensitive_audio_like = (
+                    "output audio may contain sensitive information" in err_text
+                    or "sensitive information" in err_text
+                )
                 timeout_like = (
                     "превышено время ожидания" in err_text
                     or "polling exceeded" in err_text
@@ -3935,6 +3944,20 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     await reply_target.reply_text(
                         "Генерация зависла в очереди. Автоматически перезапускаю задачу на той же модели..."
+                    )
+                    continue
+                if seedance_attempt < max_seedance_attempts and sensitive_audio_like:
+                    logger.warning(
+                        "Seedance moderation fail. Auto-restart with silent-safe prompt: attempt=%s/%s user_id=%s model=%s",
+                        seedance_attempt,
+                        max_seedance_attempts,
+                        user.id,
+                        selected_model,
+                    )
+                    if safety_suffix.lower() not in active_prompt.lower():
+                        active_prompt = (active_prompt.strip() + "\n\n" + safety_suffix).strip()
+                    await reply_target.reply_text(
+                        "Провайдер отклонил аудио. Автоматически перезапускаю в беззвучном безопасном режиме..."
                     )
                     continue
                 raise

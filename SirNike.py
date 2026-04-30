@@ -3309,7 +3309,7 @@ async def start_seedance_task(
             prompt_text = "Animate the provided photo naturally. Keep the same person, face, clothes, and background."
         if len(combined_image_urls) > 1 and is_seedance2_model and SEEDANCE_VIDEO_REFERENCE_MODE != "timeline":
             prompt_text = (
-                "Treat Image1 and Image2 as two mandatory character identity references. "
+                "Treat @Image1 and @Image2 as two mandatory character identity references. "
                 "Keep both characters in the video from start to finish. "
                 "Do not invent new people or animals not present in Image1/Image2. "
                 "Preserve face, hairstyle, body type, outfit, and overall identity for both characters. "
@@ -3359,11 +3359,18 @@ async def start_seedance_task(
         reference_sheet_url = None
         if (
             is_video_jobs_endpoint
-            and is_wan_model
+            and (is_wan_model or is_seedance2_model)
             and len(combined_image_urls) > 1
             and SEEDANCE_VIDEO_REFERENCE_MODE != "timeline"
         ):
             reference_sheet_url = await build_seedance_reference_sheet_url(combined_image_urls)
+            if is_seedance2_model and reference_sheet_url:
+                prompt_text = (
+                    "Treat @Image1 as the exact identity sheet containing BOTH required characters. "
+                    "Keep both characters unchanged from @Image1 for the whole video. "
+                    "Do not add new people or animals. "
+                    + (prompt_text or "")
+                )
         primary_frame_reference_url = reference_sheet_url or primary_image_url
         if is_video_jobs_endpoint:
             refs_payload = [
@@ -3397,7 +3404,14 @@ async def start_seedance_task(
                 # Seedance 2 on Zveno currently accepts image_urls most reliably.
                 # Keep a deterministic payload to avoid slow 400 retries.
                 if is_seedance2_model:
-                    payload_variants.append({**payload_base, "image_urls": combined_image_urls})
+                    seedance2_urls = [reference_sheet_url] if reference_sheet_url else combined_image_urls
+                    logger.info(
+                        "Seedance 2 refs prepared: original_refs=%s, using_sheet=%s, sent_refs=%s",
+                        len(combined_image_urls),
+                        "yes" if reference_sheet_url else "no",
+                        len(seedance2_urls),
+                    )
+                    payload_variants.append({**payload_base, "image_urls": seedance2_urls})
                 else:
                 # Character-reference mode:
                 # input_references are soft style hints. To keep identity more reliably,
@@ -3689,6 +3703,17 @@ async def poll_seedance_task(
                 return video_url
 
             if status in ("FAILED", "CANCELLED", "ERROR"):
+                # Provider can report FAILED due to internal polling timeout while
+                # content is already available. Probe content once more before hard fail.
+                for probe_url in content_probe_urls:
+                    ready = await _probe_content_url(session, probe_url)
+                    if ready:
+                        logger.info(
+                            "Seedance failed status but content is ready: status=%s, url=%s",
+                            status,
+                            probe_url,
+                        )
+                        return probe_url
                 raise Exception(
                     data.get("error")
                     or data.get("message")

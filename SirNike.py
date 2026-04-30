@@ -420,7 +420,7 @@ def get_motion_model(state: UserState) -> str:
 
 
 def get_motion_model_label(model_code: str) -> str:
-    return "Seedance 2.0 Fast" if model_code == "seedance2_fast" else "Seedance 2"
+    return "Seedance 2 Fast (бета)" if model_code == "seedance2_fast" else "Seedance 2"
 
 
 def get_motion_model_cost_per_second(model_code: str) -> float:
@@ -518,7 +518,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("Запустить генерацию⚡", callback_data="generate")],
         [prompt_library_button],
     ]
-    motion_label = "Seedance 2 🎞" if SEEDANCE_ENABLED else "Seedance 🚧 (в разработке)"
+    motion_label = "Seedance 2 🎬" if SEEDANCE_ENABLED else "Seedance 2 🚧 (в разработке)"
     rows.append([InlineKeyboardButton(motion_label, callback_data="seedance_control")])
     rows.extend([
         [InlineKeyboardButton("Действия с аватаром 👤", callback_data="avatar_actions")],
@@ -667,7 +667,7 @@ def motion_control_status_text(state: UserState) -> str:
         "Seedance 1.5 Pro (тест для админа)\n"
         "Генерация видео с помощью нейросети.\n"
         "Можно запустить только с промптом, но лучше добавить 1–2 фото персонажа.\n"
-        "Фото используются как референсы внешности и стиля персонажа.\n\n"
+        "Референсы фиксируют внешность, стиль и идентичность персонажей в кадре.\n\n"
         "1. Нажми «Промпт» (необязательно)\n"
         "2. Добавь «Изображение» (до 2 фото-референсов)\n"
         "3. Запусти генерацию\n\n"
@@ -719,7 +719,7 @@ def motion_control_status_text(state: UserState) -> str:
     selected_cps = get_motion_model_cost_per_second(selected_model)
     selected_cost = calc_seedance_cost(selected_duration, selected_cps)
     selected_endpoint = SEEDANCE_FAST_ENDPOINT if selected_model == "seedance2_fast" else SEEDANCE_ENDPOINT
-    selected_mode = SEEDANCE_FAST_MODE if selected_model == "seedance2_fast" else SEEDANCE_MODE
+    selected_mode = SEEDANCE_MODE
     selected_model_slug = SEEDANCE_FAST_MODEL if selected_model == "seedance2_fast" else SEEDANCE_MODEL
     eta_min = max(2, int(selected_duration * 0.8))
     eta_max = max(eta_min + 1, int(selected_duration * 2.0))
@@ -729,7 +729,7 @@ def motion_control_status_text(state: UserState) -> str:
         "Seedance 2 (тест для админа)\n"
         "Генерация видео с помощью нейросети.\n"
         "Можно запустить только с промптом, но лучше добавить 1–2 фото персонажа.\n"
-        "Фото используются как референсы внешности и стиля персонажа.\n\n"
+        "Референсы фиксируют внешность, стиль и идентичность персонажей в кадре.\n\n"
         "1. Нажми «Промпт» (необязательно)\n"
         "2. Добавь «Изображение» (до 2 фото-референсов)\n"
         "3. Выбери длительность ролика\n"
@@ -743,7 +743,7 @@ def motion_control_status_text(state: UserState) -> str:
     )
 
 
-# Final override: Seedance 2 + Seedance 2.0 Fast selector.
+# Final override: quest mode with character references.
 def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
     selected_duration = get_selected_seedance_duration(state)
     selected_model = get_motion_model(state)
@@ -769,7 +769,7 @@ def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
     if SEEDANCE_FAST_ENABLED:
         model_buttons.append(
             InlineKeyboardButton(
-                ("● " if selected_model == "seedance2_fast" else "") + "Seedance 2.0 Fast",
+                ("● " if selected_model == "seedance2_fast" else "") + "Seedance 2 Fast (бета)",
                 callback_data="mc_model_seedance2_fast",
             )
         )
@@ -805,18 +805,14 @@ def motion_control_status_text(state: UserState) -> str:
     eta_min = max(2, int(selected_duration * 0.8))
     eta_max = max(eta_min + 1, int(selected_duration * 2.0))
     options_text = ", ".join([f"{sec}с" for sec in get_seedance_duration_options(selected_model)])
-    fast_hint = " (для быстрого теста промптов)" if selected_model == "seedance2_fast" else ""
-    fast_limit_hint = ""
-
     return (
-        f"{model_label}{fast_hint}\n"
+        f"{model_label}\n"
         "Генерация видео с помощью нейросети.\n"
-        f"{fast_limit_hint}"
         "Можно запустить только с промптом, но лучше добавить 1–2 фото персонажа.\n"
-        "Фото используются как референсы внешности и стиля персонажа.\n\n"
+        "Референсы фиксируют внешность, стиль и идентичность персонажей в кадре.\n\n"
         "1. Нажми «Промпт» (необязательно)\n"
         "2. Добавь «Изображение» (до 2 фото-референсов)\n"
-        "3. Выбери модель и длительность\n"
+        "3. Выбери длительность\n"
         "4. Запусти генерацию\n\n"
         f"Модель: {model_label}\n"
         f"Промпт: {prompt_state}\n"
@@ -2252,7 +2248,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "mc_set_video":
-        await query.message.reply_text("Для Seedance 2 этот шаг не нужен.")
+        await query.message.reply_text("Для этой модели этот шаг не нужен.")
         return
 
     if query.data.startswith("mc_model_"):
@@ -2289,11 +2285,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "mc_start":
         state = get_or_init_state(context)
         state.waiting_for_motion_image = False
-        await run_seedance(update, context)
+        context.application.create_task(run_seedance(update, context))
         return
 
     if query.data == "seedance_retry":
-        await run_seedance(update, context)
+        context.application.create_task(run_seedance(update, context))
         return
 
     if query.data == "avatar_actions":
@@ -3134,6 +3130,29 @@ def extract_task_video_url(task_data: dict) -> Optional[str]:
     return None
 
 
+def extract_task_reference_count(task_like: dict) -> int:
+    if not isinstance(task_like, dict):
+        return 0
+
+    source = task_like.get("input") if isinstance(task_like.get("input"), dict) else task_like
+
+    def _count(value) -> int:
+        if isinstance(value, list):
+            return len(value)
+        if isinstance(value, dict):
+            return 1
+        if isinstance(value, str) and value.strip():
+            return 1
+        return 0
+
+    for key in ("frame_images", "input_references", "image_urls", "reference_images"):
+        count = _count(source.get(key))
+        if count:
+            return count
+
+    return _count(source.get("image_url"))
+
+
 async def start_seedance_task(
     prompt: str,
     image_url: Optional[str],
@@ -3333,7 +3352,12 @@ async def start_seedance_task(
     raise Exception(f"Seedance create task error: {last_error}")
 
 
-async def poll_seedance_task(task_id: str, max_attempts: int, poll_interval: int) -> str:
+async def poll_seedance_task(
+    task_id: str,
+    max_attempts: int,
+    poll_interval: int,
+    expected_refs_count: int = 0,
+) -> str:
     if not ZVENO_API_KEY:
         raise Exception("ZVENO_API_KEY is empty")
 
@@ -3399,6 +3423,12 @@ async def poll_seedance_task(task_id: str, max_attempts: int, poll_interval: int
             logger.info(f"Seedance task {task_id}: attempt={attempt + 1}/{max_attempts}, status={status}")
 
             if status in ("COMPLETED", "SUCCEEDED"):
+                if expected_refs_count > 1:
+                    accepted_refs = extract_task_reference_count(data)
+                    if accepted_refs < expected_refs_count:
+                        raise Exception(
+                            f"Референсы не были корректно применены: ожидалось {expected_refs_count}, подтверждено {accepted_refs}."
+                        )
                 video_url = None
                 unsigned_urls = data.get("unsigned_urls")
                 if isinstance(unsigned_urls, list):
@@ -3589,6 +3619,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             task_id=task_id,
             max_attempts=SEEDANCE_MAX_POLL_ATTEMPTS,
             poll_interval=SEEDANCE_POLL_INTERVAL,
+            expected_refs_count=len(motion_images),
         )
         video_bytes = await download_video_bytes_with_fallback(video_url)
         saved_path = save_video_debug_copy(video_bytes, user.id, selected_model_label)

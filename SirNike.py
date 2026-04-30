@@ -150,7 +150,13 @@ photo_counts = {}
 last_generated_image_url = {}
 last_generated_prompt = {}
 last_generation_references = {}
-MAX_SEEDANCE_IMAGE_REFERENCES = 2
+try:
+    MAX_SEEDANCE_IMAGE_REFERENCES = max(
+        1,
+        min(9, int(os.getenv("SEEDANCE_MAX_IMAGE_REFERENCES", "9")))
+    )
+except Exception:
+    MAX_SEEDANCE_IMAGE_REFERENCES = 9
 # Seedance behavior mode:
 # - "character": use input_references to preserve characters from photos
 # - "timeline": use frame_images as first/last frame interpolation
@@ -3235,6 +3241,50 @@ def extract_task_reference_count(task_like: dict) -> int:
     return _count(source.get("image_url"))
 
 
+def build_seedance_prompt_with_refs(prompt_text: str, refs_count: int) -> str:
+    text = (prompt_text or "").strip()
+    if not text:
+        text = "Cinematic video with coherent motion and stable character identity."
+
+    if refs_count <= 0:
+        return text
+
+    has_any_placeholder = any(f"[Image{i}]" in text for i in range(1, refs_count + 1))
+    placeholders = ", ".join([f"[Image{i}]" for i in range(1, refs_count + 1)])
+
+    if refs_count == 1:
+        binding = (
+            "Use [Image1] as the main character identity reference. "
+            "Preserve face, body, hair, clothes, and style."
+        )
+    else:
+        binding = (
+            f"Use {placeholders} as explicit references for different subjects. "
+            "Keep each subject identity stable across the full video. "
+            "Do not replace, merge, or drop subjects."
+        )
+
+    if has_any_placeholder:
+        return f"{binding}\n{text}"
+
+    usage = "Reference mapping: " + ", ".join(
+        [f"[Image{i}] = subject {i}" for i in range(1, refs_count + 1)]
+    ) + "."
+    return f"{binding}\n{usage}\n{text}"
+
+
+def is_seedance_privacy_moderation_error(error_text: str) -> bool:
+    lowered = (error_text or "").lower()
+    keys = [
+        "inputimagesensitivecontentdetected.privacyinformation",
+        "inputimagesensitivecontentdetected",
+        "privacyinformation",
+        "real person",
+        "may contain real person",
+    ]
+    return any(key in lowered for key in keys)
+
+
 async def start_seedance_task(
     prompt: str,
     image_url: Optional[str],
@@ -3304,34 +3354,13 @@ async def start_seedance_task(
             combined_image_urls.append(candidate)
     combined_image_urls = combined_image_urls[:MAX_SEEDANCE_IMAGE_REFERENCES]
 
-    prompt_text = (prompt or "").strip()
-    if combined_image_urls:
-        if not prompt_text:
-            prompt_text = "Animate the provided photo naturally. Keep the same person, face, clothes, and background."
-        if len(combined_image_urls) > 1 and is_seedance2_model and SEEDANCE_VIDEO_REFERENCE_MODE != "timeline":
-            prompt_text = (
-                "Treat @Image1 and @Image2 as two mandatory character identity references. "
-                "Keep both characters in the video from start to finish. "
-                "Do not invent new people or animals not present in Image1/Image2. "
-                "Preserve face, hairstyle, body type, outfit, and overall identity for both characters. "
-                + prompt_text
-            )
-        if len(combined_image_urls) > 1 and SEEDANCE_VIDEO_REFERENCE_MODE == "timeline":
-            prompt_text = (
-                "Use the first uploaded image as the exact START frame and the second uploaded image as the exact END frame. "
-                "Keep character identity consistent across the entire video: same face, body, hair, outfit, and style. "
-                "Create smooth motion between these two frames without replacing characters. "
-                + prompt_text
-            )
-        elif len(combined_image_urls) > 1:
-            prompt_text = (
-                "Use BOTH uploaded images as explicit character references. Keep both characters in the same video. "
-                "Preserve identity exactly: same face, hair, body, outfit, and style for each character. "
-                "Do not merge, replace, or drop any character. Keep all key character traits consistent through the whole video. "
-                + prompt_text
-            )
-    elif not prompt_text:
-        prompt_text = "Create a natural cinematic video."
+    prompt_text = build_seedance_prompt_with_refs((prompt or "").strip(), len(combined_image_urls))
+    if len(combined_image_urls) > 1 and SEEDANCE_VIDEO_REFERENCE_MODE == "timeline":
+        prompt_text = (
+            "Use [Image1] as the START frame and [Image2] as the END frame. "
+            "Keep identity continuity between both frames. "
+            + prompt_text
+        )
 
     payload_base = {
         "prompt": prompt_text,
@@ -3360,18 +3389,11 @@ async def start_seedance_task(
         reference_sheet_url = None
         if (
             is_video_jobs_endpoint
-            and (is_wan_model or is_seedance2_model)
+            and is_wan_model
             and len(combined_image_urls) > 1
             and SEEDANCE_VIDEO_REFERENCE_MODE != "timeline"
         ):
             reference_sheet_url = await build_seedance_reference_sheet_url(combined_image_urls)
-            if is_seedance2_model and reference_sheet_url:
-                prompt_text = (
-                    "Treat @Image1 as the exact identity sheet containing BOTH required characters. "
-                    "Keep both characters unchanged from @Image1 for the whole video. "
-                    "Do not add new people or animals. "
-                    + (prompt_text or "")
-                )
         primary_frame_reference_url = reference_sheet_url or primary_image_url
         if is_video_jobs_endpoint:
             refs_payload = [
@@ -3402,21 +3424,16 @@ async def start_seedance_task(
                 payload_variants.append({**payload_base, "frame_images": frame_images, "aspect_ratio": "16:9"})
                 payload_variants.append({**payload_base, "frame_images": frame_images})
             else:
-                # Seedance 2 on Zveno currently accepts image_urls most reliably.
-                # Keep a deterministic payload to avoid slow 400 retries.
                 if is_seedance2_model:
-                    seedance2_urls = [reference_sheet_url] if reference_sheet_url else combined_image_urls
                     logger.info(
-                        "Seedance 2 refs prepared: original_refs=%s, using_sheet=%s, sent_refs=%s",
+                        "Seedance 2 refs prepared: refs_count=%s, strategy=input_references-first",
                         len(combined_image_urls),
-                        "yes" if reference_sheet_url else "no",
-                        len(seedance2_urls),
                     )
-                    payload_variants.append({**payload_base, "image_urls": seedance2_urls})
+                    payload_variants.append({**payload_base, "input_references": refs_payload, "aspect_ratio": "16:9"})
+                    payload_variants.append({**payload_base, "input_references": refs_payload})
+                    # Last-resort compatibility fallback for gateways that only accept image_urls.
+                    payload_variants.append({**payload_base, "image_urls": combined_image_urls})
                 else:
-                # Character-reference mode:
-                # input_references are soft style hints. To keep identity more reliably,
-                # anchor the first frame with a combined reference sheet when 2 photos are provided.
                     frame_anchor = [
                         {
                             "type": "image_url",
@@ -3477,7 +3494,6 @@ async def start_seedance_task(
                     payload_variants.append({**payload_base, "input_references": refs_payload})
                     payload_variants.append({**payload_base, "image_urls": combined_image_urls})
 
-                # Compatibility fallback for gateways that prefer legacy nested format.
                     payload_variants.append(
                         {
                             **payload_base,
@@ -3885,9 +3901,6 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Обычно это занимает {eta_min}–{eta_max} минут."
         )
         expected_refs_count = len(motion_images)
-        if SEEDANCE_VIDEO_REFERENCE_MODE != "timeline" and len(motion_images) > 1:
-            # In character mode we pack multiple references into one first-frame sheet.
-            expected_refs_count = 1
 
         restart_after_seconds = 10 * 60
         per_attempt_max_polls = max(1, restart_after_seconds // max(1, int(SEEDANCE_POLL_INTERVAL)))
@@ -4019,6 +4032,18 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             references_count=len(motion_images),
         )
         error_text = str(e).lower()
+        if is_seedance_privacy_moderation_error(error_text):
+            await reply_target.reply_text(
+                f"Не удалось выполнить {selected_model_label}.\n"
+                "Провайдер отклонил один из фото-референсов (модерация real person / privacy).\n"
+                "Попробуй другие фото или более нейтральные изображения.\n\n"
+                "Списанные изюминки возвращены на баланс."
+            )
+            await reply_target.reply_text(
+                "Повторить попытку?",
+                reply_markup=seedance_retry_kb(),
+            )
+            return
         if "insufficient_funds" in error_text or "insufficient funds" in error_text:
             await reply_target.reply_text(
                 f"Не удалось выполнить {selected_model_label}.\n"

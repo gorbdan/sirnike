@@ -3431,8 +3431,6 @@ async def start_seedance_task(
                     )
                     payload_variants.append({**payload_base, "input_references": refs_payload, "aspect_ratio": "16:9"})
                     payload_variants.append({**payload_base, "input_references": refs_payload})
-                    # Last-resort compatibility fallback for gateways that only accept image_urls.
-                    payload_variants.append({**payload_base, "image_urls": combined_image_urls})
                 else:
                     frame_anchor = [
                         {
@@ -3513,6 +3511,7 @@ async def start_seedance_task(
             payload_variants.append(payload_base)
 
     last_error = "unknown"
+    privacy_blocked = False
     async with aiohttp.ClientSession() as session:
         for create_url in create_urls:
             logger.info(f"Seedance create task endpoint: {create_url}")
@@ -3540,6 +3539,9 @@ async def start_seedance_task(
                             response_text[:500],
                         )
                         last_error = f"{resp.status}. {response_text}"
+                        if is_seedance_privacy_moderation_error(response_text):
+                            privacy_blocked = True
+                            break
                         continue
                     try:
                         data = json.loads(response_text)
@@ -3555,6 +3557,8 @@ async def start_seedance_task(
                         logger.info(f"Seedance create accepted: task_id={task_id}")
                         return str(task_id)
                     last_error = f"Task id missing in response: {data}"
+            if privacy_blocked:
+                break
 
     raise Exception(f"Seedance create task error: {last_error}")
 

@@ -6,6 +6,7 @@ BotHost rebuilds the Docker image from the Git repository and restarts the conta
 
 This project is configured for BotHost like this:
 
+- `Dockerfile` forces the container to run the Python bot (`python SirNike.py`), not browser files from `webapp/`;
 - dependencies are listed in `requirements.txt`;
 - secrets are read from BotHost environment variables or local `.env`;
 - SQLite database, logs, and generated outputs are stored under `DATA_DIR` (`/app/data` on BotHost).

@@ -350,11 +350,11 @@ def get_seedance_duration_options(model_code: Optional[str] = None) -> List[int]
             sec = int(raw)
         except ValueError:
             continue
-        sec = max(4, min(sec, 15))
+        sec = max(5, min(sec, 10))
         if sec not in parsed:
             parsed.append(sec)
 
-    default_sec = max(4, min(int(SEEDANCE_DURATION), 15))
+    default_sec = max(5, min(int(SEEDANCE_DURATION), 10))
     if default_sec not in parsed:
         parsed.append(default_sec)
     parsed.sort()
@@ -364,7 +364,7 @@ def get_seedance_duration_options(model_code: Optional[str] = None) -> List[int]
 def get_selected_seedance_duration(state: UserState) -> int:
     model_code = get_motion_model(state)
     options = get_seedance_duration_options(model_code)
-    default_sec = options[0] if options else max(4, min(int(SEEDANCE_DURATION), 15))
+    default_sec = options[0] if options else max(5, min(int(SEEDANCE_DURATION), 10))
     selected = state.motion_duration if isinstance(state.motion_duration, int) else default_sec
     if selected not in options:
         selected = default_sec
@@ -429,7 +429,7 @@ def calc_seedance_cost(duration_sec: int, cost_per_second: Optional[float] = Non
         cost_per_second if cost_per_second is not None else SEEDANCE_COST_PER_SECOND,
         0.01,
     )
-    safe_duration = max(4, min(int(duration_sec), 15))
+    safe_duration = max(5, min(int(duration_sec), 10))
     return max(1, int(round(safe_duration * cps)))
 
 
@@ -799,10 +799,12 @@ def motion_control_status_text(state: UserState) -> str:
     eta_max = max(eta_min + 1, int(selected_duration * 2.0))
     options_text = ", ".join([f"{sec}с" for sec in get_seedance_duration_options(selected_model)])
     fast_hint = " (для быстрого теста промптов)" if selected_model == "seedance2_fast" else ""
+    fast_limit_hint = ""
 
     return (
         f"{model_label}{fast_hint}\n"
         "Генерация видео с помощью нейросети.\n"
+        f"{fast_limit_hint}"
         f"Можно запустить только с промптом, но лучше добавить фото-референсы (до {MAX_SEEDANCE_IMAGE_REFERENCES}).\n\n"
         "1. Нажми «Промпт» (необязательно)\n"
         f"2. Добавь «Изображение» (можно до {MAX_SEEDANCE_IMAGE_REFERENCES} фото)\n"
@@ -2209,7 +2211,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.waiting_for_motion_image = True
         await query.message.reply_text(
             "Отправляй фото для Seedance (можно несколько подряд).\n"
-            f"Лимит: {MAX_SEEDANCE_IMAGE_REFERENCES} фото.\n"
+            f"Лимит: до {MAX_SEEDANCE_IMAGE_REFERENCES} фото.\n"
             "Когда всё загрузишь, нажми «Запустить ⚡»."
         )
         return
@@ -3116,6 +3118,7 @@ async def start_seedance_task(
     mode: Optional[str] = None,
     model_slug: Optional[str] = None,
     image_urls: Optional[List[str]] = None,
+    model_code: Optional[str] = None,
 ) -> str:
     if not ZVENO_API_KEY:
         raise Exception("ZVENO_API_KEY is empty")
@@ -3138,16 +3141,28 @@ async def start_seedance_task(
             create_urls.append(url)
 
     mode_value = "1080p" if str(mode or SEEDANCE_MODE).lower() == "1080p" else "720p"
-    duration = max(4, min(int(duration if duration is not None else SEEDANCE_DURATION), 15))
+    duration = max(5, min(int(duration if duration is not None else SEEDANCE_DURATION), 10))
     model_value = str(model_slug or "bytedance/seedance-2.0-fast").strip()
     legacy_model_map = {
         "seedance-2-0": "bytedance/seedance-2.0",
         "seedance-2.0": "bytedance/seedance-2.0",
         "seedance-2-0-fast": "bytedance/seedance-2.0-fast",
         "seedance-2.0-fast": "bytedance/seedance-2.0-fast",
+        "bytedance/seedance-2.0/reference-to-video": "bytedance/seedance-2.0",
+        "bytedance/seedance-2.0/image-to-video": "bytedance/seedance-2.0",
+        "bytedance/seedance-2.0/fast/reference-to-video": "bytedance/seedance-2.0-fast",
+        "bytedance/seedance-2.0/fast/image-to-video": "bytedance/seedance-2.0-fast",
     }
     model_value = legacy_model_map.get(model_value.lower(), model_value)
     model_value_lower = model_value.lower()
+    if model_code == "seedance2":
+        if "fast" in model_value_lower:
+            model_value = "bytedance/seedance-2.0"
+            model_value_lower = model_value.lower()
+    elif model_code == "seedance2_fast":
+        if "fast" not in model_value_lower:
+            model_value = "bytedance/seedance-2.0-fast"
+            model_value_lower = model_value.lower()
     combined_image_urls: List[str] = []
     if image_urls:
         for item in image_urls:
@@ -3161,28 +3176,12 @@ async def start_seedance_task(
             combined_image_urls.append(candidate)
     combined_image_urls = combined_image_urls[:MAX_SEEDANCE_IMAGE_REFERENCES]
 
-    # Route to the right Seedance mode:
-    # - single image -> image-to-video
-    # - 2+ images -> reference-to-video
-    if len(combined_image_urls) > 1:
-        if "fast" in model_value_lower:
-            model_value = "bytedance/seedance-2.0/fast/reference-to-video"
-        else:
-            model_value = "bytedance/seedance-2.0/reference-to-video"
-    elif combined_image_urls:
-        if model_value_lower in {"bytedance/seedance-2.0-fast", "seedance-2.0-fast", "seedance-2-0-fast"}:
-            model_value = "bytedance/seedance-2.0/fast/image-to-video"
-        elif model_value_lower in {"bytedance/seedance-2.0", "seedance-2.0", "seedance-2-0"}:
-            model_value = "bytedance/seedance-2.0/image-to-video"
     model_value_lower = model_value.lower()
 
     prompt_text = (prompt or "").strip()
     if combined_image_urls:
         if not prompt_text:
             prompt_text = "Animate the provided photo naturally. Keep the same person, face, clothes, and background."
-        if "reference-to-video" in model_value_lower and "@image1" not in prompt_text.lower():
-            tags = " ".join([f"@Image{i}" for i in range(1, len(combined_image_urls) + 1)])
-            prompt_text = f"{tags} {prompt_text}".strip()
     elif not prompt_text:
         prompt_text = "Create a natural cinematic video."
 
@@ -3202,15 +3201,35 @@ async def start_seedance_task(
     if combined_image_urls:
         primary_image_url = combined_image_urls[0]
         if is_video_jobs_endpoint:
+            # OpenRouter-compatible schema used by Zveno /v1/videos:
+            # - frame_images => image-to-video (exact first/last frame control)
+            # - input_references => reference-to-video (style/content references)
+            frame_first = [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": primary_image_url},
+                    "frame_type": "first_frame",
+                }
+            ]
+            refs_payload = [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": url},
+                }
+                for url in combined_image_urls
+            ]
+
+            payload_variants.append({**payload_base, "frame_images": frame_first})
+            payload_variants.append({**payload_base, "input_references": refs_payload})
+
+            # Compatibility fallback variants (legacy shapes some providers still accept).
             base_refs = [
                 {"image_url": primary_image_url},
                 {"image_urls": combined_image_urls},
                 {"input_references": [{"type": "image", "url": u} for u in combined_image_urls]},
                 {"reference_images": [{"role": "reference", "url": u} for u in combined_image_urls]},
             ]
-            timing_variants = [
-                {"duration": duration},
-            ]
+            timing_variants = [{"duration": duration}]
             for refs in base_refs:
                 for timing in timing_variants:
                     payload_variants.append({**payload_base, **timing, **refs})
@@ -3231,9 +3250,9 @@ async def start_seedance_task(
         for create_url in create_urls:
             logger.info(f"Seedance create task endpoint: {create_url}")
             for payload in payload_variants:
-                ref_keys = [k for k in ("image_url", "image_urls", "input_references", "reference_images") if k in payload]
+                ref_keys = [k for k in ("frame_images", "input_references", "image_url", "image_urls", "reference_images") if k in payload]
                 logger.info(
-                    f"Seedance create payload: model={payload.get('model')}, duration={payload.get('duration') or payload.get('seconds')}, refs={ref_keys}, refs_count={len(combined_image_urls)}"
+                    f"Seedance create payload: model={payload.get('model')}, model_code={model_code}, duration={payload.get('duration') or payload.get('seconds')}, refs={ref_keys}, refs_count={len(combined_image_urls)}"
                 )
                 async with session.post(
                     create_url,
@@ -3517,6 +3536,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             endpoint=selected_endpoint,
             mode=selected_mode,
             model_slug=selected_model_slug,
+            model_code=selected_model,
         )
 
         video_url = await poll_seedance_task(

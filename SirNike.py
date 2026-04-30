@@ -112,19 +112,24 @@ from db import (
 BASE_DIR = os.path.dirname(__file__)
 OUTPUTS_DIR = os.path.join(BASE_DIR, "outputs")
 os.makedirs(OUTPUTS_DIR, exist_ok=True)
+BUILD_ID = "2026-04-30-seedance-poll-probe-v2"
+LOG_DIR = os.getenv("BOT_LOG_DIR", BASE_DIR).strip() or BASE_DIR
+LOG_FILE_PATH = os.path.join(LOG_DIR, "bot.log")
+LOG_FILE_ERROR: Optional[str] = None
 
 log_handlers = [logging.StreamHandler()]
 try:
+    os.makedirs(LOG_DIR, exist_ok=True)
     file_handler = RotatingFileHandler(
-        os.path.join(BASE_DIR, "bot.log"),
+        LOG_FILE_PATH,
         maxBytes=5 * 1024 * 1024,
         backupCount=5,
         encoding="utf-8",
     )
     log_handlers.append(file_handler)
-except Exception:
+except Exception as e:
     # If file logging cannot be initialized, keep console logging alive.
-    pass
+    LOG_FILE_ERROR = str(e)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -3551,6 +3556,55 @@ async def poll_seedance_task(
         f"Seedance polling started: task_ref={task_id}, max_attempts={max_attempts}, interval={poll_interval}s, urls={poll_urls}"
     )
 
+    content_probe_urls: List[str] = []
+    for poll_url in poll_urls:
+        normalized = poll_url.strip()
+        if not normalized:
+            continue
+        if normalized.endswith("/content"):
+            if normalized not in content_probe_urls:
+                content_probe_urls.append(normalized)
+            continue
+        if "/v1/videos/" in normalized:
+            candidate = normalized.rstrip("/") + "/content"
+            if candidate not in content_probe_urls:
+                content_probe_urls.append(candidate)
+
+    def _extract_video_url_from_task(task_data: dict) -> Optional[str]:
+        video_url = None
+        unsigned_urls = task_data.get("unsigned_urls")
+        if isinstance(unsigned_urls, list):
+            for item in unsigned_urls:
+                if isinstance(item, str) and item.startswith("http"):
+                    video_url = item
+                    break
+        if not video_url:
+            video_url = extract_task_video_url(task_data)
+        return video_url
+
+    async def _probe_content_url(session: aiohttp.ClientSession, url: str) -> bool:
+        headers = {
+            "x-api-key": ZVENO_API_KEY,
+            "Authorization": f"Bearer {ZVENO_API_KEY}",
+        }
+        try:
+            async with session.get(
+                url,
+                headers=headers,
+                allow_redirects=True,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                if resp.status != 200:
+                    return False
+                content_type = (resp.headers.get("Content-Type") or "").lower()
+                if content_type.startswith("video/") or "octet-stream" in content_type:
+                    return True
+                # Fallback: if status is 200 and body is non-empty, treat as ready content.
+                body = await resp.read()
+                return bool(body)
+        except Exception:
+            return False
+
     async with aiohttp.ClientSession() as session:
         for attempt in range(max_attempts):
             logger.info(f"Seedance poll tick: attempt={attempt + 1}/{max_attempts}")
@@ -3593,7 +3647,34 @@ async def poll_seedance_task(
             status = status_raw.upper()
             logger.info(f"Seedance task {task_id}: attempt={attempt + 1}/{max_attempts}, status={status}")
 
-            if status in ("COMPLETED", "SUCCEEDED"):
+            task_id_from_data = str(data.get("id") or "").strip()
+            if task_id_from_data.startswith("vj_"):
+                candidate = build_zveno_url(ZVENO_API_BASE, f"/v1/videos/{task_id_from_data}/content")
+                if candidate not in content_probe_urls:
+                    content_probe_urls.append(candidate)
+
+            video_url_any_status = _extract_video_url_from_task(data)
+            if video_url_any_status and status not in ("FAILED", "CANCELLED", "ERROR"):
+                logger.info(
+                    "Seedance poll early-finish: video url is already available at status=%s",
+                    status or "unknown",
+                )
+                return video_url_any_status
+
+            if status in ("IN_PROGRESS", "PROCESSING", "PENDING", ""):
+                # Some providers keep status stale while content is already downloadable.
+                if attempt >= 6 and (attempt % 2 == 0):
+                    for probe_url in content_probe_urls:
+                        ready = await _probe_content_url(session, probe_url)
+                        if ready:
+                            logger.info(
+                                "Seedance content probe ready: status=%s, url=%s",
+                                status or "unknown",
+                                probe_url,
+                            )
+                            return probe_url
+
+            if status in ("COMPLETED", "SUCCEEDED", "DONE", "FINISHED", "SUCCESS"):
                 if expected_refs_count > 1:
                     accepted_refs = extract_task_reference_count(data)
                     # Some providers do not echo reference fields in poll responses.
@@ -3602,15 +3683,7 @@ async def poll_seedance_task(
                         raise Exception(
                             f"Референсы применились не полностью: ожидалось {expected_refs_count}, подтверждено {accepted_refs}."
                         )
-                video_url = None
-                unsigned_urls = data.get("unsigned_urls")
-                if isinstance(unsigned_urls, list):
-                    for item in unsigned_urls:
-                        if isinstance(item, str) and item.startswith("http"):
-                            video_url = item
-                            break
-                if not video_url:
-                    video_url = extract_task_video_url(data)
+                video_url = _extract_video_url_from_task(data)
                 if not video_url:
                     raise Exception(f"Seedance task completed but video URL missing: {data}")
                 return video_url
@@ -3840,6 +3913,12 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cost=selected_cost,
             was_free=False,
             references_count=len(motion_images),
+        )
+        logger.info(
+            "Seedance send_video success: chat_id=%s, user_id=%s, model=%s",
+            update.effective_chat.id,
+            user.id,
+            selected_model_label,
         )
     except Exception as e:
         logger.exception("Seedance generation failed")
@@ -4638,6 +4717,11 @@ def main():
     app.add_error_handler(error_handler)
 
     logger.info("Бот запускается...")
+    logger.info("build=%s", BUILD_ID)
+    if LOG_FILE_ERROR:
+        logger.warning("file logging disabled: %s", LOG_FILE_ERROR)
+    else:
+        logger.info("file logging enabled: %s", LOG_FILE_PATH)
     app.run_polling()
 
 

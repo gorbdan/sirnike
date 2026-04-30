@@ -3883,29 +3883,66 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Запускаю {selected_model_label} 🎬\n"
             f"Обычно это занимает {eta_min}–{eta_max} минут."
         )
-        task_id = await start_seedance_task(
-            prompt=prompt_text,
-            image_url=motion_images[0] if motion_images else None,
-            image_urls=motion_images,
-            user_id=user.id,
-            duration=selected_duration,
-            endpoint=selected_endpoint,
-            mode=selected_mode,
-            model_slug=selected_model_slug,
-            model_code=selected_model,
-        )
-
         expected_refs_count = len(motion_images)
         if SEEDANCE_VIDEO_REFERENCE_MODE != "timeline" and len(motion_images) > 1:
             # In character mode we pack multiple references into one first-frame sheet.
             expected_refs_count = 1
 
-        video_url = await poll_seedance_task(
-            task_id=task_id,
-            max_attempts=SEEDANCE_MAX_POLL_ATTEMPTS,
-            poll_interval=SEEDANCE_POLL_INTERVAL,
-            expected_refs_count=expected_refs_count,
-        )
+        restart_after_seconds = 10 * 60
+        per_attempt_max_polls = max(1, restart_after_seconds // max(1, int(SEEDANCE_POLL_INTERVAL)))
+        per_attempt_max_polls = min(SEEDANCE_MAX_POLL_ATTEMPTS, per_attempt_max_polls)
+        max_seedance_attempts = 2
+
+        video_url = None
+        last_seedance_error: Optional[Exception] = None
+        for seedance_attempt in range(1, max_seedance_attempts + 1):
+            task_id = await start_seedance_task(
+                prompt=prompt_text,
+                image_url=motion_images[0] if motion_images else None,
+                image_urls=motion_images,
+                user_id=user.id,
+                duration=selected_duration,
+                endpoint=selected_endpoint,
+                mode=selected_mode,
+                model_slug=selected_model_slug,
+                model_code=selected_model,
+            )
+
+            try:
+                video_url = await poll_seedance_task(
+                    task_id=task_id,
+                    max_attempts=per_attempt_max_polls,
+                    poll_interval=SEEDANCE_POLL_INTERVAL,
+                    expected_refs_count=expected_refs_count,
+                )
+                break
+            except Exception as e:
+                last_seedance_error = e
+                err_text = str(e).lower()
+                timeout_like = (
+                    "превышено время ожидания" in err_text
+                    or "polling exceeded" in err_text
+                    or "timeout" in err_text
+                )
+                if seedance_attempt < max_seedance_attempts and timeout_like:
+                    logger.warning(
+                        "Seedance attempt timeout. Auto-restart same model: attempt=%s/%s user_id=%s model=%s",
+                        seedance_attempt,
+                        max_seedance_attempts,
+                        user.id,
+                        selected_model,
+                    )
+                    await reply_target.reply_text(
+                        "Генерация зависла в очереди. Автоматически перезапускаю задачу на той же модели..."
+                    )
+                    continue
+                raise
+
+        if not video_url:
+            if last_seedance_error:
+                raise last_seedance_error
+            raise Exception("Seedance video URL missing after retries")
+
         video_bytes = await download_video_bytes_with_fallback(video_url)
         saved_path = save_video_debug_copy(video_bytes, user.id, selected_model_label)
         if saved_path:

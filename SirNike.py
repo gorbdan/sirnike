@@ -3339,6 +3339,15 @@ async def start_seedance_task(
             "duration": duration,
             "resolution": mode_value,
         }
+        if is_seedance2_model:
+            # Keep provider deterministic for reproducible quality on Seedance 2.
+            payload_base["provider"] = {
+                "preferences": {
+                    "only": ["openrouter"],
+                    "allow_fallbacks": False,
+                    "sort": "price",
+                }
+            }
     payload_variants = []
     if combined_image_urls:
         primary_image_url = combined_image_urls[0]
@@ -3384,7 +3393,6 @@ async def start_seedance_task(
                 # Keep a deterministic payload to avoid slow 400 retries.
                 if is_seedance2_model:
                     payload_variants.append({**payload_base, "image_urls": combined_image_urls})
-                    payload_variants.append({**payload_base, "image_urls": combined_image_urls, "aspect_ratio": "16:9"})
                 else:
                 # Character-reference mode:
                 # input_references are soft style hints. To keep identity more reliably,
@@ -3748,6 +3756,14 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     selected_endpoint = SEEDANCE_FAST_ENDPOINT if selected_model == "seedance2_fast" else SEEDANCE_ENDPOINT
     selected_mode = SEEDANCE_FAST_MODE if selected_model == "seedance2_fast" else SEEDANCE_MODE
     selected_model_slug = SEEDANCE_FAST_MODEL if selected_model == "seedance2_fast" else SEEDANCE_MODEL
+
+    if selected_model == "seedance2" and len(motion_images) < 2:
+        await reply_target.reply_text(
+            "Для Seedance 2 нужно загрузить 2 фото-референса.\n"
+            "Добавь второе фото и запусти снова.",
+            reply_markup=motion_control_kb(state),
+        )
+        return
 
     bal = get_balance(user.id)
     if bal < selected_cost:

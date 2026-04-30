@@ -3264,14 +3264,14 @@ async def start_seedance_task(
     }
     model_value = legacy_model_map.get(model_value.lower(), model_value)
     model_value_lower = model_value.lower()
+    # Hard bind UI model choices to actual backend model slugs.
+    # This avoids accidental .env substitutions (e.g. wan-2.7 under "Seedance 2" button).
     if model_code == "seedance2":
-        if "fast" in model_value_lower:
-            model_value = "bytedance/seedance-2.0"
-            model_value_lower = model_value.lower()
+        model_value = "bytedance/seedance-2.0"
+        model_value_lower = model_value.lower()
     elif model_code == "seedance2_fast":
-        if "fast" not in model_value_lower:
-            model_value = "bytedance/seedance-2.0-fast"
-            model_value_lower = model_value.lower()
+        model_value = "bytedance/seedance-2.0-fast"
+        model_value_lower = model_value.lower()
     is_wan_model = "wan-2.7" in model_value_lower or model_value_lower.startswith("alibaba/wan")
     combined_image_urls: List[str] = []
     if image_urls:
@@ -3614,7 +3614,8 @@ async def download_video_bytes_with_fallback(video_url: str) -> bytes:
         "x-api-key": ZVENO_API_KEY,
         "Authorization": f"Bearer {ZVENO_API_KEY}",
     }
-    headers_variants = [None, auth_headers]
+    # Zveno /content usually requires auth; try authorized request first to avoid noisy 401.
+    headers_variants = [auth_headers, None]
 
     last_error = "unknown"
     async with aiohttp.ClientSession() as session:

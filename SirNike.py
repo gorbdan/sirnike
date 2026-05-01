@@ -358,9 +358,9 @@ def ru_plural(value: int, one: str, few: str, many: str) -> str:
 
 
 def get_seedance_duration_bounds(model_code: Optional[str] = None) -> tuple[int, int]:
-    if model_code == "seedance2_fast":
-        return 5, 10
-    return 5, 30
+    # Current Zveno catalog for both bytedance/seedance-2.0 and -fast:
+    # supported_durations = [5, 10]
+    return 5, 10
 
 
 def normalize_seedance_duration(value: int, model_code: Optional[str] = None) -> int:
@@ -369,14 +369,24 @@ def normalize_seedance_duration(value: int, model_code: Optional[str] = None) ->
 
 
 def normalize_seedance_mode(value: str) -> str:
-    return "1080p" if str(value or "").strip().lower() == "1080p" else "720p"
+    raw = str(value or "").strip().lower()
+    # Normalize Cyrillic "р" -> Latin "p" in case env/UI text was typed in RU layout.
+    raw = raw.replace("р", "p")
+    if raw in ("480", "480p"):
+        return "480p"
+    return "720p"
+
+
+def seedance_mode_ui_label(mode: str) -> str:
+    normalized = normalize_seedance_mode(mode)
+    return "480" if normalized == "480p" else "720"
 
 
 def get_seedance_mode_options(model_code: Optional[str] = None) -> List[str]:
     if model_code == "seedance2_fast":
         return [normalize_seedance_mode(SEEDANCE_FAST_MODE)]
 
-    raw_options = os.getenv("SEEDANCE_MODE_OPTIONS", "720p,1080p")
+    raw_options = os.getenv("SEEDANCE_MODE_OPTIONS", "480,720")
     parsed: List[str] = []
     for raw in str(raw_options).split(","):
         mode = normalize_seedance_mode(raw)
@@ -385,6 +395,10 @@ def get_seedance_mode_options(model_code: Optional[str] = None) -> List[str]:
     default_mode = normalize_seedance_mode(SEEDANCE_MODE)
     if default_mode not in parsed:
         parsed.append(default_mode)
+    # Seedance 2 supports 480p/720p. Keep both visible unless explicitly restricted.
+    for fallback_mode in ("480p", "720p"):
+        if fallback_mode not in parsed:
+            parsed.append(fallback_mode)
     return parsed
 
 
@@ -417,6 +431,12 @@ def get_seedance_duration_options(model_code: Optional[str] = None) -> List[int]
     default_sec = normalize_seedance_duration(int(SEEDANCE_DURATION), model_code)
     if default_sec not in parsed:
         parsed.append(default_sec)
+    if model_code != "seedance2_fast" and len(parsed) <= 1:
+        # Guardrail: if env accidentally left only "5", keep normal Seedance 2 controls available.
+        for fallback_sec in (5, 10):
+            sec = normalize_seedance_duration(fallback_sec, model_code)
+            if sec not in parsed:
+                parsed.append(sec)
     parsed.sort()
     return parsed
 
@@ -842,8 +862,8 @@ def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
             prefix = "● " if mode == selected_mode else ""
             mode_buttons.append(
                 InlineKeyboardButton(
-                    f"{prefix}{mode}",
-                    callback_data=f"mc_mode_{mode}",
+                    f"{prefix}{seedance_mode_ui_label(mode)}",
+                    callback_data=f"mc_mode_{seedance_mode_ui_label(mode)}",
                 )
             )
         if mode_buttons:
@@ -874,9 +894,9 @@ def motion_control_status_text(state: UserState) -> str:
     eta_max = max(eta_min + 1, int(selected_duration * 2.0))
     options_text = ", ".join([f"{sec}с" for sec in get_seedance_duration_options(selected_model)])
     quality_text = (
-        f"{selected_mode} (варианты: {', '.join(get_seedance_mode_options(selected_model))})"
+        f"{seedance_mode_ui_label(selected_mode)} (варианты: {', '.join([seedance_mode_ui_label(m) for m in get_seedance_mode_options(selected_model)])})"
         if selected_model == "seedance2"
-        else f"{selected_mode} (фиксировано)"
+        else f"{seedance_mode_ui_label(selected_mode)} (фиксировано)"
     )
     return (
         f"{model_label}\n"
@@ -4126,8 +4146,10 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_seedance_privacy_moderation_error(error_text):
             await reply_target.reply_text(
                 f"Не удалось выполнить {selected_model_label}.\n"
-                "Провайдер отклонил один из фото-референсов (модерация real person / privacy).\n"
-                "Попробуй другие фото или более нейтральные изображения.\n\n"
+                "Seedance отклонил фото-референс модерацией.\n"
+                "Код: InputImageSensitiveContentDetected.PrivacyInformation.\n"
+                "Это ограничение модерации Seedance, а не технический сбой бота.\n"
+                "Попробуй другой референс (менее похожий на фото реального человека).\n\n"
                 "Списанные изюминки возвращены на баланс."
             )
             await reply_target.reply_text(

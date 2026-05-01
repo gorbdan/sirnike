@@ -3,6 +3,7 @@ import base64
 import io
 import json
 import logging
+import re
 from logging.handlers import RotatingFileHandler
 import os
 from datetime import datetime
@@ -280,8 +281,16 @@ DEFAULT_PROMPT_LIBRARY = [
     },
 ]
 
-PROMPT_LIBRARY_PRIMARY_PATH = os.path.join(os.path.dirname(__file__), "webapp", "prompt_library.json")
 PROMPT_LIBRARY_LEGACY_PATH = os.path.join(os.path.dirname(__file__), "prompt_library.json")
+_PROMPT_LIBRARY_PRIMARY_ENV = os.getenv("PROMPT_LIBRARY_PRIMARY_PATH", "").strip()
+_PROMPT_LIBRARY_WEBAPP_PATH = os.path.join(os.path.dirname(__file__), "webapp", "prompt_library.json")
+if _PROMPT_LIBRARY_PRIMARY_ENV:
+    PROMPT_LIBRARY_PRIMARY_PATH = _PROMPT_LIBRARY_PRIMARY_ENV
+elif os.path.isdir(os.path.dirname(_PROMPT_LIBRARY_WEBAPP_PATH)):
+    PROMPT_LIBRARY_PRIMARY_PATH = _PROMPT_LIBRARY_WEBAPP_PATH
+else:
+    # Safe default: do not depend on local webapp folder on runtime hosts.
+    PROMPT_LIBRARY_PRIMARY_PATH = PROMPT_LIBRARY_LEGACY_PATH
 
 
 def load_prompt_library() -> list:
@@ -322,12 +331,17 @@ PROMPT_LIBRARY = load_prompt_library()
 
 
 def save_prompt_library(data: list) -> None:
-    os.makedirs(os.path.dirname(PROMPT_LIBRARY_PRIMARY_PATH), exist_ok=True)
-    with open(PROMPT_LIBRARY_PRIMARY_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    # Keep legacy root file in sync as a mirror source for local tooling/backups.
-    with open(PROMPT_LIBRARY_LEGACY_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    write_paths = []
+    for path in (PROMPT_LIBRARY_PRIMARY_PATH, PROMPT_LIBRARY_LEGACY_PATH):
+        if path and path not in write_paths:
+            write_paths.append(path)
+
+    for path in write_paths:
+        dir_path = os.path.dirname(path)
+        if dir_path and not os.path.isdir(dir_path):
+            os.makedirs(dir_path, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 def refresh_prompt_library() -> None:
@@ -653,9 +667,21 @@ def prompt_library_category_kb(cat_idx: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def prompt_library_item_kb(cat_idx: int, item_idx: int) -> InlineKeyboardMarkup:
+def get_prompt_item_kind(item: dict) -> str:
+    if not isinstance(item, dict):
+        return "image"
+    raw = str(item.get("kind") or item.get("type") or item.get("target") or "").strip().lower()
+    if raw in {"video", "seedance", "seedance_video", "seedance2"}:
+        return "video"
+    if str(item.get("video_url") or "").strip():
+        return "video"
+    return "image"
+
+
+def prompt_library_item_kb(cat_idx: int, item_idx: int, item_kind: str = "image") -> InlineKeyboardMarkup:
+    use_text = "Использовать в Seedance 2 ✅" if item_kind == "video" else "Использовать промпт ✅"
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Использовать промпт ✅", callback_data=f"pl_use_{cat_idx}_{item_idx}")],
+        [InlineKeyboardButton(use_text, callback_data=f"pl_use_{cat_idx}_{item_idx}")],
         [InlineKeyboardButton("← Назад к категории", callback_data=f"pl_cat_{cat_idx}")],
         [InlineKeyboardButton("К категориям", callback_data="pl_open")],
     ])
@@ -1753,7 +1779,7 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
     if not isinstance(payload, dict):
         return False
     action = str(payload.get("action") or "").strip().lower()
-    if action and action != "set_prompt":
+    if action and action not in {"set_prompt", "set_video_prompt"}:
         return False
 
     prompt = str(payload.get("prompt") or "").strip()
@@ -1764,13 +1790,25 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
         return False
 
     state = get_or_init_state(context)
-    state.prompt = prompt
+    if action == "set_video_prompt":
+        state.motion_prompt = prompt
+        state.motion_session_active = True
+        state.waiting_for_motion_image = True
+    else:
+        state.prompt = prompt
 
     if update.effective_message:
-        await update.effective_message.reply_text(
-            f"Готово ✨\nПромпт из шаблона «{title}» сохранён.\nТеперь можно запускать генерацию.",
-            reply_markup=main_menu_kb(),
-        )
+        if action == "set_video_prompt":
+            await update.effective_message.reply_text(
+                f"Готово ✨\nВидео-промпт «{title}» применён для Seedance 2 / Seedance 2 Fast.\n"
+                "Теперь добавь фото-референсы и запускай видео.",
+                reply_markup=motion_control_kb(state),
+            )
+        else:
+            await update.effective_message.reply_text(
+                f"Готово ✨\nПромпт из шаблона «{title}» сохранён.\nТеперь можно запускать генерацию.",
+                reply_markup=main_menu_kb(),
+            )
     return True
 
 
@@ -1778,20 +1816,32 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
     if not isinstance(payload, dict):
         return False
     action = str(payload.get("action") or "").strip().lower()
-    if action and action != "set_prompt":
+    if action and action not in {"set_prompt", "set_video_prompt"}:
         return False
 
     title = str(payload.get("title") or "шаблон").strip() or "шаблон"
     prompt = str(payload.get("prompt") or "").strip() or title
 
     state = get_or_init_state(context)
-    state.prompt = prompt
+    if action == "set_video_prompt":
+        state.motion_prompt = prompt
+        state.motion_session_active = True
+        state.waiting_for_motion_image = True
+    else:
+        state.prompt = prompt
 
     if update.effective_message:
-        await update.effective_message.reply_text(
-            f"Готово ✨\nШаблон «{title}» применен.\nТеперь можно запускать генерацию.",
-            reply_markup=main_menu_kb(),
-        )
+        if action == "set_video_prompt":
+            await update.effective_message.reply_text(
+                f"Готово ✨\nВидео-промпт «{title}» применён для Seedance 2 / Seedance 2 Fast.\n"
+                "Теперь отправь фото-референсы и запускай видео.",
+                reply_markup=motion_control_kb(state),
+            )
+        else:
+            await update.effective_message.reply_text(
+                f"Готово ✨\nШаблон «{title}» применен.\nТеперь можно запускать генерацию.",
+                reply_markup=main_menu_kb(),
+            )
     return True
 
 
@@ -2133,6 +2183,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "title": f"Шаблон из истории {item_id}",
             "prompt": (item.get("prompt") or "").strip() or "Опирайся на пример изображения и сохрани стиль.",
             "image_url": item.get("image_url") or "",
+            "item_kind": "image",
         }
         await query.message.reply_text(
             f"Выбрано из истории: #{item_id}\nТеперь выбери категорию, куда сохранить шаблон:",
@@ -2219,6 +2270,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cat_idx = int(cat_raw)
             item_idx = int(item_raw)
             item = PROMPT_LIBRARY[cat_idx]["items"][item_idx]
+            item_kind = get_prompt_item_kind(item)
         except Exception:
             await query.message.reply_text("Не удалось открыть шаблон. Попробуй еще раз.")
             return
@@ -2229,13 +2281,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Нажми «Использовать промпт», чтобы подставить его в буфер."
         )
 
-        example_url = item.get("example_url")
-        if example_url:
+        if item_kind == "video":
+            video_url = str(item.get("video_url") or item.get("preview_video_url") or "").strip()
+            if video_url:
+                try:
+                    await query.message.reply_video(
+                        video=video_url,
+                        caption=card_text,
+                        supports_streaming=True,
+                        reply_markup=prompt_library_item_kb(cat_idx, item_idx, item_kind=item_kind),
+                    )
+                    return
+                except Exception:
+                    logger.exception("Failed to send prompt preview video")
+
+        example_url = item.get("example_url") or item.get("poster_url")
+        if example_url and item_kind != "video":
             try:
                 await query.message.reply_photo(
                     photo=example_url,
                     caption=card_text,
-                    reply_markup=prompt_library_item_kb(cat_idx, item_idx),
+                    reply_markup=prompt_library_item_kb(cat_idx, item_idx, item_kind=item_kind),
                 )
                 return
             except Exception:
@@ -2254,7 +2320,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 await query.message.reply_photo(
                                     photo=photo_buffer,
                                     caption=card_text,
-                                    reply_markup=prompt_library_item_kb(cat_idx, item_idx),
+                                    reply_markup=prompt_library_item_kb(cat_idx, item_idx, item_kind=item_kind),
                                 )
                                 return
                 except Exception:
@@ -2262,7 +2328,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.message.reply_text(
             card_text,
-            reply_markup=prompt_library_item_kb(cat_idx, item_idx),
+            reply_markup=prompt_library_item_kb(cat_idx, item_idx, item_kind=item_kind),
         )
         return
 
@@ -2272,11 +2338,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cat_idx = int(cat_raw)
             item_idx = int(item_raw)
             item = PROMPT_LIBRARY[cat_idx]["items"][item_idx]
+            item_kind = get_prompt_item_kind(item)
         except Exception:
             await query.message.reply_text("Не удалось применить промпт. Попробуй еще раз.")
             return
 
         state = get_or_init_state(context)
+        if item_kind == "video":
+            state.motion_prompt = str(item.get("prompt") or item.get("title") or "").strip()
+            state.motion_session_active = True
+            state.waiting_for_motion_image = True
+            await query.message.reply_text(
+                f"Готово ✨\nВидео-промпт «{item['title']}» применён для Seedance 2 / Seedance 2 Fast.\n"
+                "Теперь добавь фото-референсы и запускай видео.",
+                reply_markup=motion_control_kb(state),
+            )
+            return
         state.prompt = item["prompt"]
         await query.message.reply_text(
             f"Готово ✨\nПромпт «{item['title']}» сохранён.\n"
@@ -2302,19 +2379,30 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if cat_idx < 0 or cat_idx >= len(data):
                 raise ValueError("invalid category index")
 
-            image_url = pending["image_url"]
-            stable_example_url = await upload_image_url_to_imgbb(image_url)
-            if not stable_example_url:
-                stable_example_url = image_url
-
             data[cat_idx].setdefault("items", [])
-            data[cat_idx]["items"].append(
-                {
-                    "title": pending["title"],
-                    "prompt": pending["prompt"],
-                    "example_url": stable_example_url,
-                }
-            )
+            item_kind = str(pending.get("item_kind") or "image").strip().lower()
+            if item_kind == "video":
+                data[cat_idx]["items"].append(
+                    {
+                        "title": pending["title"],
+                        "prompt": pending["prompt"],
+                        "type": "video",
+                        "video_url": pending["video_url"],
+                        "poster_url": pending.get("poster_url") or "",
+                    }
+                )
+            else:
+                image_url = pending["image_url"]
+                stable_example_url = await upload_image_url_to_imgbb(image_url)
+                if not stable_example_url:
+                    stable_example_url = image_url
+                data[cat_idx]["items"].append(
+                    {
+                        "title": pending["title"],
+                        "prompt": pending["prompt"],
+                        "example_url": stable_example_url,
+                    }
+                )
 
             save_prompt_library(data)
             refresh_prompt_library()
@@ -2679,6 +2767,7 @@ async def prompt_library_save_last(update: Update, context: ContextTypes.DEFAULT
         "title": title,
         "prompt": prompt_text or "Опирайся на пример изображения и сохрани стиль.",
         "image_url": image_url,
+        "item_kind": "image",
     }
 
     await update.message.reply_text(
@@ -2749,12 +2838,86 @@ async def prompt_library_import_from_reply(update: Update, context: ContextTypes
         "title": title,
         "prompt": prompt_text,
         "image_url": stable_example_url,
+        "item_kind": "image",
     }
 
     await update.message.reply_text(
         f"Импорт готов ✅\nШаблон «{title}» подготовлен (с промптом).\nТеперь выбери категорию:",
         reply_markup=prompt_library_save_category_kb(),
     )
+
+
+async def prompt_library_import_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("У тебя нет доступа к этой команде.")
+        return
+
+    raw = " ".join(context.args).strip()
+    if not raw and not update.message.reply_to_message:
+        await update.message.reply_text(
+            "Формат:\n"
+            "/pl_import_video <название> | <промпт> | <video_url>\n\n"
+            "Пример:\n"
+            "/pl_import_video Эпик сцена | [Image1] и [Image2]... | https://site/video.mp4"
+        )
+        return
+
+    title = f"Видео-шаблон {datetime.now().strftime('%d.%m %H:%M')}"
+    prompt_text = ""
+    video_url = ""
+
+    if raw and "|" in raw:
+        parts = [p.strip() for p in raw.split("|")]
+        if len(parts) >= 1 and parts[0]:
+            title = parts[0]
+        if len(parts) >= 2 and parts[1]:
+            prompt_text = parts[1]
+        if len(parts) >= 3 and parts[2]:
+            video_url = parts[2]
+    elif raw:
+        title = raw
+
+    replied = update.message.reply_to_message
+    if replied:
+        if not prompt_text:
+            prompt_text = (replied.caption or replied.text or "").strip()
+        if not video_url:
+            video_url = _extract_first_http_url((replied.caption or "") + "\n" + (replied.text or ""))
+
+    if not video_url:
+        video_url = _extract_first_http_url(raw)
+
+    if not prompt_text:
+        prompt_text = "[Image1] и [Image2] — главные персонажи. Сохрани лица, стиль и детали внешности."
+
+    if not (video_url.startswith("http://") or video_url.startswith("https://")):
+        await update.message.reply_text(
+            "Нужна публичная ссылка на видео-превью (http/https).\n"
+            "Добавь её третьим параметром после второго «|»."
+        )
+        return
+
+    context.user_data["pending_pl_save"] = {
+        "title": title,
+        "prompt": prompt_text,
+        "item_kind": "video",
+        "video_url": video_url,
+        "poster_url": "",
+    }
+    await update.message.reply_text(
+        f"Видео-шаблон «{title}» подготовлен ✅\n"
+        "Теперь выбери категорию, куда добавить его в библиотеку.",
+        reply_markup=prompt_library_save_category_kb(),
+    )
+
+
+def _extract_first_http_url(text: str) -> str:
+    source = str(text or "")
+    m = re.search(r"https?://\S+", source)
+    if not m:
+        return ""
+    return m.group(0).rstrip(").,;]")
 
 
 def _find_category_index_by_title(data: list, title: str) -> int:
@@ -2909,6 +3072,7 @@ async def prompt_library_admin_help_legacy(update: Update, context: ContextTypes
         "Управление библиотекой:\n\n"
         "/pl_list — список категорий\n"
         "/pl_save [название] — сохранить последнюю генерацию\n"
+        "/pl_import_video <название> | <промпт> | <video_url> — добавить видео-шаблон Seedance\n"
         "/pl_newcat <название> — новая категория\n"
         "/pl_renamecat <старое> | <новое> — переименовать категорию\n"
         "/pl_delcat <название> — удалить категорию\n"
@@ -4950,6 +5114,7 @@ def main():
     app.add_handler(CommandHandler("audience_stats", audience_stats))
     app.add_handler(CommandHandler("pl_save", prompt_library_save_last))
     app.add_handler(CommandHandler("pl_import", prompt_library_import_from_reply))
+    app.add_handler(CommandHandler("pl_import_video", prompt_library_import_video))
     app.add_handler(CommandHandler("pl_newcat", prompt_library_new_category))
     app.add_handler(CommandHandler("pl_renamecat", prompt_library_rename_category))
     app.add_handler(CommandHandler("pl_delcat", prompt_library_delete_category))

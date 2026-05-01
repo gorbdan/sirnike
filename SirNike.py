@@ -174,6 +174,7 @@ class UserState:
     motion_prompt: str = ""
     motion_video_url: Optional[str] = None
     motion_duration: Optional[int] = None
+    motion_mode: Optional[str] = None
     motion_model: str = "seedance2_fast"
     waiting_for_motion_prompt: bool = False
     waiting_for_motion_image: bool = False
@@ -356,6 +357,48 @@ def ru_plural(value: int, one: str, few: str, many: str) -> str:
     return many
 
 
+def get_seedance_duration_bounds(model_code: Optional[str] = None) -> tuple[int, int]:
+    if model_code == "seedance2_fast":
+        return 5, 10
+    return 5, 30
+
+
+def normalize_seedance_duration(value: int, model_code: Optional[str] = None) -> int:
+    min_sec, max_sec = get_seedance_duration_bounds(model_code)
+    return max(min_sec, min(int(value), max_sec))
+
+
+def normalize_seedance_mode(value: str) -> str:
+    return "1080p" if str(value or "").strip().lower() == "1080p" else "720p"
+
+
+def get_seedance_mode_options(model_code: Optional[str] = None) -> List[str]:
+    if model_code == "seedance2_fast":
+        return [normalize_seedance_mode(SEEDANCE_FAST_MODE)]
+
+    raw_options = os.getenv("SEEDANCE_MODE_OPTIONS", "720p,1080p")
+    parsed: List[str] = []
+    for raw in str(raw_options).split(","):
+        mode = normalize_seedance_mode(raw)
+        if mode not in parsed:
+            parsed.append(mode)
+    default_mode = normalize_seedance_mode(SEEDANCE_MODE)
+    if default_mode not in parsed:
+        parsed.append(default_mode)
+    return parsed
+
+
+def get_selected_seedance_mode(state: UserState) -> str:
+    selected_model = get_motion_model(state)
+    options = get_seedance_mode_options(selected_model)
+    if selected_model == "seedance2_fast":
+        return options[0]
+    picked = normalize_seedance_mode(state.motion_mode or SEEDANCE_MODE)
+    if picked not in options:
+        picked = options[0]
+    return picked
+
+
 def get_seedance_duration_options(model_code: Optional[str] = None) -> List[int]:
     raw_options = SEEDANCE_FAST_DURATION_OPTIONS if model_code == "seedance2_fast" else SEEDANCE_DURATION_OPTIONS
     parsed: List[int] = []
@@ -367,11 +410,11 @@ def get_seedance_duration_options(model_code: Optional[str] = None) -> List[int]
             sec = int(raw)
         except ValueError:
             continue
-        sec = max(5, min(sec, 10))
+        sec = normalize_seedance_duration(sec, model_code)
         if sec not in parsed:
             parsed.append(sec)
 
-    default_sec = max(5, min(int(SEEDANCE_DURATION), 10))
+    default_sec = normalize_seedance_duration(int(SEEDANCE_DURATION), model_code)
     if default_sec not in parsed:
         parsed.append(default_sec)
     parsed.sort()
@@ -381,8 +424,8 @@ def get_seedance_duration_options(model_code: Optional[str] = None) -> List[int]
 def get_selected_seedance_duration(state: UserState) -> int:
     model_code = get_motion_model(state)
     options = get_seedance_duration_options(model_code)
-    default_sec = options[0] if options else max(5, min(int(SEEDANCE_DURATION), 10))
-    selected = state.motion_duration if isinstance(state.motion_duration, int) else default_sec
+    default_sec = options[0] if options else normalize_seedance_duration(int(SEEDANCE_DURATION), model_code)
+    selected = normalize_seedance_duration(state.motion_duration, model_code) if isinstance(state.motion_duration, int) else default_sec
     if selected not in options:
         selected = default_sec
     return selected
@@ -446,7 +489,7 @@ def calc_seedance_cost(duration_sec: int, cost_per_second: Optional[float] = Non
         cost_per_second if cost_per_second is not None else SEEDANCE_COST_PER_SECOND,
         0.01,
     )
-    safe_duration = max(5, min(int(duration_sec), 10))
+    safe_duration = max(1, int(duration_sec))
     return max(1, int(round(safe_duration * cps)))
 
 
@@ -759,6 +802,7 @@ def motion_control_status_text(state: UserState) -> str:
 def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
     selected_duration = get_selected_seedance_duration(state)
     selected_model = get_motion_model(state)
+    selected_mode = get_selected_seedance_mode(state)
     cps = get_motion_model_cost_per_second(selected_model)
 
     duration_buttons = []
@@ -792,6 +836,18 @@ def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("Очистить фото-референсы 🧹", callback_data="mc_clear_images")],
         model_buttons,
     ]
+    if selected_model == "seedance2":
+        mode_buttons = []
+        for mode in get_seedance_mode_options(selected_model):
+            prefix = "● " if mode == selected_mode else ""
+            mode_buttons.append(
+                InlineKeyboardButton(
+                    f"{prefix}{mode}",
+                    callback_data=f"mc_mode_{mode}",
+                )
+            )
+        if mode_buttons:
+            rows.append(mode_buttons)
     if duration_buttons:
         rows.append(duration_buttons[:3])
     if len(duration_buttons) > 3:
@@ -811,12 +867,17 @@ def motion_control_status_text(state: UserState) -> str:
     selected_duration = get_selected_seedance_duration(state)
     selected_model = get_motion_model(state)
     model_label = get_motion_model_label(selected_model)
-    selected_mode = SEEDANCE_FAST_MODE if selected_model == "seedance2_fast" else SEEDANCE_MODE
+    selected_mode = get_selected_seedance_mode(state)
     cps = get_motion_model_cost_per_second(selected_model)
     selected_cost = calc_seedance_cost(selected_duration, cps)
     eta_min = max(2, int(selected_duration * 0.8))
     eta_max = max(eta_min + 1, int(selected_duration * 2.0))
     options_text = ", ".join([f"{sec}с" for sec in get_seedance_duration_options(selected_model)])
+    quality_text = (
+        f"{selected_mode} (варианты: {', '.join(get_seedance_mode_options(selected_model))})"
+        if selected_model == "seedance2"
+        else f"{selected_mode} (фиксировано)"
+    )
     return (
         f"{model_label}\n"
         "Генерация видео с помощью нейросети.\n"
@@ -829,7 +890,7 @@ def motion_control_status_text(state: UserState) -> str:
         f"Модель: {model_label}\n"
         f"Промпт: {prompt_state}\n"
         f"Изображение: {image_state}\n"
-        f"Качество: {selected_mode} (фиксировано)\n"
+        f"Качество: {quality_text}\n"
         f"Длительность: {selected_duration} сек (варианты: {options_text})\n"
         f"Стоимость: {selected_cost} изюминок\n"
         f"Ожидание результата: обычно {eta_min}–{eta_max} минут"
@@ -2249,6 +2310,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query.data in motion_callbacks
         or query.data.startswith("mc_duration_")
         or query.data.startswith("mc_model_")
+        or query.data.startswith("mc_mode_")
     )
 
     if is_motion_callback and not is_admin(update.effective_user.id):
@@ -2319,7 +2381,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.waiting_for_motion_image = True
         await query.message.reply_text(
             "Отправляй фото для Seedance (можно несколько подряд).\n"
-            "Лимит: до 2 фото.\n"
+            f"Лимит: до {MAX_SEEDANCE_IMAGE_REFERENCES} фото.\n"
             "Фото используются как референсы персонажа.\n"
             "Когда всё загрузишь, нажми «Запустить ⚡»."
         )
@@ -2344,8 +2406,30 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         picked_model = query.data.replace("mc_model_", "", 1)
         if picked_model == "seedance2_fast" and SEEDANCE_FAST_ENABLED:
             state.motion_model = "seedance2_fast"
+            state.motion_mode = normalize_seedance_mode(SEEDANCE_FAST_MODE)
         else:
             state.motion_model = "seedance2"
+            if not state.motion_mode:
+                state.motion_mode = normalize_seedance_mode(SEEDANCE_MODE)
+        await query.message.reply_text(
+            motion_control_status_text(state),
+            reply_markup=motion_control_kb(state),
+        )
+        return
+
+    if query.data.startswith("mc_mode_"):
+        state = get_or_init_state(context)
+        selected_model = get_motion_model(state)
+        if selected_model != "seedance2":
+            await query.message.reply_text(
+                motion_control_status_text(state),
+                reply_markup=motion_control_kb(state),
+            )
+            return
+        picked_mode = normalize_seedance_mode(query.data.replace("mc_mode_", "", 1))
+        if picked_mode not in get_seedance_mode_options(selected_model):
+            picked_mode = get_selected_seedance_mode(state)
+        state.motion_mode = picked_mode
         await query.message.reply_text(
             motion_control_status_text(state),
             reply_markup=motion_control_kb(state),
@@ -3316,8 +3400,7 @@ async def start_seedance_task(
         if url not in create_urls:
             create_urls.append(url)
 
-    mode_value = "1080p" if str(mode or SEEDANCE_MODE).lower() == "1080p" else "720p"
-    duration = max(5, min(int(duration if duration is not None else SEEDANCE_DURATION), 10))
+    mode_value = normalize_seedance_mode(mode or SEEDANCE_MODE)
     model_value = str(model_slug or "bytedance/seedance-2.0-fast").strip()
     legacy_model_map = {
         "seedance-2-0": "bytedance/seedance-2.0",
@@ -3339,6 +3422,10 @@ async def start_seedance_task(
     elif model_code == "seedance2_fast":
         model_value = "bytedance/seedance-2.0-fast"
         model_value_lower = model_value.lower()
+    duration = normalize_seedance_duration(
+        int(duration if duration is not None else SEEDANCE_DURATION),
+        model_code,
+    )
     is_wan_model = "wan-2.7" in model_value_lower or model_value_lower.startswith("alibaba/wan")
     is_seedance2_model = model_value_lower in ("bytedance/seedance-2.0", "bytedance/seedance-2.0-fast")
     combined_image_urls: List[str] = []
@@ -3873,7 +3960,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     selected_cps = get_motion_model_cost_per_second(selected_model)
     selected_cost = calc_seedance_cost(selected_duration, selected_cps)
     selected_endpoint = SEEDANCE_FAST_ENDPOINT if selected_model == "seedance2_fast" else SEEDANCE_ENDPOINT
-    selected_mode = SEEDANCE_FAST_MODE if selected_model == "seedance2_fast" else SEEDANCE_MODE
+    selected_mode = get_selected_seedance_mode(state)
     selected_model_slug = SEEDANCE_FAST_MODEL if selected_model == "seedance2_fast" else SEEDANCE_MODEL
 
     if selected_model in {"seedance2", "seedance2_fast"} and len(motion_images) < 2:

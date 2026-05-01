@@ -46,6 +46,14 @@ DATA_DIR=/app/data
 BOT_LOG_DIR=/app/data
 ```
 
+Safety flag (recommended):
+
+```text
+ALLOW_DB_SEED_COPY=0
+```
+
+This prevents accidental runtime DB rollback from `/app/syrochnik.db`.
+
 Optional settings are documented in `.env.example`.
 
 ## Deploy checklist
@@ -55,3 +63,4 @@ Optional settings are documented in `.env.example`.
 3. Click "Update from Git".
 4. Open runtime logs. A missing variable will be shown as `Missing required environment variable: NAME`.
 5. If you already have a production `syrochnik.db`, upload it to BotHost as `/app/data/syrochnik.db` before starting the bot.
+6. Do not copy `/app/syrochnik.db` over `/app/data/syrochnik.db` (that rolls data back).

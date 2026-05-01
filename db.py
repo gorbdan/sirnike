@@ -1,6 +1,7 @@
 import sqlite3
 import os
 import shutil
+import logging
 from datetime import datetime, date, timedelta
 from typing import Optional
 
@@ -9,12 +10,29 @@ DEFAULT_DATA_DIR = "/app/data" if (os.name != "nt" and os.path.isdir("/app/data"
 DATA_DIR = os.getenv("DATA_DIR", DEFAULT_DATA_DIR).strip() or DEFAULT_DATA_DIR
 SEED_DB_NAME = os.path.join(BASE_DIR, "syrochnik.db")
 DB_NAME = os.path.join(DATA_DIR, "syrochnik.db")
+ALLOW_DB_SEED_COPY = os.getenv("ALLOW_DB_SEED_COPY", "0").strip().lower() in ("1", "true", "yes", "on")
+
+logger = logging.getLogger(__name__)
 
 
 def _ensure_runtime_db():
     os.makedirs(DATA_DIR, exist_ok=True)
-    if DB_NAME != SEED_DB_NAME and not os.path.exists(DB_NAME) and os.path.exists(SEED_DB_NAME):
+    if os.path.exists(DB_NAME):
+        return
+
+    should_copy_seed = (
+        DB_NAME != SEED_DB_NAME
+        and os.path.exists(SEED_DB_NAME)
+        and (ALLOW_DB_SEED_COPY or DATA_DIR == BASE_DIR or os.name == "nt")
+    )
+    if should_copy_seed:
         shutil.copy2(SEED_DB_NAME, DB_NAME)
+        logger.info("Database bootstrapped from seed: %s -> %s", SEED_DB_NAME, DB_NAME)
+    elif DB_NAME != SEED_DB_NAME and os.path.exists(SEED_DB_NAME):
+        logger.info(
+            "Seed DB copy skipped for safety (ALLOW_DB_SEED_COPY=0). Using runtime DB at: %s",
+            DB_NAME,
+        )
 
 
 def get_conn():

@@ -84,6 +84,8 @@ from config import (
 )
 
 from db import (
+    DB_NAME,
+    SEED_DB_NAME,
     init_db,
     create_user_if_not_exists,
     get_balance,
@@ -4964,6 +4966,13 @@ def main():
 
     logger.info("Бот запускается...")
     logger.info("build=%s", BUILD_ID)
+    logger.info("db path: %s", DB_NAME)
+    if DB_NAME != SEED_DB_NAME and os.path.exists(SEED_DB_NAME):
+        logger.info(
+            "legacy seed db detected at %s (runtime uses %s)",
+            SEED_DB_NAME,
+            DB_NAME,
+        )
     if LOG_FILE_ERROR:
         logger.warning("file logging disabled: %s", LOG_FILE_ERROR)
     else:

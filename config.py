@@ -30,7 +30,8 @@ def _load_env_file() -> None:
 _load_env_file()
 
 BASE_DIR = os.path.dirname(__file__)
-DATA_DIR = os.getenv("DATA_DIR", BASE_DIR).strip() or BASE_DIR
+DEFAULT_DATA_DIR = "/app/data" if (os.name != "nt" and os.path.isdir("/app/data")) else BASE_DIR
+DATA_DIR = os.getenv("DATA_DIR", DEFAULT_DATA_DIR).strip() or DEFAULT_DATA_DIR
 
 
 def _required_env(name: str) -> str:

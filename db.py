@@ -5,7 +5,8 @@ from datetime import datetime, date, timedelta
 from typing import Optional
 
 BASE_DIR = os.path.dirname(__file__)
-DATA_DIR = os.getenv("DATA_DIR", BASE_DIR).strip() or BASE_DIR
+DEFAULT_DATA_DIR = "/app/data" if (os.name != "nt" and os.path.isdir("/app/data")) else BASE_DIR
+DATA_DIR = os.getenv("DATA_DIR", DEFAULT_DATA_DIR).strip() or DEFAULT_DATA_DIR
 SEED_DB_NAME = os.path.join(BASE_DIR, "syrochnik.db")
 DB_NAME = os.path.join(DATA_DIR, "syrochnik.db")
 

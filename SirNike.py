@@ -80,6 +80,7 @@ from config import (
     SEEDANCE_FAST_MODEL,
     SEEDANCE_FAST_MODE,
     SEEDANCE_FAST_COST_PER_SECOND,
+    DATA_DIR,
 )
 
 from db import (
@@ -110,7 +111,7 @@ from db import (
 )
 
 BASE_DIR = os.path.dirname(__file__)
-RUNTIME_DIR = os.getenv("DATA_DIR", BASE_DIR).strip() or BASE_DIR
+RUNTIME_DIR = DATA_DIR
 OUTPUTS_DIR = os.path.join(RUNTIME_DIR, "outputs")
 os.makedirs(OUTPUTS_DIR, exist_ok=True)
 BUILD_ID = "2026-04-30-bothost-deploy-test-1"

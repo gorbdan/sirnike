@@ -176,6 +176,7 @@ class UserState:
     motion_duration: Optional[int] = None
     motion_mode: Optional[str] = None
     motion_model: str = "seedance2_fast"
+    motion_session_active: bool = False
     waiting_for_motion_prompt: bool = False
     waiting_for_motion_image: bool = False
     waiting_for_motion_video: bool = False
@@ -901,12 +902,12 @@ def motion_control_status_text(state: UserState) -> str:
     return (
         f"{model_label}\n"
         "Генерация видео с помощью нейросети.\n"
-        "Можно запустить только с промптом, но лучше добавить 1–2 фото персонажа.\n"
+        "Можно сразу отправлять текст и фото без дополнительных кнопок.\n"
         "Референсы фиксируют внешность, стиль и идентичность персонажей в кадре.\n\n"
-        "1. Нажми «Промпт» (необязательно)\n"
-        "2. Добавь «Изображение» (до 2 фото-референсов)\n"
-        "3. Выбери длительность\n"
-        "4. Запусти генерацию\n\n"
+        "1. Отправь промпт (необязательно)\n"
+        "2. Отправь фото-референсы\n"
+        "3. Выбери длительность и качество\n"
+        "4. Нажми «Запустить ⚡»\n\n"
         f"Модель: {model_label}\n"
         f"Промпт: {prompt_state}\n"
         f"Изображение: {image_state}\n"
@@ -1576,13 +1577,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    if state.waiting_for_motion_prompt:
+    if state.waiting_for_motion_prompt or state.motion_session_active:
         state.motion_prompt = text
         state.waiting_for_motion_prompt = False
-
+        state.motion_session_active = True
         await update.message.reply_text(
             "Промпт для Seedance сохранён ✅\n"
-            "Проверь параметры и нажми запуск.",
+            "Теперь можешь отправить фото-референсы, выбрать длительность/качество и нажать запуск.",
             reply_markup=motion_control_kb(state),
         )
         return
@@ -1656,11 +1657,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     return
 
-                if state.waiting_for_motion_image:
+                if state.waiting_for_motion_image or state.motion_session_active:
+                    state.motion_session_active = True
                     current_refs = get_motion_image_urls(state)
                     if len(current_refs) >= MAX_SEEDANCE_IMAGE_REFERENCES and direct_url not in current_refs:
                         await update.message.reply_text(
-                            "Уже загружено 2 фото для Seedance.\n"
+                            f"Уже загружено {MAX_SEEDANCE_IMAGE_REFERENCES} фото для Seedance.\n"
                             "Очисти референсы или замени одно из фото, затем запускай генерацию.",
                             reply_markup=motion_control_kb(state),
                         )
@@ -2325,7 +2327,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("Не удалось сохранить шаблон. Попробуй ещё раз.")
             return
 
-    motion_callbacks = {"seedance_control", "motion_control", "mc_set_prompt", "mc_set_image", "mc_clear_images", "mc_set_video", "mc_start", "seedance_retry"}
+    motion_callbacks = {"seedance_control", "mc_set_prompt", "mc_set_image", "mc_clear_images", "mc_set_video", "mc_start", "seedance_retry"}
     is_motion_callback = (
         query.data in motion_callbacks
         or query.data.startswith("mc_duration_")
@@ -2342,10 +2344,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "generate":
+        state = get_or_init_state(context)
+        state.motion_session_active = False
         await run_generation(update, context)
         return
 
     if query.data == "generate_again":
+        state = get_or_init_state(context)
+        state.motion_session_active = False
         user_id = update.effective_user.id
         saved_prompt = (last_generated_prompt.get(user_id) or "").strip()
         if not saved_prompt:
@@ -2366,14 +2372,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             last_image = last_generated_image_url.get(update.effective_user.id)
             if isinstance(last_image, str) and last_image.strip():
                 add_motion_image_url(state, last_image)
+        state.motion_session_active = True
         state.waiting_for_motion_prompt = False
-        # Open video mode ready-to-upload, so users can send photos immediately.
         state.waiting_for_motion_image = True
         state.waiting_for_motion_video = False
 
         await query.message.reply_text(
-            "Загрузи 1-2 фото для видео. Я использую их как референсы персонажей.\n\n"
-            "После загрузки нажми «Запустить ⚡».",
+            "Режим Seedance включён 🎬\n"
+            "Теперь можно сразу отправлять текст промпта и фото-референсы без дополнительных кнопок.\n"
+            "Я сохраню всё в буфер Seedance.\n\n"
+            "Дальше выбери длительность/качество и нажми «Запустить ⚡».",
         )
         await query.message.reply_text(
             motion_control_status_text(state),
@@ -2383,21 +2391,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "mc_set_prompt":
         state = get_or_init_state(context)
+        state.motion_session_active = True
         state.waiting_for_motion_prompt = True
         await query.message.reply_text("Напиши промпт для итогового видео одним сообщением.")
         return
 
-    if query.data == "mc_set_prompt":
-        state = get_or_init_state(context)
-        state.waiting_for_motion_prompt = True
-        await query.message.reply_text(
-            "Напиши промпт для итогового видео одним сообщением.\n"
-            "Можно пропустить этот шаг: модель всё равно перенесёт движение с видео на фото."
-        )
-        return
-
     if query.data == "mc_set_image":
         state = get_or_init_state(context)
+        state.motion_session_active = True
         state.waiting_for_motion_image = True
         await query.message.reply_text(
             "Отправляй фото для Seedance (можно несколько подряд).\n"
@@ -2411,6 +2412,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = get_or_init_state(context)
         set_motion_image_urls(state, [])
         state.waiting_for_motion_image = False
+        state.motion_session_active = True
         await query.message.reply_text(
             "Фото-референсы очищены ✅\n\n" + motion_control_status_text(state),
             reply_markup=motion_control_kb(state),
@@ -2423,6 +2425,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data.startswith("mc_model_"):
         state = get_or_init_state(context)
+        state.motion_session_active = True
         picked_model = query.data.replace("mc_model_", "", 1)
         if picked_model == "seedance2_fast" and SEEDANCE_FAST_ENABLED:
             state.motion_model = "seedance2_fast"
@@ -2439,6 +2442,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data.startswith("mc_mode_"):
         state = get_or_init_state(context)
+        state.motion_session_active = True
         selected_model = get_motion_model(state)
         if selected_model != "seedance2":
             await query.message.reply_text(
@@ -2458,6 +2462,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data.startswith("mc_duration_"):
         state = get_or_init_state(context)
+        state.motion_session_active = True
         try:
             picked = int(query.data.replace("mc_duration_", "", 1))
         except ValueError:
@@ -2477,10 +2482,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "mc_start":
         state = get_or_init_state(context)
         state.waiting_for_motion_image = False
+        state.motion_session_active = False
         context.application.create_task(run_seedance(update, context))
         return
 
     if query.data == "seedance_retry":
+        state = get_or_init_state(context)
+        state.motion_session_active = False
         context.application.create_task(run_seedance(update, context))
         return
 
@@ -3057,7 +3065,7 @@ async def start_kling_motion_control(
     user_id: int,
 ) -> str:
     if not KLING_MOTION_ENDPOINT:
-        raise Exception("Эндпоинт Motion Control не настроен (KLING_MOTION_ENDPOINT).")
+        raise Exception("Эндпоинт видео-генерации не настроен (KLING_MOTION_ENDPOINT).")
 
     if not MASHAGPT_API_KEY:
         raise Exception("MASHAGPT_API_KEY is empty")
@@ -3084,7 +3092,7 @@ async def start_kling_motion_control(
         last_error = None
         for endpoint in endpoint_candidates:
             request_url = build_mashagpt_url(MASHAGPT_API_BASE, endpoint)
-            logger.info(f"Motion Control endpoint: {request_url}")
+            logger.info(f"Video endpoint: {request_url}")
             async with session.post(
                 request_url,
                 headers={
@@ -3105,7 +3113,7 @@ async def start_kling_motion_control(
                 response_text = await resp.text()
                 if not (200 <= resp.status < 300):
                     last_error = f"{resp.status}. {response_text}"
-                    logger.warning(f"Motion start failed for {request_url}: {last_error}")
+                    logger.warning(f"Video start failed for {request_url}: {last_error}")
                     continue
 
                 data = json.loads(response_text)
@@ -3115,7 +3123,7 @@ async def start_kling_motion_control(
                     continue
                 return str(task_id)
 
-        raise Exception(f"Motion Control start error: {last_error}")
+        raise Exception(f"Video start error: {last_error}")
 
 
 async def poll_kling_animation_custom(animation_id: str, max_attempts: int, poll_interval: int) -> str:
@@ -3168,7 +3176,7 @@ async def poll_kling_animation_custom(animation_id: str, max_attempts: int, poll
     ]
     poll_urls = [build_mashagpt_url(MASHAGPT_API_BASE, p) for p in poll_paths]
     for url in poll_urls:
-        logger.info(f"Motion poll endpoint: {url}")
+        logger.info(f"Video poll endpoint: {url}")
     running_urls = [
         build_mashagpt_url(MASHAGPT_API_BASE, "/v1/tasks/running"),
         build_mashagpt_url(MASHAGPT_API_BASE, "/api/v1/tasks/running"),
@@ -3214,7 +3222,7 @@ async def poll_kling_animation_custom(animation_id: str, max_attempts: int, poll
                     if "Unknown task model" in response_text:
                         had_unknown_model_error = True
                     logger.warning(
-                        f"Motion status check failed: {resp.status}, url={poll_url}, body: {response_text}"
+                        f"Video status check failed: {resp.status}, url={poll_url}, body: {response_text}"
                     )
 
             if data is None:
@@ -3230,7 +3238,7 @@ async def poll_kling_animation_custom(animation_id: str, max_attempts: int, poll
                         ) as running_resp:
                             running_text = await running_resp.text()
                             if running_resp.status == 200:
-                                logger.info(f"Motion running endpoint ok: {running_url}")
+                                logger.info(f"Video running endpoint ok: {running_url}")
                                 running_payload = json.loads(running_text)
                                 task_obj = find_task_in_running(running_payload)
                                 if task_obj:
@@ -3238,7 +3246,7 @@ async def poll_kling_animation_custom(animation_id: str, max_attempts: int, poll
                                     break
                             else:
                                 logger.warning(
-                                    f"Motion running check failed: {running_resp.status}, "
+                                    f"Video running check failed: {running_resp.status}, "
                                     f"url={running_url}, body: {running_text}"
                                 )
                 except Exception:
@@ -3249,7 +3257,7 @@ async def poll_kling_animation_custom(animation_id: str, max_attempts: int, poll
                 status_description = data.get("message") or ""
 
                 logger.info(
-                    f"Motion task {animation_id}: "
+                    f"Video task {animation_id}: "
                     f"attempt={attempt + 1}/{max_attempts}, "
                     f"status={status}, "
                     f"status_description={status_description}"
@@ -3258,7 +3266,7 @@ async def poll_kling_animation_custom(animation_id: str, max_attempts: int, poll
                 if status == "COMPLETED":
                     result_url = extract_video_url(data)
                     if not result_url:
-                        raise Exception(f"Motion task completed but video URL missing: {data}")
+                        raise Exception(f"Video task completed but video URL missing: {data}")
                     return result_url
 
                 if status in ("FAILED", "CANCELLED", "ERROR"):
@@ -3266,7 +3274,7 @@ async def poll_kling_animation_custom(animation_id: str, max_attempts: int, poll
                         data.get("message")
                         or data.get("error")
                         or data.get("details")
-                        or f"Motion task failed with status {status}"
+                        or f"Video task failed with status {status}"
                     )
             else:
                 # Provider-side routing/model issue: avoid waiting for full timeout.
@@ -3348,7 +3356,7 @@ def extract_task_reference_count(task_like: dict) -> int:
 def build_seedance_prompt_with_refs(prompt_text: str, refs_count: int) -> str:
     text = (prompt_text or "").strip()
     if not text:
-        text = "Cinematic video with coherent motion and stable character identity."
+        text = "Cinematic video with coherent action and stable character identity."
 
     if refs_count <= 0:
         return text
@@ -3939,6 +3947,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     create_user_if_not_exists(user.id, user.username, START_BONUS)
     reply_target = update.callback_query.message if update.callback_query else update.message
     state = get_or_init_state(context)
+    state.motion_session_active = False
 
     if not is_admin(user.id):
         await reply_target.reply_text("Эта функция пока доступна только администратору.")

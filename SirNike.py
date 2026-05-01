@@ -117,7 +117,7 @@ BASE_DIR = os.path.dirname(__file__)
 RUNTIME_DIR = DATA_DIR
 OUTPUTS_DIR = os.path.join(RUNTIME_DIR, "outputs")
 os.makedirs(OUTPUTS_DIR, exist_ok=True)
-BUILD_ID = "2026-04-30-bothost-deploy-test-1"
+BUILD_ID = "2026-05-01-pl-storage-check-v1"
 LOG_DIR = os.getenv("BOT_LOG_DIR", RUNTIME_DIR).strip() or RUNTIME_DIR
 LOG_FILE_PATH = os.path.join(LOG_DIR, "bot.log")
 LOG_FILE_ERROR: Optional[str] = None
@@ -3104,6 +3104,44 @@ async def prompt_library_list(update: Update, context: ContextTypes.DEFAULT_TYPE
     await send_long_text(message, "\n".join(lines))
 
 
+async def prompt_library_where(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.effective_message
+    if not message:
+        return
+    if not is_admin(user.id):
+        await message.reply_text("У тебя нет доступа к этой команде.")
+        return
+
+    active_path = None
+    primary_exists = os.path.exists(PROMPT_LIBRARY_PRIMARY_PATH)
+    legacy_exists = os.path.exists(PROMPT_LIBRARY_LEGACY_PATH)
+    if primary_exists and legacy_exists:
+        active_path = max(
+            [PROMPT_LIBRARY_PRIMARY_PATH, PROMPT_LIBRARY_LEGACY_PATH],
+            key=lambda p: os.path.getmtime(p),
+        )
+    elif primary_exists:
+        active_path = PROMPT_LIBRARY_PRIMARY_PATH
+    elif legacy_exists:
+        active_path = PROMPT_LIBRARY_LEGACY_PATH
+
+    if not active_path:
+        await message.reply_text("Файл библиотеки не найден.")
+        return
+
+    mtime = datetime.fromtimestamp(os.path.getmtime(active_path)).strftime("%Y-%m-%d %H:%M:%S")
+    cats = len(PROMPT_LIBRARY)
+    items = sum(len(cat.get("items", [])) for cat in PROMPT_LIBRARY if isinstance(cat, dict))
+    await message.reply_text(
+        "Текущий источник библиотеки:\n"
+        f"{active_path}\n\n"
+        f"Обновлен: {mtime}\n"
+        f"Категорий: {cats}\n"
+        f"Шаблонов: {items}"
+    )
+
+
 async def prompt_library_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = update.effective_message
@@ -5120,6 +5158,7 @@ def main():
     app.add_handler(CommandHandler("pl_delcat", prompt_library_delete_category))
     app.add_handler(CommandHandler("pl_admin", prompt_library_admin_help))
     app.add_handler(CommandHandler("pl_list", prompt_library_list))
+    app.add_handler(CommandHandler("pl_where", prompt_library_where))
     app.add_handler(CommandHandler("pl_history", prompt_library_history_command))
     app.add_handler(CommandHandler("pl_export", prompt_library_export))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))

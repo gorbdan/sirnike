@@ -506,6 +506,13 @@ def add_motion_image_url(state: UserState, image_url: str) -> int:
     return len(state.animation_source_urls)
 
 
+def deactivate_motion_session(state: UserState) -> None:
+    state.motion_session_active = False
+    state.waiting_for_motion_prompt = False
+    state.waiting_for_motion_image = False
+    state.waiting_for_motion_video = False
+
+
 def get_motion_model(state: UserState) -> str:
     if state.motion_model == "seedance2_fast" and SEEDANCE_FAST_ENABLED:
         return "seedance2_fast"
@@ -998,6 +1005,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bal = get_balance(user.id)
     free_date, free_count = get_free_info(user.id)
     state = get_or_init_state(context)
+    deactivate_motion_session(state)
     avatar_url = get_avatar_url(user.id)
     avatar_status = "есть" if avatar_url else "нет"
 
@@ -1617,6 +1625,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    deactivate_motion_session(state)
     state.prompt = text
 
     await update.message.reply_text(
@@ -1766,6 +1775,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     state = get_or_init_state(context)
+    deactivate_motion_session(state)
     state.prompt = prompt
 
     await update.message.reply_text(
@@ -1795,6 +1805,7 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
         state.motion_session_active = True
         state.waiting_for_motion_image = True
     else:
+        deactivate_motion_session(state)
         state.prompt = prompt
 
     if update.effective_message:
@@ -1828,6 +1839,7 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
         state.motion_session_active = True
         state.waiting_for_motion_image = True
     else:
+        deactivate_motion_session(state)
         state.prompt = prompt
 
     if update.effective_message:
@@ -2354,6 +2366,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=motion_control_kb(state),
             )
             return
+        deactivate_motion_session(state)
         state.prompt = item["prompt"]
         await query.message.reply_text(
             f"Готово ✨\nПромпт «{item['title']}» сохранён.\n"
@@ -2436,13 +2449,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "generate":
         state = get_or_init_state(context)
-        state.motion_session_active = False
+        deactivate_motion_session(state)
         await run_generation(update, context)
         return
 
     if query.data == "generate_again":
         state = get_or_init_state(context)
-        state.motion_session_active = False
+        deactivate_motion_session(state)
         user_id = update.effective_user.id
         saved_prompt = (last_generated_prompt.get(user_id) or "").strip()
         if not saved_prompt:
@@ -2452,6 +2465,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         state = get_or_init_state(context)
+        deactivate_motion_session(state)
         state.prompt = saved_prompt
         state.references = list(last_generation_references.get(user_id) or [])
         await run_generation(update, context)
@@ -2623,6 +2637,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         state = get_or_init_state(context)
+        deactivate_motion_session(state)
         state.prompt = promo["promo_prompt"]
 
         register_promo_click(promo_id, update.effective_user.id)
@@ -4592,6 +4607,22 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                     compact = compact[:500] + "..."
                 return f"Zveno response without image URL. {compact}"
 
+            def extract_zveno_finish_reason(response_data: dict) -> str:
+                choices = response_data.get("choices")
+                if not isinstance(choices, list):
+                    return "unknown"
+                for choice in choices:
+                    if not isinstance(choice, dict):
+                        continue
+                    value = (
+                        choice.get("finish_reason")
+                        or choice.get("native_finish_reason")
+                        or choice.get("finishReason")
+                    )
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+                return "unknown"
+
             user_content = []
             if prompt and prompt.strip():
                 user_content.append({"type": "text", "text": prompt})
@@ -4599,7 +4630,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 if isinstance(ref_url, str) and ref_url.startswith("http"):
                     user_content.append({"type": "image_url", "image_url": {"url": ref_url}})
 
-            payload = {
+            base_payload = {
                 "model": ZVENO_IMAGE_MODEL,
                 "messages": [
                     {
@@ -4610,45 +4641,77 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 "modalities": ["image", "text"],
                 "image_config": {"aspect_ratio": "9:16"},
             }
+            fallback_payload = {
+                "model": ZVENO_IMAGE_MODEL,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Generate exactly one image result. "
+                            "Do not return reasoning-only output."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": user_content if user_content else prompt,
+                    },
+                ],
+                "modalities": ["image"],
+                "image_config": {"aspect_ratio": "9:16"},
+            }
+            payload_variants = [base_payload, fallback_payload]
 
             request_url = build_zveno_url(ZVENO_API_BASE, "/v1/chat/completions")
             logger.info(f"Zveno image endpoint: {request_url}")
 
+            response_data = None
+            image_url = None
             async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    request_url,
-                    headers={
-                        "Authorization": f"Bearer {ZVENO_API_KEY}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=180),
-                ) as resp:
-                    response_text = await resp.text()
-                    if not (200 <= resp.status < 300):
-                        raise Exception(f"Zveno image error: {resp.status}. {response_text}")
-                    try:
-                        response_data = json.loads(response_text)
-                    except json.JSONDecodeError:
-                        raise Exception(f"Zveno non-JSON response: {response_text}")
+                for attempt_idx, payload in enumerate(payload_variants, start=1):
+                    async with session.post(
+                        request_url,
+                        headers={
+                            "Authorization": f"Bearer {ZVENO_API_KEY}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=180),
+                    ) as resp:
+                        response_text = await resp.text()
+                        if not (200 <= resp.status < 300):
+                            raise Exception(f"Zveno image error: {resp.status}. {response_text}")
+                        try:
+                            response_data = json.loads(response_text)
+                        except json.JSONDecodeError:
+                            raise Exception(f"Zveno non-JSON response: {response_text}")
 
-            image_url = extract_zveno_image_url(response_data)
-            if image_url and image_url.startswith("data:image"):
-                comma_idx = image_url.find(",")
-                if comma_idx != -1:
-                    try:
-                        raw_bytes = base64.b64decode(image_url[comma_idx + 1:])
-                        uploaded_url = await upload_image_bytes_to_imgbb(raw_bytes, filename="zveno_result.jpg")
-                        if uploaded_url:
-                            image_url = uploaded_url
-                        else:
-                            image_url = None
-                    except Exception:
-                        image_url = None
-            if not image_url:
-                image_bytes = extract_zveno_image_bytes(response_data)
-                if image_bytes:
-                    image_url = await upload_image_bytes_to_imgbb(image_bytes, filename="zveno_result.jpg")
+                    image_url = extract_zveno_image_url(response_data)
+                    if image_url and image_url.startswith("data:image"):
+                        comma_idx = image_url.find(",")
+                        if comma_idx != -1:
+                            try:
+                                raw_bytes = base64.b64decode(image_url[comma_idx + 1:])
+                                uploaded_url = await upload_image_bytes_to_imgbb(raw_bytes, filename="zveno_result.jpg")
+                                if uploaded_url:
+                                    image_url = uploaded_url
+                                else:
+                                    image_url = None
+                            except Exception:
+                                image_url = None
+                    if not image_url:
+                        image_bytes = extract_zveno_image_bytes(response_data)
+                        if image_bytes:
+                            image_url = await upload_image_bytes_to_imgbb(image_bytes, filename="zveno_result.jpg")
+                    if image_url:
+                        break
+
+                    finish_reason = extract_zveno_finish_reason(response_data)
+                    logger.warning(
+                        "Zveno image attempt %s/%s returned no image (finish_reason=%s)",
+                        attempt_idx,
+                        len(payload_variants),
+                        finish_reason,
+                    )
             if not image_url:
                 raise Exception(extract_zveno_error_text(response_data))
 

@@ -2035,6 +2035,7 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         references = [avatar_url]
     if AI_PROVIDER == "ZVENO" and references:
+        original_refs_count = len(references)
         valid_refs: List[str] = []
         dropped_count = 0
         for ref_url in references[:8]:
@@ -2059,6 +2060,12 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Часть фото-референсов недоступна и исключена: {dropped_count} шт.\n"
                 f"В работу взято: {len(valid_refs)} шт."
             )
+            if original_refs_count > 0 and len(valid_refs) == 0:
+                await reply_target.reply_text(
+                    "Все фото-референсы сейчас недоступны (битые или удалённые ссылки).\n"
+                    "Перезагрузи фото и запусти генерацию снова."
+                )
+                return
 
     cost = calc_generation_cost(references)
 
@@ -2542,7 +2549,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "mc_clear_images":
         state = get_or_init_state(context)
         set_motion_image_urls(state, [])
-        state.waiting_for_motion_image = False
+        state.waiting_for_motion_image = True
         state.motion_session_active = True
         await query.message.reply_text(
             "Фото-референсы очищены ✅\n\n" + motion_control_status_text(state),
@@ -2557,6 +2564,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data.startswith("mc_model_"):
         state = get_or_init_state(context)
         state.motion_session_active = True
+        state.waiting_for_motion_image = True
         picked_model = query.data.replace("mc_model_", "", 1)
         if picked_model == "seedance2_fast" and SEEDANCE_FAST_ENABLED:
             state.motion_model = "seedance2_fast"
@@ -2574,6 +2582,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data.startswith("mc_mode_"):
         state = get_or_init_state(context)
         state.motion_session_active = True
+        state.waiting_for_motion_image = True
         selected_model = get_motion_model(state)
         if selected_model != "seedance2":
             await query.message.reply_text(
@@ -2594,6 +2603,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data.startswith("mc_duration_"):
         state = get_or_init_state(context)
         state.motion_session_active = True
+        state.waiting_for_motion_image = True
         try:
             picked = int(query.data.replace("mc_duration_", "", 1))
         except ValueError:

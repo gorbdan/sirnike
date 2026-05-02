@@ -117,7 +117,7 @@ BASE_DIR = os.path.dirname(__file__)
 RUNTIME_DIR = DATA_DIR
 OUTPUTS_DIR = os.path.join(RUNTIME_DIR, "outputs")
 os.makedirs(OUTPUTS_DIR, exist_ok=True)
-BUILD_ID = "2026-05-01-pl-storage-check-v1"
+BUILD_ID = "2026-05-02-prompt-library-data-primary-v1"
 LOG_DIR = os.getenv("BOT_LOG_DIR", RUNTIME_DIR).strip() or RUNTIME_DIR
 LOG_FILE_PATH = os.path.join(LOG_DIR, "bot.log")
 LOG_FILE_ERROR: Optional[str] = None
@@ -281,60 +281,100 @@ DEFAULT_PROMPT_LIBRARY = [
     },
 ]
 
+PROMPT_LIBRARY_DATA_PATH = os.path.join(RUNTIME_DIR, "prompt_library.json")
 PROMPT_LIBRARY_LEGACY_PATH = os.path.join(os.path.dirname(__file__), "prompt_library.json")
+PROMPT_LIBRARY_WEBAPP_PATH = os.path.join(os.path.dirname(__file__), "webapp", "prompt_library.json")
 _PROMPT_LIBRARY_PRIMARY_ENV = os.getenv("PROMPT_LIBRARY_PRIMARY_PATH", "").strip()
-_PROMPT_LIBRARY_WEBAPP_PATH = os.path.join(os.path.dirname(__file__), "webapp", "prompt_library.json")
+PROMPT_LIBRARY_MIRROR_LEGACY = os.getenv("PROMPT_LIBRARY_MIRROR_LEGACY", "0").strip() == "1"
+
 if _PROMPT_LIBRARY_PRIMARY_ENV:
     PROMPT_LIBRARY_PRIMARY_PATH = _PROMPT_LIBRARY_PRIMARY_ENV
-elif os.path.isdir(os.path.dirname(_PROMPT_LIBRARY_WEBAPP_PATH)):
-    PROMPT_LIBRARY_PRIMARY_PATH = _PROMPT_LIBRARY_WEBAPP_PATH
 else:
-    # Safe default: do not depend on local webapp folder on runtime hosts.
-    PROMPT_LIBRARY_PRIMARY_PATH = PROMPT_LIBRARY_LEGACY_PATH
+    # Single source of truth on runtime hosts (Bothost persists /app/data).
+    PROMPT_LIBRARY_PRIMARY_PATH = PROMPT_LIBRARY_DATA_PATH
+
+
+def _existing_prompt_library_fallbacks() -> List[str]:
+    paths: List[str] = []
+    for path in (PROMPT_LIBRARY_WEBAPP_PATH, PROMPT_LIBRARY_LEGACY_PATH):
+        if path != PROMPT_LIBRARY_PRIMARY_PATH and os.path.exists(path):
+            paths.append(path)
+    return paths
+
+
+def _bootstrap_prompt_library_primary() -> None:
+    """
+    Ensure primary storage exists.
+    If primary file is missing, seed it from the freshest fallback (webapp/repo),
+    otherwise keep runtime edits untouched.
+    """
+    if os.path.exists(PROMPT_LIBRARY_PRIMARY_PATH):
+        return
+
+    fallback_candidates = _existing_prompt_library_fallbacks()
+    if not fallback_candidates:
+        return
+
+    source_path = max(fallback_candidates, key=lambda p: os.path.getmtime(p))
+    try:
+        primary_dir = os.path.dirname(PROMPT_LIBRARY_PRIMARY_PATH)
+        if primary_dir:
+            os.makedirs(primary_dir, exist_ok=True)
+        with open(source_path, "rb") as src, open(PROMPT_LIBRARY_PRIMARY_PATH, "wb") as dst:
+            dst.write(src.read())
+        logger.info(
+            "Prompt library bootstrapped: %s -> %s",
+            source_path,
+            PROMPT_LIBRARY_PRIMARY_PATH,
+        )
+    except Exception:
+        logger.exception("Failed to bootstrap prompt library primary storage")
 
 
 def load_prompt_library() -> list:
-    candidates = []
+    _bootstrap_prompt_library_primary()
+
+    candidates: List[str] = []
     if os.path.exists(PROMPT_LIBRARY_PRIMARY_PATH):
         candidates.append(PROMPT_LIBRARY_PRIMARY_PATH)
-    if os.path.exists(PROMPT_LIBRARY_LEGACY_PATH):
-        candidates.append(PROMPT_LIBRARY_LEGACY_PATH)
+    for path in _existing_prompt_library_fallbacks():
+        if path not in candidates:
+            candidates.append(path)
+
     if not candidates:
         return DEFAULT_PROMPT_LIBRARY
 
-    # If both files exist, pick the freshest one.
-    source_path = max(candidates, key=lambda p: os.path.getmtime(p))
+    for source_path in candidates:
+        try:
+            with open(source_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
 
-    try:
-        with open(source_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            if not isinstance(data, list) or not data:
+                logger.warning("prompt_library.json is empty or invalid list at %s", source_path)
+                continue
 
-        if not isinstance(data, list) or not data:
-            logger.warning("prompt_library.json is empty or invalid list, using defaults")
-            return DEFAULT_PROMPT_LIBRARY
+            for cat in data:
+                if not isinstance(cat, dict):
+                    raise ValueError("Category item must be object")
+                if "title" not in cat or "items" not in cat:
+                    raise ValueError("Category must contain title and items")
+                if not isinstance(cat["items"], list):
+                    raise ValueError("Category items must be list")
 
-        for cat in data:
-            if not isinstance(cat, dict):
-                raise ValueError("Category item must be object")
-            if "title" not in cat or "items" not in cat:
-                raise ValueError("Category must contain title and items")
-            if not isinstance(cat["items"], list):
-                raise ValueError("Category items must be list")
+            return data
+        except Exception as e:
+            logger.exception(f"Failed to load prompt_library.json from {source_path}: {e}")
 
-        return data
-    except Exception as e:
-        logger.exception(f"Failed to load prompt_library.json: {e}")
-        return DEFAULT_PROMPT_LIBRARY
+    return DEFAULT_PROMPT_LIBRARY
 
 
 PROMPT_LIBRARY = load_prompt_library()
 
 
 def save_prompt_library(data: list) -> None:
-    write_paths = []
-    for path in (PROMPT_LIBRARY_PRIMARY_PATH, PROMPT_LIBRARY_LEGACY_PATH):
-        if path and path not in write_paths:
-            write_paths.append(path)
+    write_paths = [PROMPT_LIBRARY_PRIMARY_PATH]
+    if PROMPT_LIBRARY_MIRROR_LEGACY and PROMPT_LIBRARY_LEGACY_PATH not in write_paths:
+        write_paths.append(PROMPT_LIBRARY_LEGACY_PATH)
 
     for path in write_paths:
         dir_path = os.path.dirname(path)
@@ -3147,18 +3187,16 @@ async def prompt_library_where(update: Update, context: ContextTypes.DEFAULT_TYP
         await message.reply_text("У тебя нет доступа к этой команде.")
         return
 
+    _bootstrap_prompt_library_primary()
     active_path = None
-    primary_exists = os.path.exists(PROMPT_LIBRARY_PRIMARY_PATH)
-    legacy_exists = os.path.exists(PROMPT_LIBRARY_LEGACY_PATH)
-    if primary_exists and legacy_exists:
-        active_path = max(
-            [PROMPT_LIBRARY_PRIMARY_PATH, PROMPT_LIBRARY_LEGACY_PATH],
-            key=lambda p: os.path.getmtime(p),
-        )
-    elif primary_exists:
-        active_path = PROMPT_LIBRARY_PRIMARY_PATH
-    elif legacy_exists:
-        active_path = PROMPT_LIBRARY_LEGACY_PATH
+    candidates: List[str] = []
+    if os.path.exists(PROMPT_LIBRARY_PRIMARY_PATH):
+        candidates.append(PROMPT_LIBRARY_PRIMARY_PATH)
+    for path in _existing_prompt_library_fallbacks():
+        if path not in candidates:
+            candidates.append(path)
+    if candidates:
+        active_path = candidates[0]
 
     if not active_path:
         await message.reply_text("Файл библиотеки не найден.")
@@ -3170,6 +3208,8 @@ async def prompt_library_where(update: Update, context: ContextTypes.DEFAULT_TYP
     await message.reply_text(
         "Текущий источник библиотеки:\n"
         f"{active_path}\n\n"
+        f"Primary path: {PROMPT_LIBRARY_PRIMARY_PATH}\n"
+        f"Legacy mirror: {'on' if PROMPT_LIBRARY_MIRROR_LEGACY else 'off'}\n\n"
         f"Обновлен: {mtime}\n"
         f"Категорий: {cats}\n"
         f"Шаблонов: {items}"

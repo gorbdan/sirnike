@@ -4713,8 +4713,56 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 ],
                 "modalities": ["image"],
                 "image_config": {"aspect_ratio": "9:16"},
+                "max_completion_tokens": 512,
+                "temperature": 0.2,
             }
-            payload_variants = [base_payload, fallback_payload]
+            strict_payload = {
+                "model": ZVENO_IMAGE_MODEL,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Generate exactly one final image. "
+                            "Return only image output."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": user_content if user_content else prompt,
+                    },
+                ],
+                "modalities": ["image"],
+                "image_config": {"aspect_ratio": "9:16"},
+                "max_completion_tokens": 256,
+                "temperature": 0,
+                "reasoning_effort": "low",
+            }
+            payload_variants = [base_payload, fallback_payload, strict_payload]
+
+            fallback_model = os.getenv("ZVENO_IMAGE_FALLBACK_MODEL", "google/gemini-2.5-flash-image").strip()
+            if fallback_model and fallback_model != ZVENO_IMAGE_MODEL:
+                payload_variants.append(
+                    {
+                        "model": fallback_model,
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": (
+                                    "Generate exactly one final image. "
+                                    "Return only image output."
+                                ),
+                            },
+                            {
+                                "role": "user",
+                                "content": user_content if user_content else prompt,
+                            },
+                        ],
+                        "modalities": ["image"],
+                        "image_config": {"aspect_ratio": "9:16"},
+                        "max_completion_tokens": 256,
+                        "temperature": 0,
+                    }
+                )
 
             request_url = build_zveno_url(ZVENO_API_BASE, "/v1/chat/completions")
             logger.info(f"Zveno image endpoint: {request_url}")
@@ -4761,12 +4809,31 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                         break
 
                     finish_reason = extract_zveno_finish_reason(response_data)
+                    msg_diag = {}
+                    try:
+                        choices = response_data.get("choices")
+                        if isinstance(choices, list) and choices:
+                            msg = choices[0].get("message") if isinstance(choices[0], dict) else None
+                            if isinstance(msg, dict):
+                                images = msg.get("images")
+                                msg_diag = {
+                                    "images_type": type(images).__name__,
+                                    "images_len": len(images) if isinstance(images, list) else -1,
+                                    "content_type": type(msg.get("content")).__name__,
+                                    "has_reasoning_details": isinstance(msg.get("reasoning_details"), list) and len(msg.get("reasoning_details")) > 0,
+                                }
+                    except Exception:
+                        msg_diag = {}
                     logger.warning(
-                        "Zveno image attempt %s/%s returned no image (finish_reason=%s)",
+                        "Zveno image attempt %s/%s returned no image (finish_reason=%s, model=%s, diag=%s)",
                         attempt_idx,
                         len(payload_variants),
                         finish_reason,
+                        payload.get("model"),
+                        msg_diag,
                     )
+                    if attempt_idx < len(payload_variants):
+                        await asyncio.sleep(0.7)
             if not image_url:
                 raise Exception(extract_zveno_error_text(response_data))
 

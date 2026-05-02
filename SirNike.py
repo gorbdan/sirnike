@@ -771,6 +771,17 @@ def motion_control_status_text(state: UserState) -> str:
         if motion_images
         else "не добавлено"
     )
+    refs_preview_lines: List[str] = []
+    for idx, ref_url in enumerate(motion_images, start=1):
+        ref_text = str(ref_url or "").strip()
+        if len(ref_text) > 96:
+            ref_text = f"{ref_text[:60]}...{ref_text[-28:]}"
+        refs_preview_lines.append(f"{idx}. {ref_text}")
+    refs_preview_text = (
+        "Рефы в буфере:\n" + "\n".join(refs_preview_lines)
+        if refs_preview_lines
+        else "Рефы в буфере: —"
+    )
     selected_duration = SEEDANCE_DURATION
     eta_min = max(2, int(selected_duration * 0.8))
     eta_max = max(eta_min + 1, int(selected_duration * 2.0))
@@ -825,6 +836,17 @@ def motion_control_status_text(state: UserState) -> str:
         if motion_images
         else "не добавлено"
     )
+    refs_preview_lines: List[str] = []
+    for idx, ref_url in enumerate(motion_images, start=1):
+        ref_text = str(ref_url or "").strip()
+        if len(ref_text) > 96:
+            ref_text = f"{ref_text[:60]}...{ref_text[-28:]}"
+        refs_preview_lines.append(f"{idx}. {ref_text}")
+    refs_preview_text = (
+        "Рефы в буфере:\n" + "\n".join(refs_preview_lines)
+        if refs_preview_lines
+        else "Рефы в буфере: —"
+    )
     selected_duration = get_selected_seedance_duration(state)
     selected_model = get_motion_model(state)
     selected_model_label = get_motion_model_label(selected_model)
@@ -861,6 +883,7 @@ def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
     selected_model = get_motion_model(state)
     selected_mode = get_selected_seedance_mode(state)
     cps = get_motion_model_cost_per_second(selected_model)
+    motion_images = get_motion_image_urls(state)
 
     duration_buttons = []
     for sec in get_seedance_duration_options(selected_model):
@@ -893,6 +916,20 @@ def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("Очистить фото-референсы 🧹", callback_data="mc_clear_images")],
         model_buttons,
     ]
+    if motion_images:
+        delete_buttons = []
+        for idx, _ in enumerate(motion_images, start=1):
+            delete_buttons.append(
+                InlineKeyboardButton(
+                    f"Удалить #{idx}",
+                    callback_data=f"mc_delimg_{idx}",
+                )
+            )
+        rows.append(delete_buttons[:3])
+        if len(delete_buttons) > 3:
+            rows.append(delete_buttons[3:6])
+        if len(delete_buttons) > 6:
+            rows.append(delete_buttons[6:9])
     if selected_model == "seedance2":
         mode_buttons = []
         for mode in get_seedance_mode_options(selected_model):
@@ -921,6 +958,17 @@ def motion_control_status_text(state: UserState) -> str:
         if motion_images
         else "не добавлено"
     )
+    refs_preview_lines: List[str] = []
+    for idx, ref_url in enumerate(motion_images, start=1):
+        ref_text = str(ref_url or "").strip()
+        if len(ref_text) > 96:
+            ref_text = f"{ref_text[:60]}...{ref_text[-28:]}"
+        refs_preview_lines.append(f"{idx}. {ref_text}")
+    refs_preview_text = (
+        "Рефы в буфере:\n" + "\n".join(refs_preview_lines)
+        if refs_preview_lines
+        else "Рефы в буфере: —"
+    )
     selected_duration = get_selected_seedance_duration(state)
     selected_model = get_motion_model(state)
     model_label = get_motion_model_label(selected_model)
@@ -947,6 +995,7 @@ def motion_control_status_text(state: UserState) -> str:
         f"Модель: {model_label}\n"
         f"Промпт: {prompt_state}\n"
         f"Изображение: {image_state}\n"
+        f"{refs_preview_text}\n"
         f"Качество: {quality_text}\n"
         f"Длительность: {selected_duration} сек (варианты: {options_text})\n"
         f"Стоимость: {selected_cost} изюминок\n"
@@ -2038,15 +2087,20 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         original_refs_count = len(references)
         valid_refs: List[str] = []
         dropped_count = 0
+        dropped_avatar_ref = False
         for ref_url in references[:8]:
             if not is_image_url_like(ref_url):
                 dropped_count += 1
+                if avatar_url and ref_url == avatar_url:
+                    dropped_avatar_ref = True
                 continue
             ok_ref, reason_ref = await validate_image_url(ref_url)
             if ok_ref:
                 valid_refs.append(ref_url)
             else:
                 dropped_count += 1
+                if avatar_url and ref_url == avatar_url:
+                    dropped_avatar_ref = True
                 logger.warning(
                     "Dropped invalid image reference before Zveno request: url=%s reason=%s user_id=%s",
                     ref_url,
@@ -2056,10 +2110,17 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if dropped_count > 0:
             references = valid_refs
             state.references = list(valid_refs)
+            if dropped_avatar_ref:
+                clear_avatar_url(user.id)
             await reply_target.reply_text(
                 f"Часть фото-референсов недоступна и исключена: {dropped_count} шт.\n"
                 f"В работу взято: {len(valid_refs)} шт."
             )
+            if dropped_avatar_ref:
+                await reply_target.reply_text(
+                    "Старый аватар-референс оказался битым и был удалён из профиля.\n"
+                    "Загрузи новый аватар, если хочешь снова использовать авто-референс."
+                )
             if original_refs_count > 0 and len(valid_refs) == 0:
                 await reply_target.reply_text(
                     "Все фото-референсы сейчас недоступны (битые или удалённые ссылки).\n"
@@ -2470,6 +2531,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         or query.data.startswith("mc_duration_")
         or query.data.startswith("mc_model_")
         or query.data.startswith("mc_mode_")
+        or query.data.startswith("mc_delimg_")
     )
 
     if is_motion_callback and not is_admin(update.effective_user.id):
@@ -2506,10 +2568,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if query.data in {"seedance_control", "motion_control"}:
         state = get_or_init_state(context)
-        if not get_motion_image_urls(state):
-            last_image = last_generated_image_url.get(update.effective_user.id)
-            if isinstance(last_image, str) and last_image.strip():
-                add_motion_image_url(state, last_image)
         state.motion_session_active = True
         state.waiting_for_motion_prompt = False
         state.waiting_for_motion_image = True
@@ -2553,6 +2611,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.motion_session_active = True
         await query.message.reply_text(
             "Фото-референсы очищены ✅\n\n" + motion_control_status_text(state),
+            reply_markup=motion_control_kb(state),
+        )
+        return
+
+    if query.data.startswith("mc_delimg_"):
+        state = get_or_init_state(context)
+        state.motion_session_active = True
+        state.waiting_for_motion_image = True
+        motion_images = get_motion_image_urls(state)
+        try:
+            idx = int(query.data.replace("mc_delimg_", "", 1))
+        except ValueError:
+            idx = -1
+
+        if idx < 1 or idx > len(motion_images):
+            await query.message.reply_text(
+                "Не нашла этот референс в буфере.",
+                reply_markup=motion_control_kb(state),
+            )
+            return
+
+        removed_url = motion_images.pop(idx - 1)
+        set_motion_image_urls(state, motion_images)
+        removed_text = str(removed_url or "").strip()
+        if len(removed_text) > 96:
+            removed_text = f"{removed_text[:60]}...{removed_text[-28:]}"
+        await query.message.reply_text(
+            f"Удалён референс #{idx} ✅\n{removed_text}\n\n{motion_control_status_text(state)}",
             reply_markup=motion_control_kb(state),
         )
         return
@@ -4227,11 +4313,6 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     motion_images = get_motion_image_urls(state)
-    if not motion_images:
-        last_image = last_generated_image_url.get(user.id)
-        if isinstance(last_image, str) and last_image.strip():
-            add_motion_image_url(state, last_image)
-            motion_images = get_motion_image_urls(state)
 
     prompt_text = (state.motion_prompt or "").strip()
     if not motion_images and not prompt_text:
@@ -4641,6 +4722,20 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                     for choice in choices:
                         if not isinstance(choice, dict):
                             continue
+                        native_finish_reason = choice.get("native_finish_reason")
+                        if isinstance(native_finish_reason, str) and native_finish_reason.strip():
+                            native_code = native_finish_reason.strip().upper()
+                            if "IMAGE_PROHIBITED_CONTENT" in native_code:
+                                return (
+                                    "Запрос отклонён фильтром безопасности модели "
+                                    "(IMAGE_PROHIBITED_CONTENT). "
+                                    "Смягчи промпт и/или замени референсы."
+                                )
+                            if "PROHIBITED" in native_code or "SAFETY" in native_code or "BLOCK" in native_code:
+                                return (
+                                    "Запрос отклонён фильтром безопасности модели. "
+                                    "Измени формулировку промпта или референсы и попробуй снова."
+                                )
                         message = choice.get("message")
                         if not isinstance(message, dict):
                             continue
@@ -4674,6 +4769,18 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                         or choice.get("native_finish_reason")
                         or choice.get("finishReason")
                     )
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+                return "unknown"
+
+            def extract_zveno_native_finish_reason(response_data: dict) -> str:
+                choices = response_data.get("choices")
+                if not isinstance(choices, list):
+                    return "unknown"
+                for choice in choices:
+                    if not isinstance(choice, dict):
+                        continue
+                    value = choice.get("native_finish_reason") or choice.get("nativeFinishReason")
                     if isinstance(value, str) and value.strip():
                         return value.strip()
                 return "unknown"
@@ -4809,6 +4916,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                         break
 
                     finish_reason = extract_zveno_finish_reason(response_data)
+                    native_finish_reason = extract_zveno_native_finish_reason(response_data)
                     msg_diag = {}
                     try:
                         choices = response_data.get("choices")
@@ -4825,13 +4933,17 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                     except Exception:
                         msg_diag = {}
                     logger.warning(
-                        "Zveno image attempt %s/%s returned no image (finish_reason=%s, model=%s, diag=%s)",
+                        "Zveno image attempt %s/%s returned no image (finish_reason=%s, native_finish_reason=%s, model=%s, diag=%s)",
                         attempt_idx,
                         len(payload_variants),
                         finish_reason,
+                        native_finish_reason,
                         payload.get("model"),
                         msg_diag,
                     )
+                    native_upper = native_finish_reason.upper() if isinstance(native_finish_reason, str) else ""
+                    if "IMAGE_PROHIBITED_CONTENT" in native_upper:
+                        break
                     if attempt_idx < len(payload_variants):
                         await asyncio.sleep(0.7)
             if not image_url:

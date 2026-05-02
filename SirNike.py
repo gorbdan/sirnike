@@ -1695,7 +1695,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     return
 
-                if state.waiting_for_motion_image or state.motion_session_active:
+                if state.waiting_for_motion_image:
                     state.motion_session_active = True
                     current_refs = get_motion_image_urls(state)
                     if len(current_refs) >= MAX_SEEDANCE_IMAGE_REFERENCES and direct_url not in current_refs:
@@ -2014,9 +2014,10 @@ async def build_seedance_reference_sheet_url(image_urls: List[str]) -> Optional[
 async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     create_user_if_not_exists(user.id, user.username, START_BONUS)
+    reply_target = update.callback_query.message if update.callback_query else update.effective_message
 
     if user.id in queued_user_ids or user.id in processing_user_ids:
-        await update.callback_query.message.reply_text(
+        await reply_target.reply_text(
             "Сырник уже занят твоей предыдущей магией 🧀\n"
             "Дождись результата, а потом запустим следующую."
         )
@@ -2025,15 +2026,40 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = get_or_init_state(context)
 
     if not state.prompt:
-        await update.callback_query.message.reply_text("Сначала отправь текст промпта.")
+        await reply_target.reply_text("Сначала отправь текст промпта.")
         return
 
     references = list(state.references)
-
     avatar_url = get_avatar_url(user.id)
     if avatar_url and not references:
         
         references = [avatar_url]
+    if AI_PROVIDER == "ZVENO" and references:
+        valid_refs: List[str] = []
+        dropped_count = 0
+        for ref_url in references[:8]:
+            if not is_image_url_like(ref_url):
+                dropped_count += 1
+                continue
+            ok_ref, reason_ref = await validate_image_url(ref_url)
+            if ok_ref:
+                valid_refs.append(ref_url)
+            else:
+                dropped_count += 1
+                logger.warning(
+                    "Dropped invalid image reference before Zveno request: url=%s reason=%s user_id=%s",
+                    ref_url,
+                    reason_ref,
+                    user.id,
+                )
+        if dropped_count > 0:
+            references = valid_refs
+            state.references = list(valid_refs)
+            await reply_target.reply_text(
+                f"Часть фото-референсов недоступна и исключена: {dropped_count} шт.\n"
+                f"В работу взято: {len(valid_refs)} шт."
+            )
+
     cost = calc_generation_cost(references)
 
     free_date, free_count = get_free_info(user.id)
@@ -2043,7 +2069,7 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not use_free:
         bal = get_balance(user.id)
         if bal < cost:
-            await update.callback_query.message.reply_text(
+            await reply_target.reply_text(
                 f"Не хватает изюминок.\n"
                 f"Нужно: {cost}\n"
                 f"У тебя: {bal}\n\n"
@@ -2052,7 +2078,7 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if not spend_izyminki(user.id, cost):
-            await update.callback_query.message.reply_text("Не удалось списать изюминки. Попробуй ещё раз.")
+            await reply_target.reply_text("Не удалось списать изюминки. Попробуй ещё раз.")
             return
 
         paid = True
@@ -2076,7 +2102,7 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         queued_user_ids.add(user.id)
         await generation_queue.put(job)
 
-        await update.callback_query.message.reply_text(
+        await reply_target.reply_text(
             "Сырник всё понял 🧀\n"
             "Скоро покажу, что получилось."
         )
@@ -2090,7 +2116,7 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if paid:
             add_izyminki(user.id, cost)
 
-        await update.callback_query.message.reply_text(
+        await reply_target.reply_text(
             "Не получилось взять задачу в работу. Попробуй ещё раз."
         )
 
@@ -4086,7 +4112,7 @@ async def validate_image_url(image_url: str) -> tuple[bool, str]:
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 image_url,
-                timeout=aiohttp.ClientTimeout(total=30),
+                timeout=aiohttp.ClientTimeout(total=12),
                 allow_redirects=True,
             ) as resp:
                 content_type = resp.headers.get("Content-Type", "")
@@ -4097,6 +4123,13 @@ async def validate_image_url(image_url: str) -> tuple[bool, str]:
                 return True, "ok"
     except Exception as e:
         return False, str(e)        
+
+
+def is_image_url_like(value: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    raw = value.strip()
+    return raw.startswith("http://") or raw.startswith("https://") or raw.startswith("data:image")
 
 
 async def download_video_bytes_with_fallback(video_url: str) -> bytes:
@@ -4501,14 +4534,20 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                         for image_item in images:
                             if isinstance(image_item, dict):
                                 url = image_item.get("url")
-                                if isinstance(url, str) and url.strip():
-                                    return url
-                            elif isinstance(image_item, str) and image_item.strip():
-                                return image_item
+                                if isinstance(url, str):
+                                    url = url.strip()
+                                    if is_image_url_like(url):
+                                        return url
+                            elif isinstance(image_item, str):
+                                image_item = image_item.strip()
+                                if is_image_url_like(image_item):
+                                    return image_item
 
                     content = message.get("content")
                     if isinstance(content, str) and content.strip():
-                        return content
+                        content = content.strip()
+                        if is_image_url_like(content):
+                            return content
                     if isinstance(content, list):
                         for part in content:
                             if not isinstance(part, dict):
@@ -4516,13 +4555,19 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                             image_url = part.get("image_url")
                             if isinstance(image_url, dict):
                                 url = image_url.get("url")
-                                if isinstance(url, str) and url.strip():
-                                    return url
-                            elif isinstance(image_url, str) and image_url.strip():
-                                return image_url
+                                if isinstance(url, str):
+                                    url = url.strip()
+                                    if is_image_url_like(url):
+                                        return url
+                            elif isinstance(image_url, str):
+                                image_url = image_url.strip()
+                                if is_image_url_like(image_url):
+                                    return image_url
                             url = part.get("url")
-                            if isinstance(url, str) and url.strip():
-                                return url
+                            if isinstance(url, str):
+                                url = url.strip()
+                                if is_image_url_like(url):
+                                    return url
                 return None
 
             def extract_zveno_image_bytes(response_data: dict) -> Optional[bytes]:

@@ -476,10 +476,6 @@ def get_motion_image_urls(state: UserState) -> List[str]:
             candidate = item.strip()
             if candidate and candidate not in urls:
                 urls.append(candidate)
-    if isinstance(state.animation_source_url, str):
-        candidate = state.animation_source_url.strip()
-        if candidate and candidate not in urls:
-            urls.append(candidate)
     return urls[:MAX_SEEDANCE_IMAGE_REFERENCES]
 
 
@@ -618,8 +614,8 @@ def main_menu_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("Запустить генерацию⚡", callback_data="generate")],
         [prompt_library_button],
     ]
-    motion_label = "Seedance 2 🎬" if SEEDANCE_ENABLED else "Seedance 2 🚧 (в разработке)"
-    rows.append([InlineKeyboardButton(motion_label, callback_data="seedance_control")])
+    video_label = "Seedance 2 🎬" if SEEDANCE_ENABLED else "Seedance 2 🚧 (в разработке)"
+    rows.append([InlineKeyboardButton(video_label, callback_data="video_control")])
     rows.extend([
         [InlineKeyboardButton("Действия с аватаром 👤", callback_data="avatar_actions")],
         [InlineKeyboardButton("Сообщить о проблеме 🚨", callback_data="report_problem")],
@@ -755,130 +751,8 @@ def prompt_library_admin_kb() -> InlineKeyboardMarkup:
     ])
 
 
-def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Промпт ✍️", callback_data="mc_set_prompt")],
-        [InlineKeyboardButton("Изображение 🌄", callback_data="mc_set_image")],
-        [InlineKeyboardButton("Запустить Seedance 1.5 Pro ⚡", callback_data="mc_start")],
-    ])
-
-
-def motion_control_status_text(state: UserState) -> str:
-    prompt_state = "добавлен" if state.motion_prompt.strip() else "необязательно"
-    motion_images = get_motion_image_urls(state)
-    image_state = (
-        f"{len(motion_images)} шт. (макс. {MAX_SEEDANCE_IMAGE_REFERENCES})"
-        if motion_images
-        else "не добавлено"
-    )
-    refs_preview_lines: List[str] = []
-    for idx, ref_url in enumerate(motion_images, start=1):
-        ref_text = str(ref_url or "").strip()
-        if len(ref_text) > 96:
-            ref_text = f"{ref_text[:60]}...{ref_text[-28:]}"
-        refs_preview_lines.append(f"{idx}. {ref_text}")
-    refs_preview_text = (
-        "Рефы в буфере:\n" + "\n".join(refs_preview_lines)
-        if refs_preview_lines
-        else "Рефы в буфере: —"
-    )
-    selected_duration = SEEDANCE_DURATION
-    eta_min = max(2, int(selected_duration * 0.8))
-    eta_max = max(eta_min + 1, int(selected_duration * 2.0))
-
-    return (
-        "Seedance 1.5 Pro (тест для админа)\n"
-        "Генерация видео с помощью нейросети.\n"
-        "Можно запустить только с промптом, но лучше добавить 1–2 фото персонажа.\n"
-        "Референсы фиксируют внешность, стиль и идентичность персонажей в кадре.\n\n"
-        "1. Нажми «Промпт» (необязательно)\n"
-        "2. Добавь «Изображение» (до 2 фото-референсов)\n"
-        "3. Запусти генерацию\n\n"
-        f"Промпт: {prompt_state}\n"
-        f"Изображение: {image_state}\n"
-        f"Качество: {SEEDANCE_MODE} (фиксировано)\n"
-        f"Длительность: {SEEDANCE_DURATION} сек\n"
-        f"Ожидание результата: обычно {eta_min}–{eta_max} мин"
-    )
-
-# Override legacy motion UI helpers with Seedance 2 + variable duration/cost.
-def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
-    selected_duration = get_selected_seedance_duration(state)
-    selected_model = get_motion_model(state)
-    duration_buttons = []
-    for sec in get_seedance_duration_options(selected_model):
-        cost = calc_seedance_cost(sec)
-        prefix = "● " if sec == selected_duration else ""
-        duration_buttons.append(
-            InlineKeyboardButton(
-                f"{prefix}{sec}с · {cost} изюминок",
-                callback_data=f"mc_duration_{sec}",
-            )
-        )
-
-    rows = [
-        [InlineKeyboardButton("Промпт ✍️", callback_data="mc_set_prompt")],
-        [InlineKeyboardButton("Изображение 🌄", callback_data="mc_set_image")],
-    ]
-    if duration_buttons:
-        rows.append(duration_buttons[:3])
-    if len(duration_buttons) > 3:
-        rows.append(duration_buttons[3:])
-    rows.append([InlineKeyboardButton("Запустить Seedance 2 ⚡", callback_data="mc_start")])
-    return InlineKeyboardMarkup(rows)
-
-
-def motion_control_status_text(state: UserState) -> str:
-    prompt_state = "добавлен" if state.motion_prompt.strip() else "необязательно"
-    motion_images = get_motion_image_urls(state)
-    image_state = (
-        f"{len(motion_images)} шт. (макс. {MAX_SEEDANCE_IMAGE_REFERENCES})"
-        if motion_images
-        else "не добавлено"
-    )
-    refs_preview_lines: List[str] = []
-    for idx, ref_url in enumerate(motion_images, start=1):
-        ref_text = str(ref_url or "").strip()
-        if len(ref_text) > 96:
-            ref_text = f"{ref_text[:60]}...{ref_text[-28:]}"
-        refs_preview_lines.append(f"{idx}. {ref_text}")
-    refs_preview_text = (
-        "Рефы в буфере:\n" + "\n".join(refs_preview_lines)
-        if refs_preview_lines
-        else "Рефы в буфере: —"
-    )
-    selected_duration = get_selected_seedance_duration(state)
-    selected_model = get_motion_model(state)
-    selected_model_label = get_motion_model_label(selected_model)
-    selected_cps = get_motion_model_cost_per_second(selected_model)
-    selected_cost = calc_seedance_cost(selected_duration, selected_cps)
-    selected_endpoint = SEEDANCE_FAST_ENDPOINT if selected_model == "seedance2_fast" else SEEDANCE_ENDPOINT
-    selected_mode = SEEDANCE_MODE
-    selected_model_slug = SEEDANCE_FAST_MODEL if selected_model == "seedance2_fast" else SEEDANCE_MODEL
-    eta_min = max(2, int(selected_duration * 0.8))
-    eta_max = max(eta_min + 1, int(selected_duration * 2.0))
-    options_text = ", ".join([f"{sec}с" for sec in get_seedance_duration_options(selected_model)])
-
-    return (
-        "Seedance 2 (тест для админа)\n"
-        "Генерация видео с помощью нейросети.\n"
-        "Можно запустить только с промптом, но лучше добавить 1–2 фото персонажа.\n"
-        "Референсы фиксируют внешность, стиль и идентичность персонажей в кадре.\n\n"
-        "1. Нажми «Промпт» (необязательно)\n"
-        "2. Добавь «Изображение» (до 2 фото-референсов)\n"
-        "3. Выбери длительность ролика\n"
-        "4. Запусти генерацию\n\n"
-        f"Промпт: {prompt_state}\n"
-        f"Изображение: {image_state}\n"
-        f"Качество: {SEEDANCE_MODE} (фиксировано)\n"
-        f"Длительность: {selected_duration} сек (варианты: {options_text})\n"
-        f"Стоимость: {selected_cost} изюминок\n"
-        f"Ожидание результата: обычно {eta_min}–{eta_max} минут"
-    )
-
-
-# Final override: quest mode with character references.
-def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
+# Video control UI (single final implementation).
+def video_control_kb(state: UserState) -> InlineKeyboardMarkup:
     selected_duration = get_selected_seedance_duration(state)
     selected_model = get_motion_model(state)
     selected_mode = get_selected_seedance_mode(state)
@@ -892,28 +766,28 @@ def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
         duration_buttons.append(
             InlineKeyboardButton(
                 f"{prefix}{sec}с · {cost} изюминок",
-                callback_data=f"mc_duration_{sec}",
+                callback_data=f"video_duration_{sec}",
             )
         )
 
     model_buttons = [
         InlineKeyboardButton(
             ("● " if selected_model == "seedance2" else "") + "Seedance 2",
-            callback_data="mc_model_seedance2",
+            callback_data="video_model_seedance2",
         )
     ]
     if SEEDANCE_FAST_ENABLED:
         model_buttons.append(
             InlineKeyboardButton(
                 ("● " if selected_model == "seedance2_fast" else "") + "Seedance 2 Fast (бета)",
-                callback_data="mc_model_seedance2_fast",
+                callback_data="video_model_seedance2_fast",
             )
         )
 
     rows = [
-        [InlineKeyboardButton("Промпт ✍️", callback_data="mc_set_prompt")],
-        [InlineKeyboardButton("Изображение 🌄", callback_data="mc_set_image")],
-        [InlineKeyboardButton("Очистить фото-референсы 🧹", callback_data="mc_clear_images")],
+        [InlineKeyboardButton("Промпт ✍️", callback_data="video_set_prompt")],
+        [InlineKeyboardButton("Изображение 🌄", callback_data="video_set_image")],
+        [InlineKeyboardButton("Очистить фото-референсы 🧹", callback_data="video_clear_images")],
         model_buttons,
     ]
     if motion_images:
@@ -922,7 +796,7 @@ def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
             delete_buttons.append(
                 InlineKeyboardButton(
                     f"Удалить #{idx}",
-                    callback_data=f"mc_delimg_{idx}",
+                    callback_data=f"video_delimg_{idx}",
                 )
             )
         rows.append(delete_buttons[:3])
@@ -937,7 +811,7 @@ def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
             mode_buttons.append(
                 InlineKeyboardButton(
                     f"{prefix}{seedance_mode_ui_label(mode)}",
-                    callback_data=f"mc_mode_{seedance_mode_ui_label(mode)}",
+                    callback_data=f"video_mode_{seedance_mode_ui_label(mode)}",
                 )
             )
         if mode_buttons:
@@ -946,11 +820,11 @@ def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
         rows.append(duration_buttons[:3])
     if len(duration_buttons) > 3:
         rows.append(duration_buttons[3:])
-    rows.append([InlineKeyboardButton("Запустить ⚡", callback_data="mc_start")])
+    rows.append([InlineKeyboardButton("Запустить ⚡", callback_data="video_start")])
     return InlineKeyboardMarkup(rows)
 
 
-def motion_control_status_text(state: UserState) -> str:
+def video_control_status_text(state: UserState) -> str:
     prompt_state = "добавлен" if state.motion_prompt.strip() else "необязательно"
     motion_images = get_motion_image_urls(state)
     image_state = (
@@ -1001,6 +875,15 @@ def motion_control_status_text(state: UserState) -> str:
         f"Стоимость: {selected_cost} изюминок\n"
         f"Ожидание результата: обычно {eta_min}–{eta_max} минут"
     )
+
+
+# Backward-compatible aliases for legacy internal calls.
+def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
+    return video_control_kb(state)
+
+
+def motion_control_status_text(state: UserState) -> str:
+    return video_control_status_text(state)
 
 
 # ----------------------------
@@ -1730,8 +1613,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text("imgbb не вернул ссылку на фото.")
                     return
 
-                state.animation_source_url = direct_url
-
                 if state.waiting_for_avatar_upload:
                     set_avatar_url(user.id, direct_url)
                     state.animation_source_url = direct_url
@@ -1764,6 +1645,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     return
 
+                state.animation_source_url = direct_url
                 state.references.append(direct_url)
 
         chat_id = update.effective_chat.id
@@ -2525,20 +2407,35 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("Не удалось сохранить шаблон. Попробуй ещё раз.")
             return
 
-    motion_callbacks = {"seedance_control", "mc_set_prompt", "mc_set_image", "mc_clear_images", "mc_set_video", "mc_start", "seedance_retry"}
-    is_motion_callback = (
-        query.data in motion_callbacks
-        or query.data.startswith("mc_duration_")
-        or query.data.startswith("mc_model_")
-        or query.data.startswith("mc_mode_")
-        or query.data.startswith("mc_delimg_")
+    callback_data = query.data or ""
+    video_cb = callback_data
+    if callback_data.startswith("mc_"):
+        video_cb = f"video_{callback_data[3:]}"
+    elif callback_data in {"seedance_control", "motion_control"}:
+        video_cb = "video_control"
+
+    video_callbacks = {
+        "video_control",
+        "video_set_prompt",
+        "video_set_image",
+        "video_clear_images",
+        "video_set_video",
+        "video_start",
+        "seedance_retry",
+    }
+    is_video_callback = (
+        video_cb in video_callbacks
+        or video_cb.startswith("video_duration_")
+        or video_cb.startswith("video_model_")
+        or video_cb.startswith("video_mode_")
+        or video_cb.startswith("video_delimg_")
     )
 
-    if is_motion_callback and not is_admin(update.effective_user.id):
+    if is_video_callback and not is_admin(update.effective_user.id):
         await query.message.reply_text("Эта функция пока доступна только администратору.")
         return
 
-    if is_motion_callback and not SEEDANCE_ENABLED:
+    if is_video_callback and not SEEDANCE_ENABLED:
         await query.message.reply_text(motion_unavailable_text(), reply_markup=main_menu_kb())
         return
 
@@ -2566,7 +2463,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await run_generation(update, context)
         return
     
-    if query.data in {"seedance_control", "motion_control"}:
+    if video_cb == "video_control":
         state = get_or_init_state(context)
         state.motion_session_active = True
         state.waiting_for_motion_prompt = False
@@ -2585,14 +2482,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if query.data == "mc_set_prompt":
+    if video_cb == "video_set_prompt":
         state = get_or_init_state(context)
         state.motion_session_active = True
         state.waiting_for_motion_prompt = True
         await query.message.reply_text("Напиши промпт для итогового видео одним сообщением.")
         return
 
-    if query.data == "mc_set_image":
+    if video_cb == "video_set_image":
         state = get_or_init_state(context)
         state.motion_session_active = True
         state.waiting_for_motion_image = True
@@ -2604,7 +2501,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if query.data == "mc_clear_images":
+    if video_cb == "video_clear_images":
         state = get_or_init_state(context)
         set_motion_image_urls(state, [])
         state.waiting_for_motion_image = True
@@ -2615,13 +2512,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if query.data.startswith("mc_delimg_"):
+    if video_cb.startswith("video_delimg_"):
         state = get_or_init_state(context)
         state.motion_session_active = True
         state.waiting_for_motion_image = True
         motion_images = get_motion_image_urls(state)
         try:
-            idx = int(query.data.replace("mc_delimg_", "", 1))
+            idx = int(video_cb.replace("video_delimg_", "", 1))
         except ValueError:
             idx = -1
 
@@ -2643,15 +2540,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if query.data == "mc_set_video":
+    if video_cb == "video_set_video":
         await query.message.reply_text("Для этой модели этот шаг не нужен.")
         return
 
-    if query.data.startswith("mc_model_"):
+    if video_cb.startswith("video_model_"):
         state = get_or_init_state(context)
         state.motion_session_active = True
         state.waiting_for_motion_image = True
-        picked_model = query.data.replace("mc_model_", "", 1)
+        picked_model = video_cb.replace("video_model_", "", 1)
         if picked_model == "seedance2_fast" and SEEDANCE_FAST_ENABLED:
             state.motion_model = "seedance2_fast"
             state.motion_mode = normalize_seedance_mode(SEEDANCE_FAST_MODE)
@@ -2665,7 +2562,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if query.data.startswith("mc_mode_"):
+    if video_cb.startswith("video_mode_"):
         state = get_or_init_state(context)
         state.motion_session_active = True
         state.waiting_for_motion_image = True
@@ -2676,7 +2573,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=motion_control_kb(state),
             )
             return
-        picked_mode = normalize_seedance_mode(query.data.replace("mc_mode_", "", 1))
+        picked_mode = normalize_seedance_mode(video_cb.replace("video_mode_", "", 1))
         if picked_mode not in get_seedance_mode_options(selected_model):
             picked_mode = get_selected_seedance_mode(state)
         state.motion_mode = picked_mode
@@ -2686,12 +2583,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if query.data.startswith("mc_duration_"):
+    if video_cb.startswith("video_duration_"):
         state = get_or_init_state(context)
         state.motion_session_active = True
         state.waiting_for_motion_image = True
         try:
-            picked = int(query.data.replace("mc_duration_", "", 1))
+            picked = int(video_cb.replace("video_duration_", "", 1))
         except ValueError:
             picked = get_selected_seedance_duration(state)
 
@@ -2706,7 +2603,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if query.data == "mc_start":
+    if video_cb == "video_start":
         state = get_or_init_state(context)
         state.waiting_for_motion_image = False
         state.motion_session_active = False

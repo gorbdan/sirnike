@@ -287,7 +287,22 @@ PROMPT_LIBRARY_WEBAPP_PATH = os.path.join(os.path.dirname(__file__), "webapp", "
 _PROMPT_LIBRARY_PRIMARY_ENV = os.getenv("PROMPT_LIBRARY_PRIMARY_PATH", "").strip()
 PROMPT_LIBRARY_MIRROR_LEGACY = os.getenv("PROMPT_LIBRARY_MIRROR_LEGACY", "0").strip() == "1"
 
-if _PROMPT_LIBRARY_PRIMARY_ENV:
+def _is_placeholder_path(path: str) -> bool:
+    p = (path or "").strip().lower().replace("\\", "/")
+    if not p:
+        return False
+    placeholder_markers = (
+        "/путь/к/",
+        "путь/к/",
+        "/path/to/",
+        "path/to/",
+        "your/path",
+        "example/path",
+    )
+    return any(marker in p for marker in placeholder_markers)
+
+
+if _PROMPT_LIBRARY_PRIMARY_ENV and not _is_placeholder_path(_PROMPT_LIBRARY_PRIMARY_ENV):
     PROMPT_LIBRARY_PRIMARY_PATH = _PROMPT_LIBRARY_PRIMARY_ENV
 else:
     # Single source of truth on runtime hosts (Bothost persists /app/data).

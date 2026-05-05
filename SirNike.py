@@ -663,7 +663,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     if PROMPT_WEBAPP_URL:
         prompt_library_button = InlineKeyboardButton(
             "Библиотека промптов 📚",
-            callback_data="pl_open_webapp",
+            web_app=WebAppInfo(url=PROMPT_WEBAPP_URL),
         )
     else:
         prompt_library_button = InlineKeyboardButton(
@@ -3358,6 +3358,7 @@ async def prompt_library_where(update: Update, context: ContextTypes.DEFAULT_TYP
         f"{active_path}\n\n"
         f"Primary path: {PROMPT_LIBRARY_PRIMARY_PATH}\n"
         f"Legacy mirror: {'on' if PROMPT_LIBRARY_MIRROR_LEGACY else 'off'}\n\n"
+        f"WebApp URL: {PROMPT_WEBAPP_URL or 'не задан'}\n\n"
         f"Обновлен: {mtime}\n"
         f"Категорий: {cats}\n"
         f"Шаблонов: {items}"

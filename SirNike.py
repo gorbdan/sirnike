@@ -4,13 +4,14 @@ import io
 import json
 import logging
 import re
+import time
 from logging.handlers import RotatingFileHandler
 import os
 from datetime import datetime
 from urllib.parse import urlsplit
 from PIL import Image, ImageOps
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import aiohttp
 from telegram.ext import (
     Application,
@@ -25,6 +26,8 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputMediaPhoto,
+    InputMediaVideo,
     LabeledPrice,
     WebAppInfo,
     ReplyKeyboardMarkup,
@@ -154,6 +157,9 @@ photo_counts = {}
 last_generated_image_url = {}
 last_generated_prompt = {}
 last_generation_references = {}
+MEDIA_GROUP_CACHE: Dict[Tuple[int, str], List[Dict[str, Any]]] = {}
+MAX_CACHED_MEDIA_GROUPS = 300
+MAX_MEDIA_GROUP_CHUNK_SIZE = 10
 try:
     MAX_SEEDANCE_IMAGE_REFERENCES = max(
         1,
@@ -679,9 +685,12 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 def promo_try_kb(promo_id: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Попробовать", callback_data=f"promo_try_{promo_id}")]
-    ])
+    rows = [[InlineKeyboardButton("Попробовать", callback_data=f"promo_try_{promo_id}")]]
+    if PROMPT_WEBAPP_URL:
+        rows.append([InlineKeyboardButton("Библиотека промтов 📚", url=PROMPT_WEBAPP_URL)])
+    else:
+        rows.append([InlineKeyboardButton("Библиотека промтов 📚", callback_data="pl_open")])
+    return InlineKeyboardMarkup(rows)
 
 
 def support_report_admin_kb(user_id: int) -> InlineKeyboardMarkup:
@@ -958,6 +967,92 @@ def seedance_retry_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("Повторить 🔁", callback_data="seedance_retry")],
         [InlineKeyboardButton("В меню", callback_data="reset")],
     ])
+
+
+def broadcast_library_kb() -> InlineKeyboardMarkup:
+    if PROMPT_WEBAPP_URL:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("Библиотека промтов 📚", url=PROMPT_WEBAPP_URL)]
+        ])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Библиотека промтов 📚", callback_data="pl_open")]
+    ])
+
+
+def cache_media_group_message(message) -> None:
+    if not message:
+        return
+    media_group_id = getattr(message, "media_group_id", None)
+    if not media_group_id:
+        return
+
+    media_item: Optional[Dict[str, Any]] = None
+    if getattr(message, "photo", None):
+        media_item = {
+            "type": "photo",
+            "file_id": message.photo[-1].file_id,
+            "caption": message.caption or "",
+            "message_id": int(getattr(message, "message_id", 0) or 0),
+            "added_at": time.time(),
+        }
+    elif getattr(message, "video", None):
+        media_item = {
+            "type": "video",
+            "file_id": message.video.file_id,
+            "caption": message.caption or "",
+            "message_id": int(getattr(message, "message_id", 0) or 0),
+            "added_at": time.time(),
+        }
+
+    if not media_item:
+        return
+
+    cache_key = (int(message.chat_id), str(media_group_id))
+    bucket = MEDIA_GROUP_CACHE.setdefault(cache_key, [])
+    if any(item.get("message_id") == media_item["message_id"] for item in bucket):
+        return
+
+    bucket.append(media_item)
+    bucket.sort(key=lambda item: int(item.get("message_id", 0)))
+
+    while len(MEDIA_GROUP_CACHE) > MAX_CACHED_MEDIA_GROUPS:
+        oldest_key = min(
+            MEDIA_GROUP_CACHE.keys(),
+            key=lambda key: min(
+                (float(item.get("added_at", 0.0)) for item in MEDIA_GROUP_CACHE.get(key, [])),
+                default=float("inf"),
+            ),
+        )
+        MEDIA_GROUP_CACHE.pop(oldest_key, None)
+
+
+def get_cached_media_group(chat_id: int, media_group_id: Optional[str]) -> List[Dict[str, Any]]:
+    if not media_group_id:
+        return []
+    cache_key = (int(chat_id), str(media_group_id))
+    items = list(MEDIA_GROUP_CACHE.get(cache_key, []))
+    items.sort(key=lambda item: int(item.get("message_id", 0)))
+    return items
+
+
+def build_media_group_payload(items: List[Dict[str, Any]]) -> List[Any]:
+    media_payload: List[Any] = []
+    for item in items:
+        file_id = str(item.get("file_id") or "").strip()
+        if not file_id:
+            continue
+        caption = str(item.get("caption") or "").strip() or None
+        if item.get("type") == "photo":
+            media_payload.append(InputMediaPhoto(media=file_id, caption=caption))
+        elif item.get("type") == "video":
+            media_payload.append(
+                InputMediaVideo(
+                    media=file_id,
+                    caption=caption,
+                    supports_streaming=True,
+                )
+            )
+    return media_payload
 
 
 # Override label to keep retry wording consistent after failed image generation.
@@ -1377,26 +1472,62 @@ async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = get_all_user_ids()
     sent = 0
     failed = 0
+    library_kb = broadcast_library_kb()
+    source_group_items: List[Dict[str, Any]] = []
+    if source_message and getattr(source_message, "media_group_id", None):
+        source_group_items = get_cached_media_group(
+            chat_id=source_message.chat_id,
+            media_group_id=source_message.media_group_id,
+        )
+        if not source_group_items:
+            await update.message.reply_text(
+                "Я не вижу полный состав этого альбома (обычно после перезапуска бота).\n"
+                "Перешли фото/видео-альбом заново и снова ответь командой /broadcast."
+            )
+            return
 
     for target_user_id in users:
         try:
             if source_message:
-                try:
-                    await context.bot.copy_message(
+                if source_group_items:
+                    for start_idx in range(0, len(source_group_items), MAX_MEDIA_GROUP_CHUNK_SIZE):
+                        chunk = source_group_items[start_idx:start_idx + MAX_MEDIA_GROUP_CHUNK_SIZE]
+                        media_payload = build_media_group_payload(chunk)
+                        if not media_payload:
+                            continue
+                        await context.bot.send_media_group(
+                            chat_id=target_user_id,
+                            media=media_payload,
+                        )
+                        await asyncio.sleep(0.02)
+                    await context.bot.send_message(
                         chat_id=target_user_id,
-                        from_chat_id=source_message.chat_id,
-                        message_id=source_message.message_id,
+                        text="Библиотека промтов 👇",
+                        reply_markup=library_kb,
                     )
-                except Exception:
-                    await context.bot.forward_message(
+                else:
+                    try:
+                        await context.bot.copy_message(
+                            chat_id=target_user_id,
+                            from_chat_id=source_message.chat_id,
+                            message_id=source_message.message_id,
+                        )
+                    except Exception:
+                        await context.bot.forward_message(
+                            chat_id=target_user_id,
+                            from_chat_id=source_message.chat_id,
+                            message_id=source_message.message_id,
+                        )
+                    await context.bot.send_message(
                         chat_id=target_user_id,
-                        from_chat_id=source_message.chat_id,
-                        message_id=source_message.message_id,
+                        text="Библиотека промтов 👇",
+                        reply_markup=library_kb,
                     )
             else:
                 await context.bot.send_message(
                     chat_id=target_user_id,
                     text=text,
+                    reply_markup=library_kb,
                 )
             sent += 1
             await asyncio.sleep(0.05)
@@ -1627,6 +1758,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     create_user_if_not_exists(user.id, user.username, START_BONUS)
 
     state = get_or_init_state(context)
+    cache_media_group_message(update.effective_message)
     
 
     photo = update.message.photo[-1]
@@ -1719,6 +1851,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     create_user_if_not_exists(user.id, user.username, START_BONUS)
     state = get_or_init_state(context)
+    cache_media_group_message(update.effective_message)
 
     if not state.waiting_for_motion_video:
         return

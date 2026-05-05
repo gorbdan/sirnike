@@ -717,6 +717,12 @@ def webapp_open_kb() -> ReplyKeyboardMarkup:
     )
 
 
+def webapp_inline_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Открыть библиотеку 📚", web_app=WebAppInfo(url=PROMPT_WEBAPP_URL))]
+    ])
+
+
 def prompt_library_menu_kb() -> InlineKeyboardMarkup:
     rows = []
     for idx, cat in enumerate(PROMPT_LIBRARY):
@@ -1149,6 +1155,16 @@ async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )    
 
 
+async def hide_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
+    if not message:
+        return
+    await message.reply_text(
+        "Старую нижнюю кнопку убрала. Открывай библиотеку через кнопку в меню.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
 async def report_problem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     create_user_if_not_exists(user.id, user.username, START_BONUS)
@@ -1540,6 +1556,47 @@ async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Отправлено: {sent}\n"
         f"Ошибок: {failed}"
     )
+
+
+async def broadcast_hide_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.effective_message
+    if not message:
+        return
+
+    if not is_admin(user.id):
+        await message.reply_text("У тебя нет доступа к этой команде.")
+        return
+
+    text = (
+        "Обновили библиотеку промптов 📚\n"
+        "Открывай её через кнопку «Библиотека промптов» в меню бота."
+    )
+    users = get_all_user_ids()
+    sent = 0
+    failed = 0
+
+    await message.reply_text(f"Начинаю убирать старую нижнюю кнопку у {len(users)} пользователей.")
+
+    for target_user_id in users:
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=text,
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            sent += 1
+            await asyncio.sleep(0.05)
+        except Exception:
+            failed += 1
+            logger.exception("Не удалось убрать нижнюю клавиатуру у пользователя %s", target_user_id)
+
+    await message.reply_text(
+        "Готово.\n"
+        f"Клавиатуру убрали: {sent}\n"
+        f"Ошибок: {failed}"
+    )
+
 
 async def admin_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -2414,8 +2471,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         await query.message.reply_text(
-            "Открой кнопку ниже, чтобы выбрать шаблон в мини-приложении:",
-            reply_markup=webapp_open_kb(),
+            "Открывай библиотеку по кнопке ниже:",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        await query.message.reply_text(
+            "Библиотека промптов:",
+            reply_markup=webapp_inline_kb(),
         )
         return
 
@@ -5525,6 +5586,7 @@ def main():
     app.add_handler(CommandHandler("ref", referral))
     app.add_handler(CommandHandler("report", report_problem_command))
     app.add_handler(CommandHandler("ai", ai_chat))
+    app.add_handler(CommandHandler("hide_keyboard", hide_keyboard))
     app.add_handler(CommandHandler("admin_add", admin_add))
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
@@ -5532,6 +5594,7 @@ def main():
     app.add_handler(CommandHandler("broadcast_promo", broadcast_promo))
     app.add_handler(CommandHandler("broadcast", broadcast_text))
     app.add_handler(CommandHandler("broadcast_text", broadcast_text))
+    app.add_handler(CommandHandler("broadcast_hide_keyboard", broadcast_hide_keyboard))
     app.add_handler(CommandHandler("audience_stats", audience_stats))
     app.add_handler(CommandHandler("pl_save", prompt_library_save_last))
     app.add_handler(CommandHandler("pl_import", prompt_library_import_from_reply))

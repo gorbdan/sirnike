@@ -124,6 +124,7 @@ BUILD_ID = "2026-05-02-prompt-library-data-primary-v1"
 LOG_DIR = os.getenv("BOT_LOG_DIR", RUNTIME_DIR).strip() or RUNTIME_DIR
 LOG_FILE_PATH = os.path.join(LOG_DIR, "bot.log")
 LOG_FILE_ERROR: Optional[str] = None
+PROMPT_WEBAPP_REV = os.getenv("PROMPT_WEBAPP_REV", "20260509v4").strip() or "20260509v4"
 
 log_handlers = [logging.StreamHandler()]
 try:
@@ -634,6 +635,14 @@ def generation_failure_user_text(refunded: bool) -> str:
     )
 
 
+def get_prompt_webapp_url() -> str:
+    base = str(PROMPT_WEBAPP_URL or "").strip()
+    if not base:
+        return ""
+    sep = "&" if "?" in base else "?"
+    return f"{base}{sep}rev={PROMPT_WEBAPP_REV}"
+
+
 def motion_unavailable_text() -> str:
     return "Seedance в разработке 🚧\nСкоро включим эту функцию."
 
@@ -663,7 +672,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     if PROMPT_WEBAPP_URL:
         prompt_library_button = InlineKeyboardButton(
             "Библиотека промптов 📚",
-            web_app=WebAppInfo(url=PROMPT_WEBAPP_URL),
+            web_app=WebAppInfo(url=get_prompt_webapp_url()),
         )
     else:
         prompt_library_button = InlineKeyboardButton(
@@ -687,7 +696,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
 def promo_try_kb(promo_id: str) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton("Попробовать", callback_data=f"promo_try_{promo_id}")]]
     if PROMPT_WEBAPP_URL:
-        rows.append([InlineKeyboardButton("Библиотека промтов 📚", url=PROMPT_WEBAPP_URL)])
+        rows.append([InlineKeyboardButton("Библиотека промтов 📚", url=get_prompt_webapp_url())])
     else:
         rows.append([InlineKeyboardButton("Библиотека промтов 📚", callback_data="pl_open")])
     return InlineKeyboardMarkup(rows)
@@ -710,7 +719,7 @@ def avatar_actions_kb() -> InlineKeyboardMarkup:
 
 def webapp_open_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[KeyboardButton("Открыть библиотеку 📚", web_app=WebAppInfo(url=PROMPT_WEBAPP_URL))]],
+        [[KeyboardButton("Открыть библиотеку 📚", web_app=WebAppInfo(url=get_prompt_webapp_url()))]],
         resize_keyboard=True,
         one_time_keyboard=True,
         selective=True,
@@ -719,7 +728,7 @@ def webapp_open_kb() -> ReplyKeyboardMarkup:
 
 def webapp_inline_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Открыть библиотеку 📚", web_app=WebAppInfo(url=PROMPT_WEBAPP_URL))]
+        [InlineKeyboardButton("Открыть библиотеку 📚", web_app=WebAppInfo(url=get_prompt_webapp_url()))]
     ])
 
 
@@ -978,7 +987,7 @@ def seedance_retry_kb() -> InlineKeyboardMarkup:
 def broadcast_library_kb() -> InlineKeyboardMarkup:
     if PROMPT_WEBAPP_URL:
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton("Библиотека промтов 📚", url=PROMPT_WEBAPP_URL)]
+            [InlineKeyboardButton("Библиотека промтов 📚", url=get_prompt_webapp_url())]
         ])
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Библиотека промтов 📚", callback_data="pl_open")]
@@ -2113,6 +2122,15 @@ async def handle_webapp_data_v2(update: Update, context: ContextTypes.DEFAULT_TY
                 await message.reply_text("Данные из WebApp не распознаны. Попробуй еще раз.")
             return
         logger.warning("WEB_APP_DATA malformed JSON recovered via loose parser")
+    else:
+        logger.info(
+            "WEB_APP_DATA parsed: action=%s v=%s prompt_len=%s cat_idx=%s item_idx=%s",
+            str(payload.get("action") or payload.get("a") or ""),
+            str(payload.get("v") or ""),
+            len(str(payload.get("prompt") or payload.get("p") or "")),
+            str(payload.get("cat_idx") if payload.get("cat_idx") is not None else payload.get("ci") or ""),
+            str(payload.get("item_idx") if payload.get("item_idx") is not None else payload.get("ii") or ""),
+        )
 
     applied = await apply_webapp_prompt_payload_v2(update, context, payload)
     if False:

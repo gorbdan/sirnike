@@ -2053,11 +2053,19 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
             await update.effective_message.reply_text(
                 f"Готово ✨\nВидео-промпт «{title}» применён для Seedance 2 / Seedance 2 Fast.\n"
                 "Теперь отправь фото-референсы и запускай видео.",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            await update.effective_message.reply_text(
+                "Параметры видео:",
                 reply_markup=motion_control_kb(state),
             )
         else:
             await update.effective_message.reply_text(
                 f"Готово ✨\nШаблон «{title}» применен.\nТеперь можно запускать генерацию.",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            await update.effective_message.reply_text(
+                "Можно запускать:",
                 reply_markup=main_menu_kb(),
             )
     return True

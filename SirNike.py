@@ -672,7 +672,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     if PROMPT_WEBAPP_URL:
         prompt_library_button = InlineKeyboardButton(
             "Библиотека промптов 📚",
-            web_app=WebAppInfo(url=get_prompt_webapp_url()),
+            callback_data="pl_open_webapp",
         )
     else:
         prompt_library_button = InlineKeyboardButton(
@@ -696,7 +696,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
 def promo_try_kb(promo_id: str) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton("Попробовать", callback_data=f"promo_try_{promo_id}")]]
     if PROMPT_WEBAPP_URL:
-        rows.append([InlineKeyboardButton("Библиотека промтов 📚", url=get_prompt_webapp_url())])
+        rows.append([InlineKeyboardButton("Библиотека промтов 📚", callback_data="pl_open_webapp")])
     else:
         rows.append([InlineKeyboardButton("Библиотека промтов 📚", callback_data="pl_open")])
     return InlineKeyboardMarkup(rows)
@@ -987,7 +987,7 @@ def seedance_retry_kb() -> InlineKeyboardMarkup:
 def broadcast_library_kb() -> InlineKeyboardMarkup:
     if PROMPT_WEBAPP_URL:
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton("Библиотека промтов 📚", url=get_prompt_webapp_url())]
+            [InlineKeyboardButton("Библиотека промтов 📚", callback_data="pl_open_webapp")]
         ])
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Библиотека промтов 📚", callback_data="pl_open")]
@@ -2542,20 +2542,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "pl_open_webapp":
+        logger.info(
+            "Prompt WebApp open requested: user_id=%s chat_id=%s",
+            update.effective_user.id if update.effective_user else "unknown",
+            update.effective_chat.id if update.effective_chat else "unknown",
+        )
         if not PROMPT_WEBAPP_URL:
             await query.message.reply_text(
                 "WebApp пока не подключен. Используй встроенную библиотеку ниже.",
                 reply_markup=prompt_library_menu_kb(),
             )
             return
-
         await query.message.reply_text(
             "Открывай библиотеку по кнопке ниже:",
-            reply_markup=ReplyKeyboardRemove(),
-        )
-        await query.message.reply_text(
-            "Библиотека промптов:",
-            reply_markup=webapp_inline_kb(),
+            reply_markup=webapp_open_kb(),
         )
         return
 

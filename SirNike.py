@@ -2002,15 +2002,36 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
 async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
     if not isinstance(payload, dict):
         return False
-    action = str(payload.get("action") or "").strip().lower()
-    if action and action not in {"set_prompt", "set_video_prompt"}:
+    action = str(payload.get("action") or payload.get("a") or "").strip().lower()
+    if action in {"apply_prompt", "use_prompt", "set_template", "apply_template"}:
+        action = "set_prompt"
+    if action in {"apply_video_prompt", "use_video_prompt", "set_video_template", "apply_video_template"}:
+        action = "set_video_prompt"
+    if action and action not in {"set_prompt", "set_video_prompt", "set_prompt_ref", "set_video_prompt_ref"}:
         return False
 
-    title = str(payload.get("title") or "шаблон").strip() or "шаблон"
-    prompt = str(payload.get("prompt") or "").strip() or title
+    title = str(payload.get("title") or payload.get("t") or "шаблон").strip() or "шаблон"
+    prompt = str(payload.get("prompt") or payload.get("p") or "").strip()
+
+    # Fallback mode for oversized WebApp payload:
+    # app sends only (category,item) indices and bot resolves prompt locally.
+    if not prompt:
+        try:
+            cat_idx = int(payload.get("cat_idx") if payload.get("cat_idx") is not None else payload.get("ci"))
+            item_idx = int(payload.get("item_idx") if payload.get("item_idx") is not None else payload.get("ii"))
+            item = PROMPT_LIBRARY[cat_idx]["items"][item_idx]
+            resolved_title = str(item.get("title") or "").strip()
+            resolved_prompt = str(item.get("prompt") or "").strip()
+            if resolved_title:
+                title = resolved_title
+            prompt = resolved_prompt or resolved_title
+        except Exception:
+            prompt = ""
+
+    prompt = prompt or title
 
     state = get_or_init_state(context)
-    if action == "set_video_prompt":
+    if action in {"set_video_prompt", "set_video_prompt_ref"}:
         state.motion_prompt = prompt
         state.motion_session_active = True
         state.waiting_for_motion_image = True
@@ -2019,7 +2040,7 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
         state.prompt = prompt
 
     if update.effective_message:
-        if action == "set_video_prompt":
+        if action in {"set_video_prompt", "set_video_prompt_ref"}:
             await update.effective_message.reply_text(
                 f"Готово ✨\nВидео-промпт «{title}» применён для Seedance 2 / Seedance 2 Fast.\n"
                 "Теперь отправь фото-референсы и запускай видео.",
@@ -2031,6 +2052,43 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
                 reply_markup=main_menu_kb(),
             )
     return True
+
+
+def parse_webapp_payload_loose(raw_data: str) -> Optional[dict]:
+    """
+    Best-effort parser for malformed/oversized WebApp payloads.
+    Helps recover prompt/title when JSON got truncated by WebApp limits.
+    """
+    text = str(raw_data or "").strip()
+    if not text:
+        return None
+
+    action_match = re.search(r'"(?:action|a)"\s*:\s*"([^"]+)"', text, flags=re.IGNORECASE)
+    title_match = re.search(r'"(?:title|t)"\s*:\s*"([^"]*)"', text, flags=re.IGNORECASE)
+    prompt_match = re.search(r'"(?:prompt|p)"\s*:\s*"([\s\S]*)"', text, flags=re.IGNORECASE)
+
+    action = action_match.group(1).strip().lower() if action_match else "set_prompt"
+    title = title_match.group(1) if title_match else "шаблон"
+    prompt_raw = prompt_match.group(1) if prompt_match else ""
+
+    if prompt_raw:
+        cut_markers = ('","example_url"', '","video_url"', '","cat_idx"', '","item_idx"', '"}')
+        cut_pos = len(prompt_raw)
+        for marker in cut_markers:
+            pos = prompt_raw.find(marker)
+            if pos != -1 and pos < cut_pos:
+                cut_pos = pos
+        prompt_raw = prompt_raw[:cut_pos]
+        prompt_raw = prompt_raw.replace('\\"', '"').replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
+
+    payload = {
+        "action": action or "set_prompt",
+        "title": title or "шаблон",
+        "prompt": prompt_raw.strip(),
+    }
+    if not payload["prompt"] and not payload["title"]:
+        return None
+    return payload
 
 
 async def handle_webapp_data_v2(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2049,9 +2107,12 @@ async def handle_webapp_data_v2(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         payload = json.loads(raw_data)
     except json.JSONDecodeError:
-        if message:
-            await message.reply_text("Данные из WebApp не распознаны. Попробуй еще раз.")
-        return
+        payload = parse_webapp_payload_loose(raw_data)
+        if not payload:
+            if message:
+                await message.reply_text("Данные из WebApp не распознаны. Попробуй еще раз.")
+            return
+        logger.warning("WEB_APP_DATA malformed JSON recovered via loose parser")
 
     applied = await apply_webapp_prompt_payload_v2(update, context, payload)
     if False:

@@ -66,6 +66,12 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN referral_bonus_given INTEGER NOT NULL DEFAULT 0")
         if "avatar_url" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN avatar_url TEXT")
+        if "avatar_female_url" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN avatar_female_url TEXT")
+        if "avatar_male_url" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN avatar_male_url TEXT")
+        if "avatar_child_url" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN avatar_child_url TEXT")
 
         conn.commit()
 
@@ -261,29 +267,75 @@ def mark_referral_bonus(user_id: int):
         conn.commit()
 
 
-def set_avatar_url(user_id: int, avatar_url: str):
+def _avatar_column(kind: str) -> str:
+    raw = (kind or "female").strip().lower()
+    if raw in {"default", "main", "woman", "female"}:
+        return "avatar_female_url"
+    if raw in {"man", "male"}:
+        return "avatar_male_url"
+    if raw in {"kid", "child", "children"}:
+        return "avatar_child_url"
+    return "avatar_female_url"
+
+
+def set_avatar_url(user_id: int, avatar_url: str, kind: str = "female"):
+    col = _avatar_column(kind)
     with get_conn() as conn:
         conn.execute(
-            "UPDATE users SET avatar_url = ? WHERE user_id = ?",
-            (avatar_url, user_id)
+            f"UPDATE users SET {col} = ?, avatar_url = COALESCE(avatar_url, ?) WHERE user_id = ?",
+            (avatar_url, avatar_url, user_id)
         )
         conn.commit()
 
 
-def get_avatar_url(user_id: int) -> Optional[str]:
+def get_avatar_url(user_id: int, kind: str = "female") -> Optional[str]:
+    col = _avatar_column(kind)
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT avatar_url FROM users WHERE user_id = ?", (user_id,))
-        row = cur.fetchone()
-        return row[0] if row and row[0] else None
-
-
-def clear_avatar_url(user_id: int):
-    with get_conn() as conn:
-        conn.execute(
-            "UPDATE users SET avatar_url = NULL WHERE user_id = ?",
-            (user_id,)
+        cur.execute(
+            f"SELECT {col}, avatar_url FROM users WHERE user_id = ?",
+            (user_id,),
         )
+        row = cur.fetchone()
+        if not row:
+            return None
+        slot_val = row[0]
+        legacy_val = row[1]
+        return slot_val or legacy_val or None
+
+
+def get_avatar_urls(user_id: int) -> dict:
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT avatar_female_url, avatar_male_url, avatar_child_url, avatar_url
+            FROM users
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return {"female": None, "male": None, "child": None}
+        female, male, child, legacy = row
+        female = female or legacy or None
+        return {"female": female, "male": male or None, "child": child or None}
+
+
+def clear_avatar_url(user_id: int, kind: str = "female"):
+    col = _avatar_column(kind)
+    with get_conn() as conn:
+        if col == "avatar_female_url":
+            conn.execute(
+                "UPDATE users SET avatar_female_url = NULL, avatar_url = NULL WHERE user_id = ?",
+                (user_id,),
+            )
+        else:
+            conn.execute(
+                f"UPDATE users SET {col} = NULL WHERE user_id = ?",
+                (user_id,),
+            )
         conn.commit()
 
 

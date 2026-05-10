@@ -108,6 +108,7 @@ from db import (
     save_payment,
     set_avatar_url,
     get_avatar_url,
+    get_avatar_urls,
     clear_avatar_url,
     log_generation_event,
     get_audience_overview,
@@ -181,6 +182,7 @@ class UserState:
     animation_source_url: Optional[str] = None
     animation_source_urls: List[str] = field(default_factory=list)
     waiting_for_avatar_upload: bool = False
+    pending_avatar_kind: str = "female"
     waiting_for_problem_report: bool = False
     motion_prompt: str = ""
     motion_video_url: Optional[str] = None
@@ -438,9 +440,11 @@ def ru_plural(value: int, one: str, few: str, many: str) -> str:
 
 
 def get_seedance_duration_bounds(model_code: Optional[str] = None) -> tuple[int, int]:
-    # Current Zveno catalog for both bytedance/seedance-2.0 and -fast:
-    # supported_durations = [5, 10]
-    return 5, 10
+    # Seedance 2 supports up to 15s in our bot flow.
+    # Seedance 2 Fast stays capped at 10s.
+    if model_code == "seedance2_fast":
+        return 5, 10
+    return 5, 15
 
 
 def normalize_seedance_duration(value: int, model_code: Optional[str] = None) -> int:
@@ -513,7 +517,7 @@ def get_seedance_duration_options(model_code: Optional[str] = None) -> List[int]
         parsed.append(default_sec)
     if model_code != "seedance2_fast" and len(parsed) <= 1:
         # Guardrail: if env accidentally left only "5", keep normal Seedance 2 controls available.
-        for fallback_sec in (5, 10):
+        for fallback_sec in (5, 10, 15):
             sec = normalize_seedance_duration(fallback_sec, model_code)
             if sec not in parsed:
                 parsed.append(sec)
@@ -708,14 +712,31 @@ def support_report_admin_kb(user_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+
+def avatar_kind_label(kind: str) -> str:
+    raw = str(kind or "").strip().lower()
+    if raw == "male":
+        return "мужской 👨"
+    if raw == "child":
+        return "детский 🧒"
+    return "женский 👩"
+
 def avatar_actions_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Заменить аватар 🔁", callback_data="set_avatar")],
-        [InlineKeyboardButton("Показать аватар 👀", callback_data="show_avatar")],
-        [InlineKeyboardButton("Удалить аватар 🗑", callback_data="delete_avatar")],
+        [
+            InlineKeyboardButton("Загрузить женский 👩", callback_data="set_avatar_female"),
+            InlineKeyboardButton("Загрузить мужской 👨", callback_data="set_avatar_male"),
+        ],
+        [InlineKeyboardButton("Загрузить детский 🧒", callback_data="set_avatar_child")],
+        [InlineKeyboardButton("Показать аватары 👀", callback_data="show_avatar")],
+        [
+            InlineKeyboardButton("Удалить женский 🗑", callback_data="delete_avatar_female"),
+            InlineKeyboardButton("Удалить мужской 🗑", callback_data="delete_avatar_male"),
+        ],
+        [InlineKeyboardButton("Удалить детский 🗑", callback_data="delete_avatar_child")],
+        [InlineKeyboardButton("Удалить все аватары 🧹", callback_data="delete_avatar")],
         [InlineKeyboardButton("Назад в меню ↩️", callback_data="avatar_back_menu")],
     ])
-
 
 def webapp_open_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
@@ -1103,8 +1124,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     free_date, free_count = get_free_info(user.id)
     state = get_or_init_state(context)
     deactivate_motion_session(state)
-    avatar_url = get_avatar_url(user.id)
-    avatar_status = "есть" if avatar_url else "нет"
+    avatar_urls = get_avatar_urls(user.id)
+    avatar_status = ", ".join([avatar_kind_label(k) for k, v in avatar_urls.items() if v]) or "нет"
 
     text = (
         f"Привет от Сырника! 🧀\n\n"
@@ -1123,7 +1144,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Сейчас в буфере:\n"
         f"• промт: {'есть' if state.prompt else 'нет'}\n"
         f"• фото: {len(state.references)}\n"
-        f"• сохранённый аватар: {avatar_status}\n"
+        f"• сохранённые аватары: {avatar_status}\n"
     )
     await update.message.reply_text(text, reply_markup=main_menu_kb())
 
@@ -1867,13 +1888,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
 
                 if state.waiting_for_avatar_upload:
-                    set_avatar_url(user.id, direct_url)
+                    avatar_kind = str(getattr(state, "pending_avatar_kind", "female") or "female").strip().lower()
+                    set_avatar_url(user.id, direct_url, avatar_kind)
                     state.animation_source_url = direct_url
                     state.waiting_for_avatar_upload = False
+                    state.pending_avatar_kind = "female"
 
                     await update.message.reply_text(
-                        "Аватар сохранён 👤\n"
-                        "Теперь можешь просто отправлять промты без повторной загрузки фото.",
+                        f"Аватар ({avatar_kind_label(avatar_kind)}) сохранён ✅\n"
+                        "Теперь можешь просто отправлять промпты без повторной загрузки фото.",
                         reply_markup=main_menu_kb()
                     )
                     return
@@ -3014,32 +3037,52 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_invoice(update, context, count, price)
         return
     
-    if query.data == "set_avatar":
+    if query.data in {"set_avatar", "set_avatar_female", "set_avatar_male", "set_avatar_child"}:
         state = get_or_init_state(context)
+        kind_map = {
+            "set_avatar": "female",
+            "set_avatar_female": "female",
+            "set_avatar_male": "male",
+            "set_avatar_child": "child",
+        }
+        avatar_kind = kind_map.get(query.data, "female")
         state.waiting_for_avatar_upload = True
+        state.pending_avatar_kind = avatar_kind
 
         await query.message.reply_text(
-            "Отправь одно фото, которое нужно сохранить как аватар.\n"
-            "После этого его можно будет использовать в генерациях без повторной загрузки."
+            f"Отправь одно фото, которое нужно сохранить как {avatar_kind_label(avatar_kind)} аватар.\n"
+            "После этого его можно будет использовать в генерациях без повторной загрузки.",
         )
         return
-    
+
     if query.data == "show_avatar":
-        avatar_url = get_avatar_url(update.effective_user.id)
-
-        if not avatar_url:
-            await query.message.reply_text("У тебя пока нет сохранённого аватара.")
+        avatars = get_avatar_urls(update.effective_user.id)
+        present = [(k, v) for k, v in avatars.items() if v]
+        if not present:
+            await query.message.reply_text("У тебя пока нет сохранённых аватаров.")
             return
-
-        await query.message.reply_photo(
-            photo=avatar_url,
-            caption="Вот твой текущий сохранённый аватар 👤"
-        )
+        for kind, url in present:
+            await query.message.reply_photo(
+                photo=url,
+                caption=f"Аватар: {avatar_kind_label(kind)}"
+            )
         return
-    
-    if query.data == "delete_avatar":
-        clear_avatar_url(update.effective_user.id)
-        await query.message.reply_text("Аватар удалён.")
+
+    if query.data in {"delete_avatar", "delete_avatar_female", "delete_avatar_male", "delete_avatar_child"}:
+        if query.data == "delete_avatar":
+            clear_avatar_url(update.effective_user.id, "female")
+            clear_avatar_url(update.effective_user.id, "male")
+            clear_avatar_url(update.effective_user.id, "child")
+            await query.message.reply_text("Все аватары удалены.")
+            return
+        kind_map = {
+            "delete_avatar_female": "female",
+            "delete_avatar_male": "male",
+            "delete_avatar_child": "child",
+        }
+        avatar_kind = kind_map.get(query.data, "female")
+        clear_avatar_url(update.effective_user.id, avatar_kind)
+        await query.message.reply_text(f"Удалён {avatar_kind_label(avatar_kind)} аватар.")
         return
 
 async def promo_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5684,6 +5727,7 @@ def main():
     app.add_handler(CommandHandler("broadcast_hide_keyboard", broadcast_hide_keyboard))
     app.add_handler(CommandHandler("audience_stats", audience_stats))
     app.add_handler(CommandHandler("pl_save", prompt_library_save_last))
+    app.add_handler(CommandHandler("ps_save", prompt_library_save_last))
     app.add_handler(CommandHandler("pl_import", prompt_library_import_from_reply))
     app.add_handler(CommandHandler("pl_import_video", prompt_library_import_video))
     app.add_handler(CommandHandler("pl_newcat", prompt_library_new_category))

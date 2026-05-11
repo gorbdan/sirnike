@@ -1092,11 +1092,15 @@ def build_media_group_payload(items: List[Dict[str, Any]]) -> List[Any]:
 
 
 # Override label to keep retry wording consistent after failed image generation.
-def result_actions_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+def result_actions_kb(user_id: int = 0, bot_username: str = "") -> InlineKeyboardMarkup:
+    rows = [
         [InlineKeyboardButton("Повторить 🔁", callback_data="generate_again")],
-        [InlineKeyboardButton("В меню", callback_data="reset")],
-    ])
+    ]
+    if user_id and bot_username:
+        ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+        rows.append([InlineKeyboardButton("🎁 Пригласить друга (+10 изюминок)", url=ref_link)])
+    rows.append([InlineKeyboardButton("В меню", callback_data="reset")])
+    return InlineKeyboardMarkup(rows)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1129,35 +1133,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         f"Привет от Сырника! 🧀\n\n"
-        f"Отправь текст (промт) и/или референсные фото.\n"
-        f"Можешь отправлять фото по одному.\n"
-        f"Когда всё будет готово, нажми кнопку «Запустить генерацию⚡».\n\n"
-        f"Баланс: {bal} изюминок\n"
-        f"Бесплатных генераций сегодня: {free_count}/{FREE_GENERATIONS_PER_DAY}\n\n"
-        f"Команды:\n"
-        f"/balance — баланс\n"
-        f"/buy — купить изюминки\n"
-        f"/ref — реферальная ссылка\n"
-        f"/ai — текстовый AI-помощник\n"
-        f"/report — сообщить о проблеме\n\n"
-        f"Совет: открой «Библиотека промптов 📚», если нужна готовая идея.\n\n"
-        f"Сейчас в буфере:\n"
-        f"• промт: {'есть' if state.prompt else 'нет'}\n"
-        f"• фото: {len(state.references)}\n"
-        f"• сохранённые аватары: {avatar_status}\n"
+        f"Отправь фото и текст → получи красивый AI-образ.\n\n"
+        f"Баланс: {bal} изюминок · бесплатно сегодня: {free_count}/{FREE_GENERATIONS_PER_DAY}\n"
+        f"Аватары: {avatar_status}\n"
     )
     await update.message.reply_text(text, reply_markup=main_menu_kb())
 
     if is_new_user:
         onboarding_text = (
-            "Быстрый старт:\n"
-            "1) Отправь текст с идеей картинки.\n"
-            "2) Либо выбери готовый шаблон в «Библиотека промптов 📚».\n"
-            "3) По желанию добавь фото-референсы.\n"
-            "4) Нажми «Запустить генерацию⚡».\n\n"
-            "После результата используй кнопки под картинкой:\n"
-            "• «Сделать еще вариант🔄»\n"
-            "• «В меню»"
+            f"Тебе начислено {START_BONUS} изюминок в подарок 🎁\n\n"
+            "Как получить первый образ:\n"
+            "1. Открой «Библиотека промптов 📚» и выбери стиль\n"
+            "2. Добавь своё фото (необязательно)\n"
+            "3. Нажми «Запустить генерацию⚡»\n\n"
+            "Одна генерация = 5 изюминок. Каждый день 1 бесплатно 🆓"
         )
         await update.message.reply_text(onboarding_text, reply_markup=main_menu_kb())
 
@@ -2789,10 +2778,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         or video_cb.startswith("video_mode_")
         or video_cb.startswith("video_delimg_")
     )
-
-    if is_video_callback and not is_admin(update.effective_user.id):
-        await query.message.reply_text("Эта функция пока доступна только администратору.")
-        return
 
     if is_video_callback and not SEEDANCE_ENABLED:
         await query.message.reply_text(motion_unavailable_text(), reply_markup=main_menu_kb())
@@ -4575,10 +4560,6 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = get_or_init_state(context)
     state.motion_session_active = False
 
-    if not is_admin(user.id):
-        await reply_target.reply_text("Эта функция пока доступна только администратору.")
-        return
-
     if not SEEDANCE_ENABLED:
         await reply_target.reply_text(motion_unavailable_text(), reply_markup=main_menu_kb())
         return
@@ -4853,10 +4834,15 @@ async def send_generation_result_by_url(
     doc_buffer = io.BytesIO(jpg_bytes)
     doc_buffer.name = "result.jpg"
 
+    try:
+        bot_me = await app.bot.get_me()
+        bot_username = bot_me.username or ""
+    except Exception:
+        bot_username = ""
     await app.bot.send_photo(
         chat_id=chat_id,
         photo=photo_buffer,
-        reply_markup=result_actions_kb(),
+        reply_markup=result_actions_kb(user_id=user_id, bot_username=bot_username),
         caption="Лови своё крутое изображение 🔥\nНажми /start чтобы начать сначала"
     )
 

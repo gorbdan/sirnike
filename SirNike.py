@@ -127,6 +127,7 @@ RUNTIME_DIR = DATA_DIR
 OUTPUTS_DIR = os.path.join(RUNTIME_DIR, "outputs")
 os.makedirs(OUTPUTS_DIR, exist_ok=True)
 BUILD_ID = "2026-05-02-prompt-library-data-primary-v1"
+BOT_START_TIME = datetime.now()
 LOG_DIR = os.getenv("BOT_LOG_DIR", RUNTIME_DIR).strip() or RUNTIME_DIR
 LOG_FILE_PATH = os.path.join(LOG_DIR, "bot.log")
 LOG_FILE_ERROR: Optional[str] = None
@@ -3021,6 +3022,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "video_start: user=%s animation_source_urls=%s motion_prompt=%r",
             update.effective_user.id, state.animation_source_urls, state.motion_prompt,
         )
+        if not state.animation_source_urls and not (state.motion_prompt or "").strip():
+            msg_date = getattr(query.message, "date", None)
+            if msg_date and msg_date.replace(tzinfo=None) < BOT_START_TIME:
+                await query.message.reply_text(
+                    "Бот перезапускался и сессия сброшена.\n"
+                    "Открой Seedance заново, добавь фото и промпт — и запускай.",
+                    reply_markup=main_menu_kb(),
+                )
+                return
         state.waiting_for_motion_image = False
         state.motion_session_active = False
         context.application.create_task(run_seedance(update, context))

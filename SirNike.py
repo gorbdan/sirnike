@@ -4,14 +4,12 @@ import io
 import json
 import logging
 import os
-# Point rembg model cache to persistent volume before importing rembg
+import importlib.util
+# Point rembg model cache to persistent volume (set before rembg is ever imported)
 _u2net_home = "/app/data/.u2net" if os.path.isdir("/app/data") else os.path.expanduser("~/.u2net")
 os.environ.setdefault("U2NET_HOME", _u2net_home)
-try:
-    from rembg import remove as rembg_remove, new_session as rembg_new_session
-    REMBG_AVAILABLE = True
-except ImportError:
-    REMBG_AVAILABLE = False
+# Check availability without importing (avoids loading onnxruntime at startup)
+REMBG_AVAILABLE = importlib.util.find_spec("rembg") is not None
 import re
 import time
 from logging.handlers import RotatingFileHandler
@@ -2288,9 +2286,10 @@ async def build_seedance_reference_sheet_url(image_urls: List[str]) -> Optional[
 # ----------------------------
 
 def _remove_background(image_bytes: bytes) -> bytes:
+    from rembg import remove as _rembg_remove, new_session as _rembg_new_session
     img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
-    session = rembg_new_session("u2netp")  # 4.7 MB model, fits in Bothost RAM
-    result = rembg_remove(img, session=session)
+    session = _rembg_new_session("u2netp")  # 4.7 MB model
+    result = _rembg_remove(img, session=session)
     # Белый фон вместо прозрачного (JPEG не поддерживает прозрачность)
     bg = Image.new("RGBA", result.size, (255, 255, 255, 255))
     bg.paste(result, mask=result.split()[3])

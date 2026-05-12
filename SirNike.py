@@ -105,7 +105,7 @@ from db import (
     register_promo_click,
     get_promo_stats,
     payment_exists,
-    save_payment,
+    save_payment_once,
     set_avatar_url,
     get_avatar_url,
     get_avatar_urls,
@@ -990,14 +990,6 @@ def motion_control_status_text(state: UserState) -> str:
 # Commands
 # ----------------------------
 
-def result_actions_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Сделать еще вариант🔄", callback_data="generate_again")],
-        [InlineKeyboardButton("В меню", callback_data="reset")],
-    ])
-
-
-
 def seedance_retry_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Повторить 🔁", callback_data="seedance_retry")],
@@ -1363,16 +1355,12 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
     payment_id = payment.telegram_payment_charge_id
     payload = payment.invoice_payload
 
-    # защита от дубля
-    if payment_exists(payment_id):
-        await update.message.reply_text("Платёж уже обработан.")
-        return
-
     _, count_str, price_str = payload.split("_")
     count = int(count_str)
 
-    # сохраняем платеж
-    save_payment(user.id, payment_id, count)
+    if not save_payment_once(user.id, payment_id, count):
+        await update.message.reply_text("Платёж уже обработан.")
+        return
 
     # начисляем
     add_izyminki(user.id, count)
@@ -4457,7 +4445,6 @@ async def poll_seedance_task(
                 raise Exception(
                     data.get("error")
                     or data.get("message")
-                    or data.get("error")
                     or data.get("details")
                     or f"Seedance task failed with status {status}"
                 )
@@ -4706,16 +4693,6 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saved_path = save_video_debug_copy(video_bytes, user.id, selected_model_label)
         if saved_path:
             logger.info(f"Seedance local copy saved: {saved_path}")
-
-        if False:
-            async with aiohttp.ClientSession() as session: pass
-            async with session.get(
-                video_url,
-                timeout=aiohttp.ClientTimeout(total=180),
-            ) as resp:
-                if resp.status != 200:
-                    raise Exception(f"Не удалось скачать видео: {resp.status}")
-                video_bytes = await resp.read()
 
         video_buffer = io.BytesIO(video_bytes)
         video_buffer.name = "seedance.mp4"
@@ -5590,10 +5567,14 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                                 doc_buffer = io.BytesIO(jpg_bytes)
                                 doc_buffer.name = "result.jpg"
 
+                                try:
+                                    yesapi_bot_username = (await app.bot.get_me()).username or ""
+                                except Exception:
+                                    yesapi_bot_username = ""
                                 await app.bot.send_photo(
                                     chat_id=chat_id,
                                     photo=photo_buffer,
-                                    reply_markup=result_actions_kb(),
+                                    reply_markup=result_actions_kb(user_id=user_id, bot_username=yesapi_bot_username),
                                     caption="Лови своё крутое изображение 🔥\nНажми /start чтобы начать сначала"
                                 )
 

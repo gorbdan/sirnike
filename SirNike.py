@@ -2276,29 +2276,20 @@ async def build_seedance_reference_sheet_url(image_urls: List[str]) -> Optional[
 
 def _apply_grid_overlay(
     image_bytes: bytes,
-    rows: int = 6,
-    cols: int = 6,
+    rows: int = 10,
+    cols: int = 10,
     line_color: tuple = (255, 255, 255),
-    line_width: int = 12,
-    mosaic_block: int = 20,
+    line_width: int = 18,
 ) -> bytes:
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    w, h = img.size
-
-    # Мозаика: разбиваем на крупные блоки чтобы сломать детектор лиц
-    small_w = max(1, w // mosaic_block)
-    small_h = max(1, h // mosaic_block)
-    img = img.resize((small_w, small_h), Image.NEAREST).resize((w, h), Image.NEAREST)
-
-    # Поверх рисуем сетку
     draw = ImageDraw.Draw(img)
+    w, h = img.size
     for i in range(1, cols):
         x = w * i // cols
         draw.line([(x, 0), (x, h)], fill=line_color, width=line_width)
     for i in range(1, rows):
         y = h * i // rows
         draw.line([(0, y), (w, y)], fill=line_color, width=line_width)
-
     out = io.BytesIO()
     img.save(out, format="JPEG", quality=95)
     return out.getvalue()

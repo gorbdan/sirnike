@@ -8,7 +8,7 @@ import os
 _u2net_home = "/app/data/.u2net" if os.path.isdir("/app/data") else os.path.expanduser("~/.u2net")
 os.environ.setdefault("U2NET_HOME", _u2net_home)
 try:
-    from rembg import remove as rembg_remove
+    from rembg import remove as rembg_remove, new_session as rembg_new_session
     REMBG_AVAILABLE = True
 except ImportError:
     REMBG_AVAILABLE = False
@@ -2289,7 +2289,8 @@ async def build_seedance_reference_sheet_url(image_urls: List[str]) -> Optional[
 
 def _remove_background(image_bytes: bytes) -> bytes:
     img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
-    result = rembg_remove(img)
+    session = rembg_new_session("u2netp")  # 4.7 MB model, fits in Bothost RAM
+    result = rembg_remove(img, session=session)
     # Белый фон вместо прозрачного (JPEG не поддерживает прозрачность)
     bg = Image.new("RGBA", result.size, (255, 255, 255, 255))
     bg.paste(result, mask=result.split()[3])

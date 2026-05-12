@@ -1341,14 +1341,14 @@ async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Cost of one 5-second Seedance video (standard model)
-    _video_5s_cost = calc_seedance_cost(5, SEEDANCE_COST_PER_SECOND)
+    _video_10s_cost = calc_seedance_cost(10, SEEDANCE_COST_PER_SECOND)
     keyboard = []
     for pack in BUY_PACKS:
         photo_count = max(1, pack["count"] // BASE_GENERATION_COST)
-        video_count = pack["count"] // _video_5s_cost
+        video_count = pack["count"] // _video_10s_cost
         photos_label = ru_plural(photo_count, "фото", "фото", "фото")
         if video_count > 0:
-            videos_label = ru_plural(video_count, "видео (5 с)", "видео (5 с)", "видео (5 с)")
+            videos_label = ru_plural(video_count, "видео (10 с)", "видео (10 с)", "видео (10 с)")
             hint = f"≈ {photo_count} {photos_label} / {video_count} {videos_label}"
         else:
             hint = f"≈ {photo_count} {photos_label}"
@@ -1362,7 +1362,7 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"Выбери пакет изюминок:\n"
         f"• 1 фото = {BASE_GENERATION_COST} изюминок\n"
-        f"• 1 видео 5 сек = {_video_5s_cost} изюминок",
+        f"• 1 видео 10 сек = {_video_10s_cost} изюминок",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -1396,9 +1396,9 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
 async def send_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE, count: int, price: int):
     query = update.callback_query
 
-    _video_5s_cost = calc_seedance_cost(5, SEEDANCE_COST_PER_SECOND)
+    _video_10s_cost = calc_seedance_cost(10, SEEDANCE_COST_PER_SECOND)
     photo_count = max(1, count // BASE_GENERATION_COST)
-    video_count = count // _video_5s_cost
+    video_count = count // _video_10s_cost
     if video_count > 0:
         description = (
             f"{count} изюминок — это примерно {photo_count} фото "

@@ -9,7 +9,7 @@ from logging.handlers import RotatingFileHandler
 import os
 from datetime import datetime
 from urllib.parse import urlsplit
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageOps
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 import aiohttp
@@ -105,7 +105,7 @@ from db import (
     register_promo_click,
     get_promo_stats,
     payment_exists,
-    save_payment,
+    save_payment_once,
     set_avatar_url,
     get_avatar_url,
     get_avatar_urls,
@@ -990,14 +990,6 @@ def motion_control_status_text(state: UserState) -> str:
 # Commands
 # ----------------------------
 
-def result_actions_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Сделать еще вариант🔄", callback_data="generate_again")],
-        [InlineKeyboardButton("В меню", callback_data="reset")],
-    ])
-
-
-
 def seedance_retry_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Повторить 🔁", callback_data="seedance_retry")],
@@ -1363,16 +1355,12 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
     payment_id = payment.telegram_payment_charge_id
     payload = payment.invoice_payload
 
-    # защита от дубля
-    if payment_exists(payment_id):
-        await update.message.reply_text("Платёж уже обработан.")
-        return
-
     _, count_str, price_str = payload.split("_")
     count = int(count_str)
 
-    # сохраняем платеж
-    save_payment(user.id, payment_id, count)
+    if not save_payment_once(user.id, payment_id, count):
+        await update.message.reply_text("Платёж уже обработан.")
+        return
 
     # начисляем
     add_izyminki(user.id, count)
@@ -2282,6 +2270,56 @@ async def build_seedance_reference_sheet_url(image_urls: List[str]) -> Optional[
             except Exception:
                 pass
         
+# ----------------------------
+# Grid overlay for Seedance refs
+# ----------------------------
+
+def _apply_grid_overlay(
+    image_bytes: bytes,
+    rows: int = 3,
+    cols: int = 3,
+    line_color: tuple = (255, 255, 255),
+    line_width: int = 10,
+) -> bytes:
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    draw = ImageDraw.Draw(img)
+    w, h = img.size
+    for i in range(1, cols):
+        x = w * i // cols
+        draw.line([(x, 0), (x, h)], fill=line_color, width=line_width)
+    for i in range(1, rows):
+        y = h * i // rows
+        draw.line([(0, y), (w, y)], fill=line_color, width=line_width)
+    out = io.BytesIO()
+    img.save(out, format="JPEG", quality=95)
+    return out.getvalue()
+
+
+async def apply_grid_overlay_to_refs(image_urls: List[str]) -> List[str]:
+    processed: List[str] = []
+    async with aiohttp.ClientSession() as session:
+        for url in image_urls:
+            try:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=60), allow_redirects=True) as resp:
+                    if resp.status != 200:
+                        logger.warning("Grid overlay: download failed status=%s url=%s", resp.status, url[:80])
+                        processed.append(url)
+                        continue
+                    image_bytes = await resp.read()
+                grid_bytes = _apply_grid_overlay(image_bytes)
+                new_url = await upload_image_bytes_to_imgbb(grid_bytes, filename="ref_grid.jpg")
+                if new_url:
+                    logger.info("Grid overlay applied: %s -> %s", url[:60], new_url[:60])
+                    processed.append(new_url)
+                else:
+                    logger.warning("Grid overlay imgbb upload failed, using original: %s", url[:60])
+                    processed.append(url)
+            except Exception:
+                logger.exception("Grid overlay failed for url=%s, using original", url[:60])
+                processed.append(url)
+    return processed
+
+
 # ----------------------------
 # Generation
 # ----------------------------
@@ -4457,7 +4495,6 @@ async def poll_seedance_task(
                 raise Exception(
                     data.get("error")
                     or data.get("message")
-                    or data.get("error")
                     or data.get("details")
                     or f"Seedance task failed with status {status}"
                 )
@@ -4585,6 +4622,9 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await reply_target.reply_text(f"Фото-референс #{idx} недоступен: {reason_img}")
             return
 
+    if motion_images:
+        motion_images = await apply_grid_overlay_to_refs(motion_images)
+
     selected_duration = get_selected_seedance_duration(state)
     selected_model = get_motion_model(state)
     selected_model_label = get_motion_model_label(selected_model)
@@ -4706,16 +4746,6 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saved_path = save_video_debug_copy(video_bytes, user.id, selected_model_label)
         if saved_path:
             logger.info(f"Seedance local copy saved: {saved_path}")
-
-        if False:
-            async with aiohttp.ClientSession() as session: pass
-            async with session.get(
-                video_url,
-                timeout=aiohttp.ClientTimeout(total=180),
-            ) as resp:
-                if resp.status != 200:
-                    raise Exception(f"Не удалось скачать видео: {resp.status}")
-                video_bytes = await resp.read()
 
         video_buffer = io.BytesIO(video_bytes)
         video_buffer.name = "seedance.mp4"
@@ -5590,10 +5620,14 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                                 doc_buffer = io.BytesIO(jpg_bytes)
                                 doc_buffer.name = "result.jpg"
 
+                                try:
+                                    yesapi_bot_username = (await app.bot.get_me()).username or ""
+                                except Exception:
+                                    yesapi_bot_username = ""
                                 await app.bot.send_photo(
                                     chat_id=chat_id,
                                     photo=photo_buffer,
-                                    reply_markup=result_actions_kb(),
+                                    reply_markup=result_actions_kb(user_id=user_id, bot_username=yesapi_bot_username),
                                     caption="Лови своё крутое изображение 🔥\nНажми /start чтобы начать сначала"
                                 )
 

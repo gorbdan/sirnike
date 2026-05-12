@@ -3,6 +3,11 @@ import base64
 import io
 import json
 import logging
+try:
+    from rembg import remove as rembg_remove
+    REMBG_AVAILABLE = True
+except ImportError:
+    REMBG_AVAILABLE = False
 import re
 import time
 from logging.handlers import RotatingFileHandler
@@ -2274,6 +2279,17 @@ async def build_seedance_reference_sheet_url(image_urls: List[str]) -> Optional[
 # Grid overlay for Seedance refs
 # ----------------------------
 
+def _remove_background(image_bytes: bytes) -> bytes:
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+    result = rembg_remove(img)
+    # Белый фон вместо прозрачного (JPEG не поддерживает прозрачность)
+    bg = Image.new("RGBA", result.size, (255, 255, 255, 255))
+    bg.paste(result, mask=result.split()[3])
+    out = io.BytesIO()
+    bg.convert("RGB").save(out, format="JPEG", quality=95)
+    return out.getvalue()
+
+
 def _apply_grid_overlay(
     image_bytes: bytes,
     rows: int = 10,
@@ -2306,6 +2322,16 @@ async def apply_grid_overlay_to_refs(image_urls: List[str]) -> List[str]:
                         processed.append(url)
                         continue
                     image_bytes = await resp.read()
+
+                if REMBG_AVAILABLE:
+                    try:
+                        image_bytes = await asyncio.get_event_loop().run_in_executor(
+                            None, _remove_background, image_bytes
+                        )
+                        logger.info("Background removed for ref: %s", url[:60])
+                    except Exception:
+                        logger.exception("Background removal failed for url=%s, skipping", url[:60])
+
                 grid_bytes = _apply_grid_overlay(image_bytes)
                 new_url = await upload_image_bytes_to_imgbb(grid_bytes, filename="ref_grid.jpg")
                 if new_url:

@@ -387,6 +387,16 @@ def load_prompt_library() -> list:
                 if not isinstance(cat["items"], list):
                     raise ValueError("Category items must be list")
 
+            # Put video categories first, image categories after
+            def _cat_sort_key(cat: dict) -> int:
+                items = cat.get("items") or []
+                for it in items:
+                    raw = str(it.get("kind") or it.get("type") or it.get("target") or "").strip().lower()
+                    if raw in {"video", "video_prompt"}:
+                        return 0  # video category → front
+                return 1  # image category → back
+
+            data.sort(key=_cat_sort_key)
             return data
         except Exception as e:
             logger.exception(f"Failed to load prompt_library.json from {source_path}: {e}")
@@ -1330,19 +1340,29 @@ async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Cost of one 5-second Seedance video (standard model)
+    _video_5s_cost = calc_seedance_cost(5, SEEDANCE_COST_PER_SECOND)
     keyboard = []
     for pack in BUY_PACKS:
-        generations_count = max(1, pack["count"] // BASE_GENERATION_COST)
-        generations_label = ru_plural(generations_count, "образ", "образа", "образов")
+        photo_count = max(1, pack["count"] // BASE_GENERATION_COST)
+        video_count = pack["count"] // _video_5s_cost
+        photos_label = ru_plural(photo_count, "фото", "фото", "фото")
+        if video_count > 0:
+            videos_label = ru_plural(video_count, "видео (5 с)", "видео (5 с)", "видео (5 с)")
+            hint = f"≈ {photo_count} {photos_label} / {video_count} {videos_label}"
+        else:
+            hint = f"≈ {photo_count} {photos_label}"
         keyboard.append([
             InlineKeyboardButton(
-                text=f"{pack['count']} изюминок — {pack['price']} ₽ · ≈ {generations_count} {generations_label}",
+                text=f"{pack['count']} изюминок — {pack['price']} ₽ · {hint}",
                 callback_data=f"buy_{pack['count']}_{pack['price']}"
             )
         ])
 
     await update.message.reply_text(
-        f"Выбери пакет изюминок:\n1 обычный образ = {BASE_GENERATION_COST} изюминок.",
+        f"Выбери пакет изюминок:\n"
+        f"• 1 фото = {BASE_GENERATION_COST} изюминок\n"
+        f"• 1 видео 5 сек = {_video_5s_cost} изюминок",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -1376,14 +1396,23 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
 async def send_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE, count: int, price: int):
     query = update.callback_query
 
-    generations_count = max(1, count // BASE_GENERATION_COST)
-    generations_label = ru_plural(generations_count, "образ", "образа", "образов")
+    _video_5s_cost = calc_seedance_cost(5, SEEDANCE_COST_PER_SECOND)
+    photo_count = max(1, count // BASE_GENERATION_COST)
+    video_count = count // _video_5s_cost
+    if video_count > 0:
+        description = (
+            f"{count} изюминок — это примерно {photo_count} фото "
+            f"или {video_count} видео по 5 секунд."
+        )
+    else:
+        description = f"{count} изюминок — это примерно {photo_count} фото."
+
     prices = [LabeledPrice(label=f"{count} изюминок", amount=price * 100)]
 
     await context.bot.send_invoice(
         chat_id=query.message.chat_id,
         title="Покупка изюминок 🧀",
-        description=f"{count} изюминок для генераций. Это примерно {generations_count} {generations_label}.",
+        description=description,
         payload=f"buy_{count}_{price}",
         provider_token=PROVIDER_TOKEN,
         currency="RUB",
@@ -2690,10 +2719,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("Не удалось открыть шаблон. Попробуй еще раз.")
             return
 
+        # Show human-readable description/instructions if available, not the raw prompt
+        description_text = str(item.get("description") or item.get("hint") or "").strip()
+        what_to_upload = str(item.get("upload_hint") or item.get("what_to_upload") or "").strip()
+        if item_kind == "video":
+            default_desc = "Видео-шаблон для Seedance. Загрузи фото-референс и запусти видео."
+        else:
+            default_desc = "Фото-шаблон. Можно использовать как есть или добавить референс."
+        body = description_text or default_desc
+        if what_to_upload:
+            body += f"\n\n📎 Что загрузить: {what_to_upload}"
         card_text = (
-            f"Шаблон: {item['title']}\n\n"
-            f"Промпт:\n{item['prompt']}\n\n"
-            "Нажми «Использовать промпт», чтобы подставить его в буфер."
+            f"✨ {item['title']}\n\n"
+            f"{body}\n\n"
+            "Нажми «Использовать», чтобы применить шаблон."
         )
 
         if item_kind == "video":
@@ -3110,6 +3149,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, count_str, price_str = query.data.split("_")
         count = int(count_str)
         price = int(price_str)
+
+        # Debounce: prevent double-tap from sending two invoices
+        buy_key = f"last_buy_invoice_{count}_{price}"
+        now_ts = datetime.now().timestamp()
+        last_sent = context.user_data.get(buy_key, 0)
+        if now_ts - last_sent < 5:
+            # Already sent an invoice for this pack in the last 5 seconds — skip silently
+            return
+        context.user_data[buy_key] = now_ts
 
         await send_invoice(update, context, count, price)
         return

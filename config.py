@@ -61,6 +61,8 @@ ZVENO_CHAT_MODEL = os.getenv("ZVENO_CHAT_MODEL", "google/gemini-2.5-flash")
 
 PROMPT_WEBAPP_URL = os.getenv("PROMPT_WEBAPP_URL", "").strip()
 
+REMOVE_BG_API_KEY = os.getenv("REMOVE_BG_API_KEY", "").strip()
+
 IMGBB_API_KEY = _required_env("IMGBB_API_KEY")
 PROVIDER_TOKEN = _required_env("PROVIDER_TOKEN")
 

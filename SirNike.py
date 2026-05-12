@@ -4,12 +4,6 @@ import io
 import json
 import logging
 import os
-import importlib.util
-# Point rembg model cache to persistent volume (set before rembg is ever imported)
-_u2net_home = "/app/data/.u2net" if os.path.isdir("/app/data") else os.path.expanduser("~/.u2net")
-os.environ.setdefault("U2NET_HOME", _u2net_home)
-# Check availability without importing (avoids loading onnxruntime at startup)
-REMBG_AVAILABLE = importlib.util.find_spec("rembg") is not None
 import re
 import time
 from logging.handlers import RotatingFileHandler
@@ -55,6 +49,7 @@ from config import (
     ZVENO_IMAGE_MODEL,
     ZVENO_CHAT_MODEL,
     PROMPT_WEBAPP_URL,
+    REMOVE_BG_API_KEY,
     IMGBB_API_KEY,
     START_BONUS,
     FREE_GENERATIONS_PER_DAY,
@@ -2285,14 +2280,26 @@ async def build_seedance_reference_sheet_url(image_urls: List[str]) -> Optional[
 # Grid overlay for Seedance refs
 # ----------------------------
 
-def _remove_background(image_bytes: bytes) -> bytes:
-    from rembg import remove as _rembg_remove, new_session as _rembg_new_session
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
-    session = _rembg_new_session("u2netp")  # 4.7 MB model
-    result = _rembg_remove(img, session=session)
-    # Белый фон вместо прозрачного (JPEG не поддерживает прозрачность)
-    bg = Image.new("RGBA", result.size, (255, 255, 255, 255))
-    bg.paste(result, mask=result.split()[3])
+async def _remove_background_api(image_bytes: bytes) -> bytes:
+    """Remove background via remove.bg API. Returns JPEG bytes with white background."""
+    async with aiohttp.ClientSession() as session:
+        form = aiohttp.FormData()
+        form.add_field("image_file", image_bytes, filename="photo.jpg", content_type="image/jpeg")
+        form.add_field("size", "auto")
+        async with session.post(
+            "https://api.remove.bg/v1.0/removebg",
+            data=form,
+            headers={"X-Api-Key": REMOVE_BG_API_KEY},
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as resp:
+            if resp.status != 200:
+                body = await resp.text()
+                raise Exception(f"remove.bg error {resp.status}: {body[:200]}")
+            png_bytes = await resp.read()
+
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+    bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
+    bg.paste(img, mask=img.split()[3])
     out = io.BytesIO()
     bg.convert("RGB").save(out, format="JPEG", quality=95)
     return out.getvalue()
@@ -2331,11 +2338,9 @@ async def apply_grid_overlay_to_refs(image_urls: List[str]) -> List[str]:
                         continue
                     image_bytes = await resp.read()
 
-                if REMBG_AVAILABLE:
+                if REMOVE_BG_API_KEY:
                     try:
-                        image_bytes = await asyncio.get_event_loop().run_in_executor(
-                            None, _remove_background, image_bytes
-                        )
+                        image_bytes = await _remove_background_api(image_bytes)
                         logger.info("Background removed for ref: %s", url[:60])
                     except Exception:
                         logger.exception("Background removal failed for url=%s, skipping", url[:60])

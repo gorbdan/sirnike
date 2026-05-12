@@ -9,7 +9,7 @@ from logging.handlers import RotatingFileHandler
 import os
 from datetime import datetime
 from urllib.parse import urlsplit
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageOps
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 import aiohttp
@@ -2270,6 +2270,56 @@ async def build_seedance_reference_sheet_url(image_urls: List[str]) -> Optional[
             except Exception:
                 pass
         
+# ----------------------------
+# Grid overlay for Seedance refs
+# ----------------------------
+
+def _apply_grid_overlay(
+    image_bytes: bytes,
+    rows: int = 3,
+    cols: int = 3,
+    line_color: tuple = (255, 255, 255),
+    line_width: int = 10,
+) -> bytes:
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    draw = ImageDraw.Draw(img)
+    w, h = img.size
+    for i in range(1, cols):
+        x = w * i // cols
+        draw.line([(x, 0), (x, h)], fill=line_color, width=line_width)
+    for i in range(1, rows):
+        y = h * i // rows
+        draw.line([(0, y), (w, y)], fill=line_color, width=line_width)
+    out = io.BytesIO()
+    img.save(out, format="JPEG", quality=95)
+    return out.getvalue()
+
+
+async def apply_grid_overlay_to_refs(image_urls: List[str]) -> List[str]:
+    processed: List[str] = []
+    async with aiohttp.ClientSession() as session:
+        for url in image_urls:
+            try:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=60), allow_redirects=True) as resp:
+                    if resp.status != 200:
+                        logger.warning("Grid overlay: download failed status=%s url=%s", resp.status, url[:80])
+                        processed.append(url)
+                        continue
+                    image_bytes = await resp.read()
+                grid_bytes = _apply_grid_overlay(image_bytes)
+                new_url = await upload_image_bytes_to_imgbb(grid_bytes, filename="ref_grid.jpg")
+                if new_url:
+                    logger.info("Grid overlay applied: %s -> %s", url[:60], new_url[:60])
+                    processed.append(new_url)
+                else:
+                    logger.warning("Grid overlay imgbb upload failed, using original: %s", url[:60])
+                    processed.append(url)
+            except Exception:
+                logger.exception("Grid overlay failed for url=%s, using original", url[:60])
+                processed.append(url)
+    return processed
+
+
 # ----------------------------
 # Generation
 # ----------------------------
@@ -4571,6 +4621,9 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not ok_img:
             await reply_target.reply_text(f"Фото-референс #{idx} недоступен: {reason_img}")
             return
+
+    if motion_images:
+        motion_images = await apply_grid_overlay_to_refs(motion_images)
 
     selected_duration = get_selected_seedance_duration(state)
     selected_model = get_motion_model(state)

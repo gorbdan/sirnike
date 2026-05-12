@@ -2307,20 +2307,22 @@ async def _remove_background_api(image_bytes: bytes) -> bytes:
 
 def _apply_grid_overlay(
     image_bytes: bytes,
-    rows: int = 10,
-    cols: int = 10,
-    line_color: tuple = (255, 255, 255),
-    line_width: int = 18,
+    rows: int = 12,
+    cols: int = 12,
+    line_color: tuple = (220, 220, 220),
+    line_width: int = 0,
 ) -> bytes:
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     draw = ImageDraw.Draw(img)
     w, h = img.size
+    # Proportional line width: ~0.4% of image width, min 2px, max 5px
+    lw = line_width if line_width > 0 else max(2, min(5, w // 220))
     for i in range(1, cols):
         x = w * i // cols
-        draw.line([(x, 0), (x, h)], fill=line_color, width=line_width)
+        draw.line([(x, 0), (x, h)], fill=line_color, width=lw)
     for i in range(1, rows):
         y = h * i // rows
-        draw.line([(0, y), (w, y)], fill=line_color, width=line_width)
+        draw.line([(0, y), (w, y)], fill=line_color, width=lw)
     out = io.BytesIO()
     img.save(out, format="JPEG", quality=95)
     return out.getvalue()

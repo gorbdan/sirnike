@@ -1894,6 +1894,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                         return
                     total_refs = add_motion_image_url(state, direct_url)
+                    logger.info(
+                        "handle_photo: added motion image for user=%s, total=%s, animation_source_urls=%s",
+                        user.id, total_refs, state.animation_source_urls,
+                    )
                     await update.message.reply_text(
                         f"Фото для Seedance добавлено ✅\n"
                         f"Сейчас загружено: {total_refs}/{MAX_SEEDANCE_IMAGE_REFERENCES}\n"
@@ -3013,6 +3017,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if video_cb == "video_start":
         state = get_or_init_state(context)
+        logger.info(
+            "video_start: user=%s animation_source_urls=%s motion_prompt=%r",
+            update.effective_user.id, state.animation_source_urls, state.motion_prompt,
+        )
         state.waiting_for_motion_image = False
         state.motion_session_active = False
         context.application.create_task(run_seedance(update, context))
@@ -4634,6 +4642,10 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     motion_images = get_motion_image_urls(state)
+    logger.info(
+        "run_seedance: user=%s animation_source_urls=%s motion_prompt=%r",
+        user.id, state.animation_source_urls, state.motion_prompt,
+    )
 
     prompt_text = (state.motion_prompt or "").strip()
     if not motion_images and not prompt_text:

@@ -3,6 +3,10 @@ import base64
 import io
 import json
 import logging
+import os
+# Point rembg model cache to persistent volume before importing rembg
+_u2net_home = "/app/data/.u2net" if os.path.isdir("/app/data") else os.path.expanduser("~/.u2net")
+os.environ.setdefault("U2NET_HOME", _u2net_home)
 try:
     from rembg import remove as rembg_remove
     REMBG_AVAILABLE = True
@@ -11,7 +15,6 @@ except ImportError:
 import re
 import time
 from logging.handlers import RotatingFileHandler
-import os
 from datetime import datetime
 from urllib.parse import urlsplit
 from PIL import Image, ImageDraw, ImageOps
@@ -3701,9 +3704,27 @@ async def prompt_library_history_command(update: Update, context: ContextTypes.D
     await prompt_library_history(update, context, offset=offset)
 
 
+async def _warmup_rembg():
+    if not REMBG_AVAILABLE:
+        return
+    try:
+        logger.info("rembg: pre-warming model (downloading if needed)...")
+        dummy = b"\xff\xd8\xff\xe0" + b"\x00" * 100  # minimal fake JPEG header
+        import io as _io
+        from PIL import Image as _Image
+        img = _Image.new("RGB", (8, 8), (128, 128, 128))
+        buf = _io.BytesIO()
+        img.save(buf, format="JPEG")
+        await asyncio.get_event_loop().run_in_executor(None, rembg_remove, buf.getvalue())
+        logger.info("rembg: model ready.")
+    except Exception:
+        logger.exception("rembg: warmup failed (model may download on first use)")
+
+
 async def post_init(app: Application):
     global queue_worker_task
     queue_worker_task = asyncio.create_task(queue_worker(app))
+    asyncio.create_task(_warmup_rembg())
 
 
 async def post_shutdown(app: Application):

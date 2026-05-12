@@ -5777,6 +5777,32 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 # Main
 # ----------------------------
 
+async def preview_refs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send back processed reference images (bg removal + grid) without launching generation."""
+    user = update.effective_user
+    if user.id not in ADMIN_IDS:
+        return
+    state = get_or_init_state(context)
+    motion_images = get_motion_image_urls(state)
+    if not motion_images:
+        await update.message.reply_text("Рефов нет. Добавь фото в Seedance-панели сначала.")
+        return
+    await update.message.reply_text(
+        f"Обрабатываю {len(motion_images)} реф(ов) — фон + сетка…"
+    )
+    try:
+        processed = await apply_grid_overlay_to_refs(motion_images)
+    except Exception:
+        logger.exception("preview_refs: processing failed")
+        await update.message.reply_text("Ошибка при обработке рефов.")
+        return
+    for i, url in enumerate(processed, start=1):
+        try:
+            await update.message.reply_photo(url, caption=f"Реф {i}/{len(processed)}")
+        except Exception:
+            await update.message.reply_text(f"Реф {i}: {url}")
+
+
 def main():
     init_db()
 
@@ -5821,6 +5847,7 @@ def main():
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data_v2))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CommandHandler("promo_stats", promo_stats))
+    app.add_handler(CommandHandler("previewrefs", preview_refs))
     app.add_error_handler(error_handler)
 
     logger.info("Бот запускается...")

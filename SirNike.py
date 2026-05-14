@@ -733,8 +733,16 @@ def avatar_kind_label(kind: str) -> str:
         return "детский 🧒"
     return "женский 👩"
 
+AVATAR_REFSHEET_PROMPT = (
+    "Create a character reference sheet on one white canvas. "
+    "Show the same person in 4 views: front face, 3/4 left, side profile, and full body shot. "
+    "Keep all facial features, hair color, skin tone, and clothing identical across all views. "
+    "Clean white background, studio lighting, photorealistic style."
+)
+
 def avatar_actions_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎨 Создать реф-лист", callback_data="avatar_gen_refsheet")],
         [
             InlineKeyboardButton("Загрузить женский 👩", callback_data="set_avatar_female"),
             InlineKeyboardButton("Загрузить мужской 👨", callback_data="set_avatar_male"),
@@ -3095,6 +3103,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             "Выбери действие с аватаром:",
             reply_markup=avatar_actions_kb(),
+        )
+        return
+
+    if query.data == "avatar_gen_refsheet":
+        avatar_url = get_avatar_url(update.effective_user.id)
+        if not avatar_url:
+            await query.message.reply_text(
+                "Сначала загрузи аватар — нажми «Загрузить» и отправь фото.",
+                reply_markup=avatar_actions_kb(),
+            )
+            return
+        state = get_or_init_state(context)
+        deactivate_motion_session(state)
+        state.prompt = AVATAR_REFSHEET_PROMPT
+        state.references = [avatar_url]
+        await query.message.reply_text(
+            "Промт реф-листа установлен, аватар подставлен как референс.\n"
+            "Нажми «Запустить генерацию⚡» — и готово!",
+            reply_markup=main_menu_kb(),
         )
         return
 

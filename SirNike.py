@@ -185,6 +185,7 @@ class UserState:
     animation_source_urls: List[str] = field(default_factory=list)
     waiting_for_avatar_upload: bool = False
     pending_avatar_kind: str = "female"
+    generating_avatar: bool = False
     waiting_for_problem_report: bool = False
     motion_prompt: str = ""
     motion_video_url: Optional[str] = None
@@ -205,6 +206,7 @@ class GenerationJob:
     message_id: Optional[int] = None
     cost: int = 0
     was_free: bool = False
+    save_as_avatar: bool = False
 
 generation_queue = asyncio.Queue()
 queued_user_ids = set()
@@ -1903,6 +1905,26 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text("imgbb не вернул ссылку на фото.")
                     return
 
+                if state.generating_avatar:
+                    state.generating_avatar = False
+                    job = GenerationJob(
+                        chat_id=update.effective_chat.id,
+                        user_id=user.id,
+                        prompt=AVATAR_REFSHEET_PROMPT,
+                        references=[direct_url],
+                        cost=0,
+                        was_free=False,
+                        save_as_avatar=True,
+                    )
+                    queued_user_ids.add(user.id)
+                    await generation_queue.put(job)
+                    context.user_data["state"] = UserState()
+                    await update.message.reply_text(
+                        "Фото получено ✅ Запускаю генерацию аватара…",
+                        reply_markup=main_menu_kb(),
+                    )
+                    return
+
                 if state.waiting_for_avatar_upload:
                     avatar_kind = str(getattr(state, "pending_avatar_kind", "female") or "female").strip().lower()
                     set_avatar_url(user.id, direct_url, avatar_kind)
@@ -3107,21 +3129,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "avatar_gen_refsheet":
-        avatar_url = get_avatar_url(update.effective_user.id)
-        if not avatar_url:
-            await query.message.reply_text(
-                "Сначала загрузи аватар — нажми «Загрузить» и отправь фото.",
-                reply_markup=avatar_actions_kb(),
-            )
-            return
         state = get_or_init_state(context)
         deactivate_motion_session(state)
         state.prompt = AVATAR_REFSHEET_PROMPT
-        state.references = [avatar_url]
+        state.references = []
+        state.generating_avatar = True
         await query.message.reply_text(
-            "Промт реф-листа установлен, аватар подставлен как референс.\n"
-            "Нажми «Запустить генерацию⚡» — и готово!",
-            reply_markup=main_menu_kb(),
+            "Отправь фото, на котором хорошо видно лицо — я сгенерирую аватар и сохраню его. 📸",
         )
         return
 
@@ -5378,6 +5392,9 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
             last_generated_prompt[user_id] = prompt
             add_generation_history(user_id=user_id, prompt=prompt, image_url=image_url)
             await send_generation_result_by_url(app, chat_id, user_id, image_url)
+            if getattr(job, "save_as_avatar", False):
+                set_avatar_url(user_id, image_url, "female")
+                await app.bot.send_message(chat_id=chat_id, text="Аватар сохранён ✅")
             log_generation_event(
                 user_id=user_id,
                 kind="image",
@@ -5603,6 +5620,9 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                             last_generated_prompt[user_id] = prompt
                             add_generation_history(user_id=user_id, prompt=prompt, image_url=image_url)
                             await send_generation_result_by_url(app, chat_id, user_id, image_url)
+                            if getattr(job, "save_as_avatar", False):
+                                set_avatar_url(user_id, image_url, "female")
+                                await app.bot.send_message(chat_id=chat_id, text="Аватар сохранён ✅")
                             log_generation_event(
                                 user_id=user_id,
                                 kind="image",

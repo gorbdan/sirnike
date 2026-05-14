@@ -742,7 +742,7 @@ AVATAR_REFSHEET_PROMPT = (
 
 def avatar_actions_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✨ Сгенерировать образ с аватара", callback_data="avatar_gen_refsheet")],
+        [InlineKeyboardButton("🎨 Сгенерировать аватар", callback_data="avatar_gen_refsheet")],
         [
             InlineKeyboardButton("Загрузить женский 👩", callback_data="set_avatar_female"),
             InlineKeyboardButton("Загрузить мужской 👨", callback_data="set_avatar_male"),

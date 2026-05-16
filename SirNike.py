@@ -118,6 +118,10 @@ from db import (
     get_generation_history_item,
 )
 
+# ══════════════════════════════════════════════════════════════
+# НАСТРОЙКА: пути, логи, константы
+# ══════════════════════════════════════════════════════════════
+
 BASE_DIR = os.path.dirname(__file__)
 RUNTIME_DIR = DATA_DIR
 OUTPUTS_DIR = os.path.join(RUNTIME_DIR, "outputs")
@@ -152,9 +156,9 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-# ----------------------------
-# State
-# ----------------------------
+# ══════════════════════════════════════════════════════════════
+# СОСТОЯНИЕ: глобальные переменные, кеш, модели данных
+# ══════════════════════════════════════════════════════════════
 
 photo_tasks = {}
 photo_counts = {}
@@ -294,6 +298,10 @@ DEFAULT_PROMPT_LIBRARY = [
     },
 ]
 
+# ══════════════════════════════════════════════════════════════
+# БИБЛИОТЕКА ПРОМТОВ: загрузка, сохранение, пути
+# ══════════════════════════════════════════════════════════════
+
 PROMPT_LIBRARY_DATA_PATH = os.path.join(RUNTIME_DIR, "prompt_library.json")
 PROMPT_LIBRARY_LEGACY_PATH = os.path.join(os.path.dirname(__file__), "prompt_library.json")
 PROMPT_LIBRARY_WEBAPP_PATH = os.path.join(os.path.dirname(__file__), "webapp", "prompt_library.json")
@@ -427,9 +435,9 @@ def refresh_prompt_library() -> None:
     PROMPT_LIBRARY = load_prompt_library()
 
 
-# ----------------------------
-# Helpers
-# ----------------------------
+# ══════════════════════════════════════════════════════════════
+# УТИЛИТЫ: вспомогательные функции
+# ══════════════════════════════════════════════════════════════
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
@@ -685,6 +693,10 @@ def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int
 
     photo_tasks[chat_id] = asyncio.create_task(send_done_later())
 
+
+# ══════════════════════════════════════════════════════════════
+# КЛАВИАТУРЫ: кнопки и меню
+# ══════════════════════════════════════════════════════════════
 
 def main_menu_kb() -> InlineKeyboardMarkup:
     if PROMPT_WEBAPP_URL:
@@ -1117,6 +1129,10 @@ def result_actions_kb(user_id: int = 0, bot_username: str = "") -> InlineKeyboar
     return InlineKeyboardMarkup(rows)
 
 
+# ══════════════════════════════════════════════════════════════
+# КОМАНДЫ ПОЛЬЗОВАТЕЛЯ: /start, /balance, /ref, /buy и т.д.
+# ══════════════════════════════════════════════════════════════
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
@@ -1430,6 +1446,10 @@ async def send_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE, count
         start_parameter="buy-izuminki"
     )
 
+# ══════════════════════════════════════════════════════════════
+# АДМИН: рассылки, статистика, управление
+# ══════════════════════════════════════════════════════════════
+
 async def broadcast_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
@@ -1677,6 +1697,10 @@ async def admin_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ----------------------------
 # Input collection
 # ----------------------------
+
+# ══════════════════════════════════════════════════════════════
+# ОБРАБОТЧИКИ СООБЩЕНИЙ: текст, фото, видео, webapp
+# ══════════════════════════════════════════════════════════════
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -2212,6 +2236,10 @@ async def handle_webapp_data_v2(update: Update, context: ContextTypes.DEFAULT_TY
         await message.reply_text("Не удалось применить шаблон.")
 
 
+# ══════════════════════════════════════════════════════════════
+# РАБОТА С МЕДИА: imgbb, удаление фона, сетка для рефов
+# ══════════════════════════════════════════════════════════════
+
 async def upload_image_url_to_imgbb(image_url: str) -> Optional[str]:
     try:
         async with aiohttp.ClientSession() as session:
@@ -2424,6 +2452,10 @@ async def apply_grid_overlay_to_refs(image_urls: List[str]) -> List[str]:
 # Generation
 # ----------------------------
 
+# ══════════════════════════════════════════════════════════════
+# ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ: очередь, запуск, результат
+# ══════════════════════════════════════════════════════════════
+
 async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     create_user_if_not_exists(user.id, user.username, START_BONUS)
@@ -2554,9 +2586,9 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
-# ----------------------------
-# Buttons
-# ----------------------------
+# ══════════════════════════════════════════════════════════════
+# ОБРАБОТЧИК КНОПОК: button_handler и вся логика callback
+# ══════════════════════════════════════════════════════════════
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -3251,6 +3283,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(f"Удалён {avatar_kind_label(avatar_kind)} аватар.")
         return
 
+# ══════════════════════════════════════════════════════════════
+# БИБЛИОТЕКА ПРОМТОВ: просмотр, редактирование, история
+# ══════════════════════════════════════════════════════════════
+
 async def promo_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
@@ -3800,6 +3836,10 @@ async def prompt_library_history_command(update: Update, context: ContextTypes.D
     await prompt_library_history(update, context, offset=offset)
 
 
+# ══════════════════════════════════════════════════════════════
+# ОЧЕРЕДЬ И ЖИЗНЕННЫЙ ЦИКЛ БОТА: worker, post_init, shutdown
+# ══════════════════════════════════════════════════════════════
+
 async def post_init(app: Application):
     global queue_worker_task
     queue_worker_task = asyncio.create_task(queue_worker(app))
@@ -3842,6 +3882,10 @@ async def queue_worker(app: Application):
     except asyncio.CancelledError:
         logger.info("queue_worker stopped")
         raise
+
+# ══════════════════════════════════════════════════════════════
+# ВИДЕОГЕНЕРАЦИЯ: Seedance, Kling Motion Control
+# ══════════════════════════════════════════════════════════════
 
 async def start_kling_motion_control(
     image_url: str,
@@ -5029,6 +5073,10 @@ async def send_generation_result_by_url(
         caption="Файл изображения в хорошем качестве JPG."
     )
 
+# ══════════════════════════════════════════════════════════════
+# ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ (ВОРКЕР): MashaGPT, Zveno, Nano
+# ══════════════════════════════════════════════════════════════
+
 async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
     chat_id = job.chat_id
     user_id = job.user_id
@@ -5856,6 +5904,11 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
         )
     except Exception:
         logger.exception("Failed to send final generation error message")
+
+# ══════════════════════════════════════════════════════════════
+# ЗАПУСК: регистрация хендлеров, main()
+# ══════════════════════════════════════════════════════════════
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     err = context.error
     if isinstance(err, Forbidden):

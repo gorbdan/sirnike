@@ -129,7 +129,7 @@ MAX_POLL_ATTEMPTS = int(os.getenv("MAX_POLL_ATTEMPTS", "30"))
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "60"))
 
 BUY_PACKS = [
-    {"count": 10, "price": 50},
+    {"count": 10, "price": 60},
     {"count": 20, "price": 100},
     {"count": 50, "price": 250},
     {"count": 120, "price": 600},

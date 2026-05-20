@@ -50,6 +50,7 @@ from config import (
     ZVENO_CHAT_MODEL,
     PROMPT_WEBAPP_URL,
     REMOVE_BG_API_KEY,
+    PHOTOROOM_API_KEY,
     IMGBB_API_KEY,
     START_BONUS,
     FREE_GENERATIONS_PER_DAY,
@@ -2368,21 +2369,38 @@ async def build_seedance_reference_sheet_url(image_urls: List[str]) -> Optional[
 # ----------------------------
 
 async def _remove_background_api(image_bytes: bytes) -> bytes:
-    """Remove background via remove.bg API. Returns JPEG bytes with white background."""
-    async with aiohttp.ClientSession() as session:
-        form = aiohttp.FormData()
-        form.add_field("image_file", image_bytes, filename="photo.jpg", content_type="image/jpeg")
-        form.add_field("size", "auto")
-        async with session.post(
-            "https://api.remove.bg/v1.0/removebg",
-            data=form,
-            headers={"X-Api-Key": REMOVE_BG_API_KEY},
-            timeout=aiohttp.ClientTimeout(total=30),
-        ) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                raise Exception(f"remove.bg error {resp.status}: {body[:200]}")
-            png_bytes = await resp.read()
+    """Remove background. Uses PhotoRoom if key set, falls back to remove.bg."""
+    if PHOTOROOM_API_KEY:
+        async with aiohttp.ClientSession() as session:
+            form = aiohttp.FormData()
+            form.add_field("image_file", image_bytes, filename="photo.jpg", content_type="image/jpeg")
+            async with session.post(
+                "https://sdk.photoroom.com/v1/segment",
+                data=form,
+                headers={"x-api-key": PHOTOROOM_API_KEY},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    raise Exception(f"PhotoRoom error {resp.status}: {body[:200]}")
+                png_bytes = await resp.read()
+    elif REMOVE_BG_API_KEY:
+        async with aiohttp.ClientSession() as session:
+            form = aiohttp.FormData()
+            form.add_field("image_file", image_bytes, filename="photo.jpg", content_type="image/jpeg")
+            form.add_field("size", "auto")
+            async with session.post(
+                "https://api.remove.bg/v1.0/removebg",
+                data=form,
+                headers={"X-Api-Key": REMOVE_BG_API_KEY},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    raise Exception(f"remove.bg error {resp.status}: {body[:200]}")
+                png_bytes = await resp.read()
+    else:
+        raise Exception("No background removal API key configured")
 
     img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
     bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
@@ -2427,7 +2445,7 @@ async def apply_grid_overlay_to_refs(image_urls: List[str]) -> List[str]:
                         continue
                     image_bytes = await resp.read()
 
-                if REMOVE_BG_API_KEY:
+                if PHOTOROOM_API_KEY or REMOVE_BG_API_KEY:
                     try:
                         image_bytes = await _remove_background_api(image_bytes)
                         logger.info("Background removed for ref: %s", url[:60])

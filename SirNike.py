@@ -463,11 +463,9 @@ def ru_plural(value: int, one: str, few: str, many: str) -> str:
 
 
 def get_seedance_duration_bounds(model_code: Optional[str] = None) -> tuple[int, int]:
-    # Seedance 2 supports up to 15s in our bot flow.
-    # Seedance 2 Fast stays capped at 10s.
     if model_code == "seedance2_fast":
         return 5, 10
-    return 5, 15
+    return 5, 10
 
 
 def normalize_seedance_duration(value: int, model_code: Optional[str] = None) -> int:
@@ -540,7 +538,7 @@ def get_seedance_duration_options(model_code: Optional[str] = None) -> List[int]
         parsed.append(default_sec)
     if model_code != "seedance2_fast" and len(parsed) <= 1:
         # Guardrail: if env accidentally left only "5", keep normal Seedance 2 controls available.
-        for fallback_sec in (5, 10, 15):
+        for fallback_sec in (5, 10):
             sec = normalize_seedance_duration(fallback_sec, model_code)
             if sec not in parsed:
                 parsed.append(sec)

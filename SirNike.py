@@ -468,7 +468,7 @@ def ru_plural(value: int, one: str, few: str, many: str) -> str:
 def get_seedance_duration_bounds(model_code: Optional[str] = None) -> tuple[int, int]:
     if model_code == "seedance2_fast":
         return 5, 10
-    return 5, 10
+    return 5, 15
 
 
 def normalize_seedance_duration(value: int, model_code: Optional[str] = None) -> int:
@@ -541,7 +541,7 @@ def get_seedance_duration_options(model_code: Optional[str] = None) -> List[int]
         parsed.append(default_sec)
     if model_code != "seedance2_fast" and len(parsed) <= 1:
         # Guardrail: if env accidentally left only "5", keep normal Seedance 2 controls available.
-        for fallback_sec in (5, 10):
+        for fallback_sec in (5, 10, 15):
             sec = normalize_seedance_duration(fallback_sec, model_code)
             if sec not in parsed:
                 parsed.append(sec)
@@ -4562,7 +4562,7 @@ async def start_seedance_task(
         or "insufficient funds" in last_error.lower()
         or "no available" in last_error.lower()
     )
-    if FAL_API_KEY and zveno_retriable and not privacy_blocked:
+    if FAL_API_KEY and zveno_retriable and not privacy_blocked and False:  # fal.ai fallback disabled
         logger.info("Zveno.ai unavailable (%s), falling back to fal.ai Seedance", last_error[:80])
         return await _start_seedance_task_fal(
             prompt=prompt,
@@ -4619,7 +4619,7 @@ async def _start_seedance_task_fal(
             timeout=aiohttp.ClientTimeout(total=90),
         ) as resp:
             response_text = await resp.text()
-            logger.info("fal.ai Seedance submit response: status=%s", resp.status)
+            logger.info("fal.ai Seedance submit response: status=%s body=%s", resp.status, response_text[:500])
             if not (200 <= resp.status < 300):
                 raise Exception(f"fal.ai Seedance submit failed: {resp.status}. {response_text[:300]}")
             try:
@@ -4627,26 +4627,36 @@ async def _start_seedance_task_fal(
             except json.JSONDecodeError:
                 raise Exception(f"fal.ai Seedance: non-JSON response: {response_text[:200]}")
             request_id = data.get("request_id")
+            status_url = data.get("status_url") or ""
+            response_url = data.get("response_url") or ""
             if not request_id:
                 raise Exception(f"fal.ai Seedance: request_id missing: {data}")
-            logger.info("fal.ai Seedance queued: request_id=%s model=%s", request_id, model_path)
-            return f"__FAL__:{model_path}:{request_id}"
+            # Build fallback URLs if fal.ai doesn't return them
+            base = FAL_API_BASE.rstrip("/")
+            if not status_url:
+                status_url = f"{base}/{model_path}/requests/{request_id}/status"
+            if not response_url:
+                response_url = f"{base}/{model_path}/requests/{request_id}"
+            logger.info(
+                "fal.ai Seedance queued: request_id=%s status_url=%s response_url=%s",
+                request_id, status_url, response_url,
+            )
+            # Use | as separator since URLs contain colons
+            return f"__FAL__|{status_url}|{response_url}"
 
 
 async def _poll_seedance_fal(
-    model_path: str,
-    request_id: str,
+    status_url: str,
+    response_url: str,
     max_attempts: int,
     poll_interval: int,
 ) -> str:
     """Poll fal.ai queue for Seedance 2.0 result."""
-    base = FAL_API_BASE.rstrip("/")
-    status_url = f"{base}/{model_path}/requests/{request_id}/status"
-    result_url = f"{base}/{model_path}/requests/{request_id}"
+    result_url = response_url
     headers = {"Authorization": f"Key {FAL_API_KEY}"}
     logger.info(
-        "fal.ai Seedance polling: request_id=%s max_attempts=%s interval=%ss",
-        request_id, max_attempts, poll_interval,
+        "fal.ai Seedance polling: status_url=%s max_attempts=%s interval=%ss",
+        status_url, max_attempts, poll_interval,
     )
     async with aiohttp.ClientSession() as session:
         for attempt in range(max_attempts):
@@ -4658,15 +4668,16 @@ async def _poll_seedance_fal(
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=30),
                 ) as resp:
+                    body = await resp.text()
                     if resp.status != 200:
-                        logger.warning("fal.ai status check failed: %s", resp.status)
+                        logger.warning("fal.ai status check failed: %s body=%s", resp.status, body[:200])
                         continue
-                    data = json.loads(await resp.text())
+                    data = json.loads(body)
             except Exception as e:
                 logger.warning("fal.ai status request error: %s", e)
                 continue
             status = str(data.get("status", "")).upper()
-            logger.info("fal.ai task %s: status=%s", request_id, status)
+            logger.info("fal.ai task status=%s url=%s", status, status_url)
             if status == "COMPLETED":
                 try:
                     async with session.get(
@@ -4700,11 +4711,11 @@ async def poll_seedance_task(
     expected_refs_count: int = 0,
 ) -> str:
     # fal.ai task — delegate to fal.ai poller
-    if task_id.startswith("__FAL__:"):
-        parts = task_id.split(":", 2)
-        fal_model = parts[1] if len(parts) > 1 else "bytedance/seedance-2.0/reference-to-video"
-        fal_req_id = parts[2] if len(parts) > 2 else ""
-        return await _poll_seedance_fal(fal_model, fal_req_id, max_attempts, poll_interval)
+    if task_id.startswith("__FAL__|"):
+        parts = task_id.split("|", 3)
+        fal_status_url = parts[1] if len(parts) > 1 else ""
+        fal_response_url = parts[2] if len(parts) > 2 else ""
+        return await _poll_seedance_fal(fal_status_url, fal_response_url, max_attempts, poll_interval)
 
     if not ZVENO_API_KEY:
         raise Exception("ZVENO_API_KEY is empty")
@@ -5018,10 +5029,9 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     selected_mode = get_selected_seedance_mode(state)
     selected_model_slug = SEEDANCE_FAST_MODEL if selected_model == "seedance2_fast" else SEEDANCE_MODEL
 
-    if selected_model in {"seedance2", "seedance2_fast"} and len(motion_images) < 2:
+    if selected_model in {"seedance2", "seedance2_fast"} and len(motion_images) < 1:
         await reply_target.reply_text(
-            "Для Seedance 2 / Seedance 2 Fast нужно загрузить 2 фото-референса.\n"
-            "Добавь второе фото и запусти снова.",
+            "Загрузи хотя бы 1 фото-референс и запусти снова.",
             reply_markup=motion_control_kb(state),
         )
         return

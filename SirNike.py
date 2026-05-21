@@ -51,6 +51,7 @@ from config import (
     PROMPT_WEBAPP_URL,
     REMOVE_BG_API_KEY,
     PHOTOROOM_API_KEY,
+    FAPIHUB_API_KEY,
     FAL_API_KEY,
     FAL_API_BASE,
     IMGBB_API_KEY,
@@ -2369,38 +2370,79 @@ async def build_seedance_reference_sheet_url(image_urls: List[str]) -> Optional[
 # ----------------------------
 
 async def _remove_background_api(image_bytes: bytes) -> bytes:
-    """Remove background. Uses PhotoRoom if key set, falls back to remove.bg."""
-    if PHOTOROOM_API_KEY:
-        async with aiohttp.ClientSession() as session:
-            form = aiohttp.FormData()
-            form.add_field("image_file", image_bytes, filename="photo.jpg", content_type="image/jpeg")
-            async with session.post(
-                "https://sdk.photoroom.com/v1/segment",
-                data=form,
-                headers={"x-api-key": PHOTOROOM_API_KEY},
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    raise Exception(f"PhotoRoom error {resp.status}: {body[:200]}")
-                png_bytes = await resp.read()
-    elif REMOVE_BG_API_KEY:
-        async with aiohttp.ClientSession() as session:
-            form = aiohttp.FormData()
-            form.add_field("image_file", image_bytes, filename="photo.jpg", content_type="image/jpeg")
-            form.add_field("size", "auto")
-            async with session.post(
-                "https://api.remove.bg/v1.0/removebg",
-                data=form,
-                headers={"X-Api-Key": REMOVE_BG_API_KEY},
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    raise Exception(f"remove.bg error {resp.status}: {body[:200]}")
-                png_bytes = await resp.read()
-    else:
-        raise Exception("No background removal API key configured")
+    """Remove background. Tries FAPIhub → PhotoRoom → remove.bg in order."""
+    png_bytes: Optional[bytes] = None
+    last_error = "No background removal API key configured"
+
+    if FAPIHUB_API_KEY and png_bytes is None:
+        try:
+            async with aiohttp.ClientSession() as session:
+                form = aiohttp.FormData()
+                form.add_field("image", image_bytes, filename="photo.jpg", content_type="image/jpeg")
+                async with session.post(
+                    "https://fapihub.com/v2/rembg/",
+                    data=form,
+                    headers={"ApiKey": FAPIHUB_API_KEY},
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        last_error = f"FAPIhub error {resp.status}: {body[:200]}"
+                        logger.warning("FAPIhub bg removal failed: %s", last_error)
+                    else:
+                        png_bytes = await resp.read()
+                        logger.info("Background removed via FAPIhub")
+        except Exception as e:
+            last_error = f"FAPIhub exception: {e}"
+            logger.warning("FAPIhub bg removal exception: %s", e)
+
+    if PHOTOROOM_API_KEY and png_bytes is None:
+        try:
+            async with aiohttp.ClientSession() as session:
+                form = aiohttp.FormData()
+                form.add_field("image_file", image_bytes, filename="photo.jpg", content_type="image/jpeg")
+                async with session.post(
+                    "https://sdk.photoroom.com/v1/segment",
+                    data=form,
+                    headers={"x-api-key": PHOTOROOM_API_KEY},
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        last_error = f"PhotoRoom error {resp.status}: {body[:200]}"
+                        logger.warning("PhotoRoom bg removal failed: %s", last_error)
+                    else:
+                        png_bytes = await resp.read()
+                        logger.info("Background removed via PhotoRoom")
+        except Exception as e:
+            last_error = f"PhotoRoom exception: {e}"
+            logger.warning("PhotoRoom bg removal exception: %s", e)
+
+    if REMOVE_BG_API_KEY and png_bytes is None:
+        try:
+            async with aiohttp.ClientSession() as session:
+                form = aiohttp.FormData()
+                form.add_field("image_file", image_bytes, filename="photo.jpg", content_type="image/jpeg")
+                form.add_field("size", "auto")
+                async with session.post(
+                    "https://api.remove.bg/v1.0/removebg",
+                    data=form,
+                    headers={"X-Api-Key": REMOVE_BG_API_KEY},
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        last_error = f"remove.bg error {resp.status}: {body[:200]}"
+                        logger.warning("remove.bg bg removal failed: %s", last_error)
+                    else:
+                        png_bytes = await resp.read()
+                        logger.info("Background removed via remove.bg")
+        except Exception as e:
+            last_error = f"remove.bg exception: {e}"
+            logger.warning("remove.bg bg removal exception: %s", e)
+
+    if png_bytes is None:
+        raise Exception(last_error)
 
     img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
     bg = Image.new("RGBA", img.size, (255, 255, 255, 255))

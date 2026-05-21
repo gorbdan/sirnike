@@ -63,6 +63,7 @@ PROMPT_WEBAPP_URL = os.getenv("PROMPT_WEBAPP_URL", "").strip()
 
 REMOVE_BG_API_KEY = os.getenv("REMOVE_BG_API_KEY", "").strip()
 PHOTOROOM_API_KEY = os.getenv("PHOTOROOM_API_KEY", "").strip()
+FAPIHUB_API_KEY = os.getenv("FAPIHUB_API_KEY", "").strip()
 
 FAL_API_KEY = os.getenv("FAL_API_KEY", "").strip()
 FAL_API_BASE = os.getenv("FAL_API_BASE", "https://queue.fal.run").strip()

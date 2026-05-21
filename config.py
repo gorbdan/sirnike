@@ -64,6 +64,9 @@ PROMPT_WEBAPP_URL = os.getenv("PROMPT_WEBAPP_URL", "").strip()
 REMOVE_BG_API_KEY = os.getenv("REMOVE_BG_API_KEY", "").strip()
 PHOTOROOM_API_KEY = os.getenv("PHOTOROOM_API_KEY", "").strip()
 
+FAL_API_KEY = os.getenv("FAL_API_KEY", "").strip()
+FAL_API_BASE = os.getenv("FAL_API_BASE", "https://queue.fal.run").strip()
+
 IMGBB_API_KEY = _required_env("IMGBB_API_KEY")
 PROVIDER_TOKEN = _required_env("PROVIDER_TOKEN")
 

@@ -51,6 +51,8 @@ from config import (
     PROMPT_WEBAPP_URL,
     REMOVE_BG_API_KEY,
     PHOTOROOM_API_KEY,
+    FAL_API_KEY,
+    FAL_API_BASE,
     IMGBB_API_KEY,
     START_BONUS,
     FREE_GENERATIONS_PER_DAY,
@@ -4334,15 +4336,6 @@ async def start_seedance_task(
             "duration": duration,
             "resolution": mode_value,
         }
-        if is_seedance2_model:
-            # Keep provider deterministic for reproducible quality on Seedance 2.
-            payload_base["provider"] = {
-                "preferences": {
-                    "only": ["openrouter"],
-                    "allow_fallbacks": False,
-                    "sort": "price",
-                }
-            }
     payload_variants = []
     if combined_image_urls:
         primary_image_url = combined_image_urls[0]
@@ -4520,7 +4513,142 @@ async def start_seedance_task(
             if privacy_blocked:
                 break
 
+    # Fallback to fal.ai when zveno.ai fails with 402 (no funds) or 503 (no provider)
+    zveno_retriable = (
+        "402" in last_error
+        or "503" in last_error
+        or "insufficient funds" in last_error.lower()
+        or "no available" in last_error.lower()
+    )
+    if FAL_API_KEY and zveno_retriable and not privacy_blocked:
+        logger.info("Zveno.ai unavailable (%s), falling back to fal.ai Seedance", last_error[:80])
+        return await _start_seedance_task_fal(
+            prompt=prompt,
+            combined_image_urls=combined_image_urls,
+            duration=duration,
+            mode=mode_value,
+            model_code=model_code,
+        )
+
     raise Exception(f"Seedance create task error: {last_error}")
+
+
+async def _start_seedance_task_fal(
+    prompt: str,
+    combined_image_urls: List[str],
+    duration: int,
+    mode: str,
+    model_code: Optional[str] = None,
+) -> str:
+    """Submit a Seedance 2.0 reference-to-video task via fal.ai queue API."""
+    if not FAL_API_KEY:
+        raise Exception("FAL_API_KEY is not set")
+    model_path = (
+        "bytedance/seedance-2.0/fast/reference-to-video"
+        if model_code == "seedance2_fast"
+        else "bytedance/seedance-2.0/reference-to-video"
+    )
+    # fal.ai uses @Image1..@ImageN syntax instead of [Image1]..[ImageN]
+    fal_prompt = re.sub(r'\[Image(\d+)\]', r'@Image\1', prompt)
+    resolution = mode if mode in ("480p", "720p", "1080p") else "720p"
+    payload: dict = {
+        "prompt": fal_prompt,
+        "resolution": resolution,
+        "duration": str(duration),
+        "aspect_ratio": "16:9",
+        "generate_audio": False,
+    }
+    if combined_image_urls:
+        payload["image_urls"] = combined_image_urls
+    submit_url = f"{FAL_API_BASE.rstrip('/')}/{model_path}"
+    headers = {
+        "Authorization": f"Key {FAL_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    logger.info(
+        "fal.ai Seedance submit: url=%s model=%s duration=%s refs=%s",
+        submit_url, model_path, duration, len(combined_image_urls),
+    )
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            submit_url,
+            headers=headers,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=90),
+        ) as resp:
+            response_text = await resp.text()
+            logger.info("fal.ai Seedance submit response: status=%s", resp.status)
+            if not (200 <= resp.status < 300):
+                raise Exception(f"fal.ai Seedance submit failed: {resp.status}. {response_text[:300]}")
+            try:
+                data = json.loads(response_text)
+            except json.JSONDecodeError:
+                raise Exception(f"fal.ai Seedance: non-JSON response: {response_text[:200]}")
+            request_id = data.get("request_id")
+            if not request_id:
+                raise Exception(f"fal.ai Seedance: request_id missing: {data}")
+            logger.info("fal.ai Seedance queued: request_id=%s model=%s", request_id, model_path)
+            return f"__FAL__:{model_path}:{request_id}"
+
+
+async def _poll_seedance_fal(
+    model_path: str,
+    request_id: str,
+    max_attempts: int,
+    poll_interval: int,
+) -> str:
+    """Poll fal.ai queue for Seedance 2.0 result."""
+    base = FAL_API_BASE.rstrip("/")
+    status_url = f"{base}/{model_path}/requests/{request_id}/status"
+    result_url = f"{base}/{model_path}/requests/{request_id}"
+    headers = {"Authorization": f"Key {FAL_API_KEY}"}
+    logger.info(
+        "fal.ai Seedance polling: request_id=%s max_attempts=%s interval=%ss",
+        request_id, max_attempts, poll_interval,
+    )
+    async with aiohttp.ClientSession() as session:
+        for attempt in range(max_attempts):
+            await asyncio.sleep(poll_interval)
+            logger.info("fal.ai poll tick: attempt=%s/%s", attempt + 1, max_attempts)
+            try:
+                async with session.get(
+                    status_url,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status != 200:
+                        logger.warning("fal.ai status check failed: %s", resp.status)
+                        continue
+                    data = json.loads(await resp.text())
+            except Exception as e:
+                logger.warning("fal.ai status request error: %s", e)
+                continue
+            status = str(data.get("status", "")).upper()
+            logger.info("fal.ai task %s: status=%s", request_id, status)
+            if status == "COMPLETED":
+                try:
+                    async with session.get(
+                        result_url,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as res:
+                        result_data = json.loads(await res.text())
+                except Exception as e:
+                    raise Exception(f"fal.ai result fetch error: {e}")
+                video = result_data.get("video") or {}
+                video_url = video.get("url") if isinstance(video, dict) else None
+                if not video_url:
+                    raise Exception(f"fal.ai Seedance: video URL missing in result: {result_data}")
+                logger.info("fal.ai Seedance completed: %s", video_url)
+                return video_url
+            if status in ("FAILED", "ERROR"):
+                error_msg = (
+                    data.get("error")
+                    or data.get("detail")
+                    or f"fal.ai task failed with status {status}"
+                )
+                raise Exception(str(error_msg))
+    raise Exception("Превышено время ожидания генерации видео (fal.ai)")
 
 
 async def poll_seedance_task(
@@ -4529,6 +4657,13 @@ async def poll_seedance_task(
     poll_interval: int,
     expected_refs_count: int = 0,
 ) -> str:
+    # fal.ai task — delegate to fal.ai poller
+    if task_id.startswith("__FAL__:"):
+        parts = task_id.split(":", 2)
+        fal_model = parts[1] if len(parts) > 1 else "bytedance/seedance-2.0/reference-to-video"
+        fal_req_id = parts[2] if len(parts) > 2 else ""
+        return await _poll_seedance_fal(fal_model, fal_req_id, max_attempts, poll_interval)
+
     if not ZVENO_API_KEY:
         raise Exception("ZVENO_API_KEY is empty")
 

@@ -5355,14 +5355,19 @@ async def send_generation_result_by_url(
         text="Сырник довёл магию до финала — держи результат 🔥"
     )
 
-    async with aiohttp.ClientSession() as img_session:
-        async with img_session.get(
-            image_url,
-            timeout=aiohttp.ClientTimeout(total=120)
-        ) as img_resp:
-            if img_resp.status != 200:
-                raise Exception(f"Не удалось скачать изображение: {img_resp.status}")
-            image_bytes = await img_resp.read()
+    if _is_img_ref(image_url):
+        image_bytes = _resolve_image_bytes(image_url)
+        if not image_bytes:
+            raise Exception("Изображение не найдено в кэше")
+    else:
+        async with aiohttp.ClientSession() as img_session:
+            async with img_session.get(
+                image_url,
+                timeout=aiohttp.ClientTimeout(total=120)
+            ) as img_resp:
+                if img_resp.status != 200:
+                    raise Exception(f"Не удалось скачать изображение: {img_resp.status}")
+                image_bytes = await img_resp.read()
 
     source_buffer = io.BytesIO(image_bytes)
     source_buffer.seek(0)
@@ -5714,21 +5719,17 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
 
                     image_url = extract_zveno_image_url(response_data)
                     if image_url and image_url.startswith("data:image"):
-                        comma_idx = image_url.find(",")
-                        if comma_idx != -1:
-                            try:
-                                raw_bytes = base64.b64decode(image_url[comma_idx + 1:])
-                                uploaded_url = await upload_image_bytes_to_imgbb(raw_bytes, filename="zveno_result.jpg")
-                                if uploaded_url:
-                                    image_url = uploaded_url
-                                else:
-                                    image_url = None
-                            except Exception:
-                                image_url = None
+                        try:
+                            comma_idx = image_url.find(",")
+                            raw_bytes = base64.b64decode(image_url[comma_idx + 1:]) if comma_idx != -1 else None
+                            if raw_bytes:
+                                image_url = _cache_image(raw_bytes)
+                        except Exception:
+                            image_url = None
                     if not image_url:
-                        image_bytes = extract_zveno_image_bytes(response_data)
-                        if image_bytes:
-                            image_url = await upload_image_bytes_to_imgbb(image_bytes, filename="zveno_result.jpg")
+                        image_bytes_direct = extract_zveno_image_bytes(response_data)
+                        if image_bytes_direct:
+                            image_url = _cache_image(image_bytes_direct)
                     if image_url:
                         break
 
@@ -5784,16 +5785,17 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 prompt=prompt[:500] if prompt else None,
                 username=getattr(job, "username", None),
             )
-            if RESULTS_CHANNEL_ID and image_url and image_url.startswith("http"):
+            if RESULTS_CHANNEL_ID and image_url:
                 uname = f"@{getattr(job, 'username', None)}" if getattr(job, "username", None) else f"id{user_id}"
                 channel_caption = (
                     f"🖼 Изображение\n"
                     f"👤 {uname}\n"
                     + (f"📝 {prompt[:200]}" if prompt else "")
                 ).strip()
-                async def _send_img_to_channel(url=image_url, cap=channel_caption):
+                _ch_bytes = _resolve_image_bytes(image_url) if _is_img_ref(image_url) else None
+                async def _send_img_to_channel(photo=_ch_bytes or image_url, cap=channel_caption):
                     try:
-                        await app.bot.send_photo(chat_id=RESULTS_CHANNEL_ID, photo=url, caption=cap)
+                        await app.bot.send_photo(chat_id=RESULTS_CHANNEL_ID, photo=photo, caption=cap)
                     except Exception:
                         logger.exception("Failed to post image result to channel")
                 app.create_task(_send_img_to_channel())

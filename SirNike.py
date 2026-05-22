@@ -440,6 +440,25 @@ def save_prompt_library(data: list) -> None:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
+    # Автобэкап в /app/data/ при каждом изменении
+    try:
+        from datetime import datetime as _dt
+        backup_dir = os.path.join(DATA_DIR, "pl_backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        ts = _dt.utcnow().strftime("%Y%m%d_%H%M%S")
+        backup_path = os.path.join(backup_dir, f"prompt_library_{ts}.json")
+        with open(backup_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        # Оставляем только 20 последних бэкапов
+        backups = sorted(os.listdir(backup_dir))
+        for old in backups[:-20]:
+            try:
+                os.remove(os.path.join(backup_dir, old))
+            except Exception:
+                pass
+    except Exception:
+        pass
+
 
 def refresh_prompt_library() -> None:
     global PROMPT_LIBRARY

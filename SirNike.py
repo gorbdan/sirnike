@@ -2371,23 +2371,10 @@ async def build_seedance_reference_sheet_url(image_urls: List[str]) -> Optional[
 # Grid overlay for Seedance refs
 # ----------------------------
 
-def _remove_background_rembg(image_bytes: bytes) -> bytes:
-    from rembg import remove as rembg_remove
-    return rembg_remove(image_bytes)
-
-
 async def _remove_background_api(image_bytes: bytes) -> bytes:
-    """Remove background. Tries rembg (local) → FAPIhub → PhotoRoom → remove.bg in order."""
+    """Remove background. Tries FAPIhub → PhotoRoom → remove.bg in order."""
     png_bytes: Optional[bytes] = None
-    last_error = "No background removal method available"
-
-    try:
-        loop = asyncio.get_event_loop()
-        png_bytes = await loop.run_in_executor(None, _remove_background_rembg, image_bytes)
-        logger.info("Background removed via rembg (local)")
-    except Exception as e:
-        last_error = f"rembg error: {e}"
-        logger.warning("rembg bg removal failed: %s", e)
+    last_error = "No background removal API key configured"
 
     if FAPIHUB_API_KEY and png_bytes is None:
         try:

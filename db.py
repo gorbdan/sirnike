@@ -116,9 +116,22 @@ def init_db():
             cost INTEGER NOT NULL DEFAULT 0,
             was_free INTEGER NOT NULL DEFAULT 0,
             references_count INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            result_url TEXT,
+            prompt TEXT,
+            username TEXT
         )
         """)
+
+        cur2 = conn.cursor()
+        cur2.execute("PRAGMA table_info(generation_events)")
+        ev_cols = {row[1] for row in cur2.fetchall()}
+        if "result_url" not in ev_cols:
+            conn.execute("ALTER TABLE generation_events ADD COLUMN result_url TEXT")
+        if "prompt" not in ev_cols:
+            conn.execute("ALTER TABLE generation_events ADD COLUMN prompt TEXT")
+        if "username" not in ev_cols:
+            conn.execute("ALTER TABLE generation_events ADD COLUMN username TEXT")
         conn.execute("""
         CREATE TABLE IF NOT EXISTS generation_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -483,13 +496,17 @@ def log_generation_event(
     cost: int = 0,
     was_free: bool = False,
     references_count: int = 0,
+    result_url: Optional[str] = None,
+    prompt: Optional[str] = None,
+    username: Optional[str] = None,
 ):
     with get_conn() as conn:
         conn.execute(
             """
             INSERT INTO generation_events (
-                user_id, kind, status, provider, cost, was_free, references_count, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                user_id, kind, status, provider, cost, was_free, references_count, created_at,
+                result_url, prompt, username
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -500,6 +517,9 @@ def log_generation_event(
                 1 if was_free else 0,
                 int(references_count or 0),
                 datetime.utcnow().isoformat(),
+                result_url,
+                prompt,
+                username,
             ),
         )
         conn.commit()

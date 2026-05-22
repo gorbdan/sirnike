@@ -64,6 +64,7 @@ from config import (
     MAX_POLL_ATTEMPTS,
     POLL_INTERVAL,
     ADMIN_IDS,
+    RESULTS_CHANNEL_ID,
     TEST_MODE,
     REFERRAL_BONUS_REFERRER,
     REFERRAL_BONUS_NEW_USER,
@@ -5243,6 +5244,17 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cost=selected_cost,
             was_free=False,
             references_count=len(motion_images),
+            prompt=prompt_text[:500] if prompt_text else None,
+            username=user.username,
+        )
+        uname = f"@{user.username}" if user.username else f"id{user.id}"
+        channel_caption = (
+            f"🎬 Видео | {selected_model_label}\n"
+            f"👤 {uname}\n"
+            + (f"📝 {prompt_text[:200]}" if prompt_text else "")
+        ).strip()
+        context.application.create_task(
+            _post_to_results_channel(context.application, "video", video_bytes, channel_caption)
         )
         logger.info(
             "Seedance send_video success: chat_id=%s, user_id=%s, model=%s",
@@ -5299,6 +5311,35 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     finally:
         processing_user_ids.discard(user.id)
+
+async def _post_to_results_channel(
+    app: Application,
+    kind: str,
+    media_bytes: bytes,
+    caption: str,
+) -> None:
+    if not RESULTS_CHANNEL_ID:
+        return
+    try:
+        buf = io.BytesIO(media_bytes)
+        if kind == "video":
+            buf.name = "result.mp4"
+            await app.bot.send_video(
+                chat_id=RESULTS_CHANNEL_ID,
+                video=buf,
+                caption=caption,
+                supports_streaming=True,
+            )
+        else:
+            buf.name = "result.jpg"
+            await app.bot.send_photo(
+                chat_id=RESULTS_CHANNEL_ID,
+                photo=buf,
+                caption=caption,
+            )
+    except Exception:
+        logger.exception("Failed to post result to channel %s", RESULTS_CHANNEL_ID)
+
 
 async def send_generation_result_by_url(
     app: Application,
@@ -5739,7 +5780,23 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 cost=getattr(job, "cost", 0),
                 was_free=getattr(job, "was_free", False),
                 references_count=len(references or []),
+                result_url=image_url,
+                prompt=prompt[:500] if prompt else None,
+                username=getattr(job, "username", None),
             )
+            if RESULTS_CHANNEL_ID and image_url and image_url.startswith("http"):
+                uname = f"@{getattr(job, 'username', None)}" if getattr(job, "username", None) else f"id{user_id}"
+                channel_caption = (
+                    f"🖼 Изображение\n"
+                    f"👤 {uname}\n"
+                    + (f"📝 {prompt[:200]}" if prompt else "")
+                ).strip()
+                async def _send_img_to_channel(url=image_url, cap=channel_caption):
+                    try:
+                        await app.bot.send_photo(chat_id=RESULTS_CHANNEL_ID, photo=url, caption=cap)
+                    except Exception:
+                        logger.exception("Failed to post image result to channel")
+                app.create_task(_send_img_to_channel())
             return
         except Exception as e:
             last_error_text = str(e) or repr(e)

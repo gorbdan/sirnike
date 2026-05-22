@@ -143,5 +143,6 @@ BUY_PACKS = [
 ]
 
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "320423776").split(",") if x.strip()]
+RESULTS_CHANNEL_ID = os.getenv("RESULTS_CHANNEL_ID", "").strip()
 
 TEST_MODE = os.getenv("TEST_MODE", "0").strip().lower() in ("1", "true", "yes", "on")

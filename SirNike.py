@@ -4568,7 +4568,7 @@ async def start_seedance_task(
         or "insufficient funds" in last_error.lower()
         or "no available" in last_error.lower()
     )
-    if FAL_API_KEY and zveno_retriable and not privacy_blocked and False:  # fal.ai fallback disabled
+    if FAL_API_KEY and zveno_retriable and not privacy_blocked:
         logger.info("Zveno.ai unavailable (%s), falling back to fal.ai Seedance", last_error[:80])
         return await _start_seedance_task_fal(
             prompt=prompt,
@@ -4607,7 +4607,24 @@ async def _start_seedance_task_fal(
         "generate_audio": False,
     }
     if combined_image_urls:
-        payload["image_urls"] = combined_image_urls
+        # fal.ai requires public HTTP URLs — upload data: base64 refs to catbox first
+        http_image_urls: List[str] = []
+        for url in combined_image_urls:
+            if url.startswith("data:"):
+                try:
+                    _, b64data = url.split(",", 1)
+                    img_bytes = base64.b64decode(b64data)
+                    uploaded = await _upload_bytes_to_catbox(img_bytes, "ref.jpg")
+                    if uploaded:
+                        http_image_urls.append(uploaded)
+                    else:
+                        logger.warning("fal.ai: catbox upload failed for data: ref, skipping")
+                except Exception:
+                    logger.exception("fal.ai: failed to upload data: ref to catbox, skipping")
+            else:
+                http_image_urls.append(url)
+        if http_image_urls:
+            payload["image_urls"] = http_image_urls
     submit_url = f"{FAL_API_BASE.rstrip('/')}/{model_path}"
     headers = {
         "Authorization": f"Key {FAL_API_KEY}",

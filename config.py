@@ -60,6 +60,7 @@ ZVENO_IMAGE_MODEL = os.getenv("ZVENO_IMAGE_MODEL", "google/gemini-3-pro-image-pr
 ZVENO_CHAT_MODEL = os.getenv("ZVENO_CHAT_MODEL", "google/gemini-2.5-flash")
 
 PROMPT_WEBAPP_URL = os.getenv("PROMPT_WEBAPP_URL", "").strip()
+PROMPT_LIBRARY_REMOTE_URL = os.getenv("PROMPT_LIBRARY_REMOTE_URL", "https://af469ffd.sirnike.pages.dev/prompt_library.json").strip()
 
 REMOVE_BG_API_KEY = os.getenv("REMOVE_BG_API_KEY", "").strip()
 PHOTOROOM_API_KEY = os.getenv("PHOTOROOM_API_KEY", "").strip()

@@ -50,6 +50,7 @@ from config import (
     ZVENO_IMAGE_MODEL,
     ZVENO_CHAT_MODEL,
     PROMPT_WEBAPP_URL,
+    PROMPT_LIBRARY_REMOTE_URL,
     REMOVE_BG_API_KEY,
     PHOTOROOM_API_KEY,
     FAPIHUB_API_KEY,
@@ -396,6 +397,28 @@ def _bootstrap_prompt_library_primary() -> None:
         logger.exception("Failed to bootstrap prompt library primary storage")
 
 
+def _sync_prompt_library_from_remote() -> None:
+    """Fetch prompt_library.json from Cloudflare and save as primary if valid."""
+    if not PROMPT_LIBRARY_REMOTE_URL:
+        return
+    try:
+        import urllib.request as _req
+        with _req.urlopen(PROMPT_LIBRARY_REMOTE_URL, timeout=10) as resp:
+            raw = resp.read()
+        data = json.loads(raw)
+        if not isinstance(data, list):
+            logger.warning("Remote prompt library is not a list, skipping")
+            return
+        primary_dir = os.path.dirname(PROMPT_LIBRARY_PRIMARY_PATH)
+        if primary_dir:
+            os.makedirs(primary_dir, exist_ok=True)
+        with open(PROMPT_LIBRARY_PRIMARY_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        logger.info("Prompt library synced from remote: %s (%d categories)", PROMPT_LIBRARY_REMOTE_URL, len(data))
+    except Exception as e:
+        logger.warning("Failed to sync prompt library from remote: %s", e)
+
+
 def load_prompt_library() -> list:
     _bootstrap_prompt_library_primary()
 
@@ -443,6 +466,7 @@ def load_prompt_library() -> list:
     return DEFAULT_PROMPT_LIBRARY
 
 
+_sync_prompt_library_from_remote()
 PROMPT_LIBRARY = load_prompt_library()
 
 

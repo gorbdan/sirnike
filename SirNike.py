@@ -2553,6 +2553,9 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if avatar_url and ref_url == avatar_url:
                     dropped_avatar_ref = True
                 continue
+            if ref_url.startswith("data:"):
+                valid_refs.append(ref_url)
+                continue
             ok_ref, reason_ref = await validate_image_url(ref_url)
             if ok_ref:
                 valid_refs.append(ref_url)
@@ -2562,7 +2565,7 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     dropped_avatar_ref = True
                 logger.warning(
                     "Dropped invalid image reference before Zveno request: url=%s reason=%s user_id=%s",
-                    ref_url,
+                    ref_url[:80],
                     reason_ref,
                     user.id,
                 )
@@ -5015,9 +5018,12 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     for idx, img_url in enumerate(motion_images, start=1):
+        if img_url.startswith("data:"):
+            continue
         ok_img, reason_img = await validate_image_url(img_url)
         if not ok_img:
-            await reply_target.reply_text(f"Фото-референс #{idx} недоступен: {reason_img}")
+            short_reason = reason_img[:120] if len(reason_img) > 120 else reason_img
+            await reply_target.reply_text(f"Фото-референс #{idx} недоступен: {short_reason}")
             return
 
     if motion_images:

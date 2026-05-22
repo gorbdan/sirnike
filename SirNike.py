@@ -2479,8 +2479,8 @@ async def _remove_background_api(image_bytes: bytes) -> bytes:
 
 def _apply_grid_overlay(
     image_bytes: bytes,
-    rows: int = 12,
-    cols: int = 12,
+    rows: int = 16,
+    cols: int = 16,
     line_color: tuple = (220, 220, 220),
     line_width: int = 0,
 ) -> bytes:

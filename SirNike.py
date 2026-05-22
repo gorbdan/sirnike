@@ -1961,8 +1961,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if state.waiting_for_avatar_upload:
             avatar_kind = str(getattr(state, "pending_avatar_kind", "female") or "female").strip().lower()
-            set_avatar_url(user.id, direct_url, avatar_kind)
-            state.animation_source_url = direct_url
+            persistent_url = await _persist_image_ref(direct_url)
+            set_avatar_url(user.id, persistent_url, avatar_kind)
+            state.animation_source_url = persistent_url
             state.waiting_for_avatar_upload = False
             state.pending_avatar_kind = "female"
 
@@ -5363,6 +5364,22 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         processing_user_ids.discard(user.id)
 
+async def _persist_image_ref(ref: str) -> str:
+    """Convert __img__ cache ref to a persistent catbox URL. Returns original ref if upload fails."""
+    if not _is_img_ref(ref):
+        return ref
+    img_bytes = _resolve_image_bytes(ref)
+    if not img_bytes:
+        return ref
+    try:
+        url = await _upload_bytes_to_catbox(img_bytes, "avatar.jpg")
+        if url:
+            return url
+    except Exception:
+        logger.exception("_persist_image_ref: catbox upload failed")
+    return ref
+
+
 async def _post_to_results_channel(
     app: Application,
     kind: str,
@@ -5830,7 +5847,8 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
             add_generation_history(user_id=user_id, prompt=prompt, image_url=image_url)
             await send_generation_result_by_url(app, chat_id, user_id, image_url)
             if getattr(job, "save_as_avatar", False):
-                set_avatar_url(user_id, image_url, "female")
+                persistent_avatar_url = await _persist_image_ref(image_url)
+                set_avatar_url(user_id, persistent_avatar_url, "female")
                 await app.bot.send_message(chat_id=chat_id, text="Аватар сохранён ✅")
             log_generation_event(
                 user_id=user_id,
@@ -6078,7 +6096,8 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                             add_generation_history(user_id=user_id, prompt=prompt, image_url=image_url)
                             await send_generation_result_by_url(app, chat_id, user_id, image_url)
                             if getattr(job, "save_as_avatar", False):
-                                set_avatar_url(user_id, image_url, "female")
+                                persistent_avatar_url = await _persist_image_ref(image_url)
+                                set_avatar_url(user_id, persistent_avatar_url, "female")
                                 await app.bot.send_message(chat_id=chat_id, text="Аватар сохранён ✅")
                             log_generation_event(
                                 user_id=user_id,

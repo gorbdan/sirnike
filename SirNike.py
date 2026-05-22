@@ -169,6 +169,7 @@ logger = logging.getLogger(__name__)
 
 photo_tasks = {}
 photo_counts = {}
+_image_cache: Dict[str, bytes] = {}
 last_generated_image_url = {}
 last_generated_prompt = {}
 last_generation_references = {}
@@ -1915,7 +1916,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         image_bytes = bio.read()
-        direct_url = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()
+        direct_url = _cache_image(image_bytes)
 
         if state.generating_avatar:
             state.generating_avatar = False
@@ -2505,10 +2506,13 @@ async def apply_grid_overlay_to_refs(image_urls: List[str]) -> List[str]:
     async with aiohttp.ClientSession() as session:
         for url in image_urls:
             try:
-                # Support both data: URLs (already in memory) and http: URLs
-                if url.startswith("data:"):
-                    header, b64data = url.split(",", 1)
-                    image_bytes = base64.b64decode(b64data)
+                # Support __img__ cache refs, data: URLs, and http: URLs
+                if _is_img_ref(url) or url.startswith("data:"):
+                    image_bytes = _resolve_image_bytes(url)
+                    if image_bytes is None:
+                        logger.warning("Grid overlay: image ref not found in cache: %s", url)
+                        processed.append(url)
+                        continue
                 else:
                     async with session.get(url, timeout=aiohttp.ClientTimeout(total=60), allow_redirects=True) as resp:
                         if resp.status != 200:
@@ -2525,9 +2529,9 @@ async def apply_grid_overlay_to_refs(image_urls: List[str]) -> List[str]:
                         logger.exception("Background removal failed for url=%s, skipping", url[:60])
 
                 grid_bytes = _apply_grid_overlay(image_bytes)
-                data_url = "data:image/jpeg;base64," + base64.b64encode(grid_bytes).decode()
-                logger.info("Grid overlay applied (base64): %s", url[:60])
-                processed.append(data_url)
+                grid_ref = _cache_image(grid_bytes)
+                logger.info("Grid overlay applied: %s", url[:60])
+                processed.append(grid_ref)
             except Exception:
                 logger.exception("Grid overlay failed for url=%s, using original", url[:60])
                 processed.append(url)
@@ -2576,7 +2580,7 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if avatar_url and ref_url == avatar_url:
                     dropped_avatar_ref = True
                 continue
-            if ref_url.startswith("data:"):
+            if ref_url.startswith("data:") or _is_img_ref(ref_url):
                 valid_refs.append(ref_url)
                 continue
             ok_ref, reason_ref = await validate_image_url(ref_url)
@@ -4386,6 +4390,8 @@ async def start_seedance_task(
         if candidate and candidate not in combined_image_urls:
             combined_image_urls.append(candidate)
     combined_image_urls = combined_image_urls[:MAX_SEEDANCE_IMAGE_REFERENCES]
+    # Resolve __img__ cache refs to data: URLs for API calls
+    combined_image_urls = [_ref_to_data_url(u) or u for u in combined_image_urls]
 
     prompt_text = build_seedance_prompt_with_refs((prompt or "").strip(), len(combined_image_urls))
     if len(combined_image_urls) > 1 and SEEDANCE_VIDEO_REFERENCE_MODE == "timeline":
@@ -4633,10 +4639,12 @@ async def _start_seedance_task_fal(
         # fal.ai requires public HTTP URLs — upload data: base64 refs to catbox first
         http_image_urls: List[str] = []
         for url in combined_image_urls:
-            if url.startswith("data:"):
+            if url.startswith("data:") or _is_img_ref(url):
                 try:
-                    _, b64data = url.split(",", 1)
-                    img_bytes = base64.b64decode(b64data)
+                    img_bytes = _resolve_image_bytes(url)
+                    if img_bytes is None:
+                        logger.warning("fal.ai: could not resolve image ref, skipping")
+                        continue
                     uploaded = await _upload_bytes_to_catbox(img_bytes, "ref.jpg")
                     if uploaded:
                         http_image_urls.append(uploaded)
@@ -4957,11 +4965,39 @@ async def validate_image_url(image_url: str) -> tuple[bool, str]:
         return False, str(e)        
 
 
+def _cache_image(image_bytes: bytes) -> str:
+    import hashlib
+    key = hashlib.md5(image_bytes).hexdigest()[:10]
+    _image_cache[key] = image_bytes
+    return f"__img_{key}__"
+
+
+def _is_img_ref(value: str) -> bool:
+    return isinstance(value, str) and value.startswith("__img_") and value.endswith("__")
+
+
+def _resolve_image_bytes(ref: str) -> Optional[bytes]:
+    if _is_img_ref(ref):
+        return _image_cache.get(ref[6:-2])
+    if ref.startswith("data:") and "," in ref:
+        return base64.b64decode(ref.split(",", 1)[1])
+    return None
+
+
+def _ref_to_data_url(ref: str) -> Optional[str]:
+    if ref.startswith("data:"):
+        return ref
+    img_bytes = _resolve_image_bytes(ref)
+    if img_bytes is None:
+        return None
+    return "data:image/jpeg;base64," + base64.b64encode(img_bytes).decode()
+
+
 def is_image_url_like(value: str) -> bool:
     if not isinstance(value, str):
         return False
     raw = value.strip()
-    return raw.startswith("http://") or raw.startswith("https://") or raw.startswith("data:image")
+    return raw.startswith("http://") or raw.startswith("https://") or raw.startswith("data:image") or _is_img_ref(raw)
 
 
 async def download_video_bytes_with_fallback(video_url: str) -> bytes:
@@ -5058,7 +5094,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     for idx, img_url in enumerate(motion_images, start=1):
-        if img_url.startswith("data:"):
+        if img_url.startswith("data:") or _is_img_ref(img_url):
             continue
         ok_img, reason_img = await validate_image_url(img_url)
         if not ok_img:
@@ -6198,10 +6234,12 @@ async def preview_refs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     for i, url in enumerate(processed, start=1):
         try:
-            if url.startswith("data:"):
-                _, b64data = url.split(",", 1)
-                photo_bytes = base64.b64decode(b64data)
-                await update.message.reply_photo(photo_bytes, caption=f"Реф {i}/{len(processed)}")
+            if url.startswith("data:") or _is_img_ref(url):
+                photo_bytes = _resolve_image_bytes(url)
+                if photo_bytes:
+                    await update.message.reply_photo(photo_bytes, caption=f"Реф {i}/{len(processed)}")
+                else:
+                    await update.message.reply_text(f"Реф {i}: не найден в кэше")
             else:
                 await update.message.reply_photo(url, caption=f"Реф {i}/{len(processed)}")
         except Exception:

@@ -19,9 +19,10 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    TypeHandler,
     filters,
 )
-from telegram.ext import PreCheckoutQueryHandler
+from telegram.ext import ApplicationHandlerStop, PreCheckoutQueryHandler
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -62,6 +63,7 @@ from config import (
     MAX_POLL_ATTEMPTS,
     POLL_INTERVAL,
     ADMIN_IDS,
+    TEST_MODE,
     REFERRAL_BONUS_REFERRER,
     REFERRAL_BONUS_NEW_USER,
     BUY_PACKS,
@@ -1135,6 +1137,17 @@ def result_actions_kb(user_id: int = 0, bot_username: str = "") -> InlineKeyboar
 # КОМАНДЫ ПОЛЬЗОВАТЕЛЯ: /start, /balance, /ref, /buy и т.д.
 # ══════════════════════════════════════════════════════════════
 
+async def _test_mode_guard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Block all non-admin users when TEST_MODE is on."""
+    user = update.effective_user
+    if user and user.id not in ADMIN_IDS:
+        if update.message:
+            await update.message.reply_text("Бот на техническом обслуживании. Скоро вернёмся!")
+        elif update.callback_query:
+            await update.callback_query.answer("Бот на техническом обслуживании.", show_alert=True)
+        raise ApplicationHandlerStop
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
@@ -1900,97 +1913,69 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bio.seek(0)
 
     try:
-        async with aiohttp.ClientSession() as session:
-            form = aiohttp.FormData()
-            form.add_field("image", bio.read(), filename="reference.jpg", content_type="image/jpeg")
+        image_bytes = bio.read()
+        direct_url = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()
 
-            async with session.post(
-                f"https://api.imgbb.com/1/upload?key={IMGBB_API_KEY}",
-                data=form,
-                timeout=aiohttp.ClientTimeout(total=120),
-            ) as resp:
-                body = await resp.text()
-                if resp.status != 200:
-                    logger.error(f"IMGBB upload failed: {resp.status}, body: {body}")
-                    await update.message.reply_text("Не удалось загрузить фото в imgbb. Попробуй ещё раз.")
-                    return
+        if state.generating_avatar:
+            state.generating_avatar = False
+            job = GenerationJob(
+                chat_id=update.effective_chat.id,
+                user_id=user.id,
+                prompt=AVATAR_REFSHEET_PROMPT,
+                references=[direct_url],
+                cost=0,
+                was_free=False,
+                save_as_avatar=True,
+            )
+            queued_user_ids.add(user.id)
+            await generation_queue.put(job)
+            context.user_data["state"] = UserState()
+            await update.message.reply_text(
+                "Фото получено ✅ Запускаю генерацию аватара…",
+                reply_markup=main_menu_kb(),
+            )
+            return
 
-                data = json.loads(body)
+        if state.waiting_for_avatar_upload:
+            avatar_kind = str(getattr(state, "pending_avatar_kind", "female") or "female").strip().lower()
+            set_avatar_url(user.id, direct_url, avatar_kind)
+            state.animation_source_url = direct_url
+            state.waiting_for_avatar_upload = False
+            state.pending_avatar_kind = "female"
 
-                logger.info(f"IMGBB response: {json.dumps(data, ensure_ascii=False)}")
+            await update.message.reply_text(
+                f"Аватар ({avatar_kind_label(avatar_kind)}) сохранён ✅\n"
+                "Теперь можешь просто отправлять промпты без повторной загрузки фото.",
+                reply_markup=main_menu_kb()
+            )
+            return
 
-                imgbb_data = data.get("data", {})
+        if state.waiting_for_motion_image:
+            state.motion_session_active = True
+            current_refs = get_motion_image_urls(state)
+            if len(current_refs) >= MAX_SEEDANCE_IMAGE_REFERENCES and direct_url not in current_refs:
+                await update.message.reply_text(
+                    f"Уже загружено {MAX_SEEDANCE_IMAGE_REFERENCES} фото для Seedance.\n"
+                    "Очисти референсы или замени одно из фото, затем запускай генерацию.",
+                    reply_markup=motion_control_kb(state),
+                )
+                return
+            total_refs = add_motion_image_url(state, direct_url)
+            logger.info(
+                "handle_photo: added motion image for user=%s, total=%s, animation_source_urls=%s",
+                user.id, total_refs, state.animation_source_urls,
+            )
+            await update.message.reply_text(
+                f"Фото для Seedance добавлено ✅\n"
+                f"Сейчас загружено: {total_refs}/{MAX_SEEDANCE_IMAGE_REFERENCES}\n"
+                "Использую фото как референсы персонажа.\n"
+                "Можешь отправить еще фото или запускать генерацию.",
+                reply_markup=motion_control_kb(state),
+            )
+            return
 
-                url = imgbb_data.get("url")
-                display_url = imgbb_data.get("display_url")
-                image_obj = imgbb_data.get("image", {})
-
-                direct_url = url or image_obj.get("url") or display_url
-
-                if not direct_url:
-                    await update.message.reply_text("imgbb не вернул ссылку на фото.")
-                    return
-
-                if state.generating_avatar:
-                    state.generating_avatar = False
-                    job = GenerationJob(
-                        chat_id=update.effective_chat.id,
-                        user_id=user.id,
-                        prompt=AVATAR_REFSHEET_PROMPT,
-                        references=[direct_url],
-                        cost=0,
-                        was_free=False,
-                        save_as_avatar=True,
-                    )
-                    queued_user_ids.add(user.id)
-                    await generation_queue.put(job)
-                    context.user_data["state"] = UserState()
-                    await update.message.reply_text(
-                        "Фото получено ✅ Запускаю генерацию аватара…",
-                        reply_markup=main_menu_kb(),
-                    )
-                    return
-
-                if state.waiting_for_avatar_upload:
-                    avatar_kind = str(getattr(state, "pending_avatar_kind", "female") or "female").strip().lower()
-                    set_avatar_url(user.id, direct_url, avatar_kind)
-                    state.animation_source_url = direct_url
-                    state.waiting_for_avatar_upload = False
-                    state.pending_avatar_kind = "female"
-
-                    await update.message.reply_text(
-                        f"Аватар ({avatar_kind_label(avatar_kind)}) сохранён ✅\n"
-                        "Теперь можешь просто отправлять промпты без повторной загрузки фото.",
-                        reply_markup=main_menu_kb()
-                    )
-                    return
-
-                if state.waiting_for_motion_image:
-                    state.motion_session_active = True
-                    current_refs = get_motion_image_urls(state)
-                    if len(current_refs) >= MAX_SEEDANCE_IMAGE_REFERENCES and direct_url not in current_refs:
-                        await update.message.reply_text(
-                            f"Уже загружено {MAX_SEEDANCE_IMAGE_REFERENCES} фото для Seedance.\n"
-                            "Очисти референсы или замени одно из фото, затем запускай генерацию.",
-                            reply_markup=motion_control_kb(state),
-                        )
-                        return
-                    total_refs = add_motion_image_url(state, direct_url)
-                    logger.info(
-                        "handle_photo: added motion image for user=%s, total=%s, animation_source_urls=%s",
-                        user.id, total_refs, state.animation_source_urls,
-                    )
-                    await update.message.reply_text(
-                        f"Фото для Seedance добавлено ✅\n"
-                        f"Сейчас загружено: {total_refs}/{MAX_SEEDANCE_IMAGE_REFERENCES}\n"
-                        "Использую фото как референсы персонажа.\n"
-                        "Можешь отправить еще фото или запускать генерацию.",
-                        reply_markup=motion_control_kb(state),
-                    )
-                    return
-
-                state.animation_source_url = direct_url
-                state.references.append(direct_url)
+        state.animation_source_url = direct_url
+        state.references.append(direct_url)
 
         chat_id = update.effective_chat.id
         photo_counts[chat_id] = photo_counts.get(chat_id, 0) + 1
@@ -2239,47 +2224,41 @@ async def handle_webapp_data_v2(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 # ══════════════════════════════════════════════════════════════
-# РАБОТА С МЕДИА: imgbb, удаление фона, сетка для рефов
+# РАБОТА С МЕДИА: хостинг изображений, удаление фона, сетка для рефов
 # ══════════════════════════════════════════════════════════════
 
-async def upload_image_url_to_imgbb(image_url: str) -> Optional[str]:
+async def _upload_bytes_to_catbox(image_bytes: bytes, filename: str = "image.jpg") -> Optional[str]:
+    """Upload image to catbox.moe — free, permanent, no API key required."""
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                image_url,
-                timeout=aiohttp.ClientTimeout(total=120),
-            ) as src_resp:
-                if src_resp.status != 200:
-                    logger.warning(f"Failed to fetch source image for prompt library: {src_resp.status}")
-                    return None
-                image_bytes = await src_resp.read()
-
             form = aiohttp.FormData()
-            form.add_field("image", image_bytes, filename="library_example.jpg", content_type="image/jpeg")
-
+            form.add_field("reqtype", "fileupload")
+            form.add_field("fileToUpload", image_bytes, filename=filename, content_type="image/jpeg")
             async with session.post(
-                f"https://api.imgbb.com/1/upload?key={IMGBB_API_KEY}",
+                "https://catbox.moe/user/api.php",
                 data=form,
                 timeout=aiohttp.ClientTimeout(total=120),
             ) as resp:
                 body = await resp.text()
-                if resp.status != 200:
-                    logger.warning(f"IMGBB upload for prompt library failed: {resp.status}, body: {body}")
+                if resp.status != 200 or not body.startswith("https://"):
+                    logger.warning("catbox.moe upload failed: status=%s body=%s", resp.status, body[:100])
                     return None
-                data = json.loads(body)
-                imgbb_data = data.get("data", {})
-                return imgbb_data.get("url") or (imgbb_data.get("image", {}) or {}).get("url") or imgbb_data.get("display_url")
-    except Exception:
-        logger.exception("upload_image_url_to_imgbb failed")
+                url = body.strip()
+                logger.info("catbox.moe upload ok: %s", url)
+                return url
+    except Exception as e:
+        logger.warning("catbox.moe upload exception: %s", e)
         return None
 
 
-async def upload_image_bytes_to_imgbb(image_bytes: bytes, filename: str = "import.jpg") -> Optional[str]:
+async def _upload_bytes_to_imgbb(image_bytes: bytes, filename: str = "image.jpg") -> Optional[str]:
+    """Upload image to imgbb (fallback, requires IMGBB_API_KEY)."""
+    if not IMGBB_API_KEY:
+        return None
     try:
         async with aiohttp.ClientSession() as session:
             form = aiohttp.FormData()
             form.add_field("image", image_bytes, filename=filename, content_type="image/jpeg")
-
             async with session.post(
                 f"https://api.imgbb.com/1/upload?key={IMGBB_API_KEY}",
                 data=form,
@@ -2287,7 +2266,7 @@ async def upload_image_bytes_to_imgbb(image_bytes: bytes, filename: str = "impor
             ) as resp:
                 body = await resp.text()
                 if resp.status != 200:
-                    logger.warning(f"IMGBB upload from bytes failed: {resp.status}, body: {body}")
+                    logger.warning("imgbb upload failed: status=%s body=%s", resp.status, body[:100])
                     return None
                 data = json.loads(body)
                 imgbb_data = data.get("data", {})
@@ -2296,9 +2275,32 @@ async def upload_image_bytes_to_imgbb(image_bytes: bytes, filename: str = "impor
                     or (imgbb_data.get("image", {}) or {}).get("url")
                     or imgbb_data.get("display_url")
                 )
-    except Exception:
-        logger.exception("upload_image_bytes_to_imgbb failed")
+    except Exception as e:
+        logger.warning("imgbb upload exception: %s", e)
         return None
+
+
+async def upload_image_bytes_to_imgbb(image_bytes: bytes, filename: str = "import.jpg") -> Optional[str]:
+    """Upload image bytes — tries catbox.moe first, falls back to imgbb."""
+    url = await _upload_bytes_to_catbox(image_bytes, filename)
+    if url:
+        return url
+    return await _upload_bytes_to_imgbb(image_bytes, filename)
+
+
+async def upload_image_url_to_imgbb(image_url: str) -> Optional[str]:
+    """Fetch image from URL and re-upload to hosting."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=120)) as src_resp:
+                if src_resp.status != 200:
+                    logger.warning("Failed to fetch source image: %s", src_resp.status)
+                    return None
+                image_bytes = await src_resp.read()
+    except Exception as e:
+        logger.warning("upload_image_url_to_imgbb fetch failed: %s", e)
+        return None
+    return await upload_image_bytes_to_imgbb(image_bytes, filename="image.jpg")
 
 
 async def build_seedance_reference_sheet_url(image_urls: List[str]) -> Optional[str]:
@@ -2480,14 +2482,19 @@ async def apply_grid_overlay_to_refs(image_urls: List[str]) -> List[str]:
     async with aiohttp.ClientSession() as session:
         for url in image_urls:
             try:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=60), allow_redirects=True) as resp:
-                    if resp.status != 200:
-                        logger.warning("Grid overlay: download failed status=%s url=%s", resp.status, url[:80])
-                        processed.append(url)
-                        continue
-                    image_bytes = await resp.read()
+                # Support both data: URLs (already in memory) and http: URLs
+                if url.startswith("data:"):
+                    header, b64data = url.split(",", 1)
+                    image_bytes = base64.b64decode(b64data)
+                else:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=60), allow_redirects=True) as resp:
+                        if resp.status != 200:
+                            logger.warning("Grid overlay: download failed status=%s url=%s", resp.status, url[:80])
+                            processed.append(url)
+                            continue
+                        image_bytes = await resp.read()
 
-                if PHOTOROOM_API_KEY or REMOVE_BG_API_KEY:
+                if FAPIHUB_API_KEY or PHOTOROOM_API_KEY or REMOVE_BG_API_KEY:
                     try:
                         image_bytes = await _remove_background_api(image_bytes)
                         logger.info("Background removed for ref: %s", url[:60])
@@ -2495,13 +2502,9 @@ async def apply_grid_overlay_to_refs(image_urls: List[str]) -> List[str]:
                         logger.exception("Background removal failed for url=%s, skipping", url[:60])
 
                 grid_bytes = _apply_grid_overlay(image_bytes)
-                new_url = await upload_image_bytes_to_imgbb(grid_bytes, filename="ref_grid.jpg")
-                if new_url:
-                    logger.info("Grid overlay applied: %s -> %s", url[:60], new_url[:60])
-                    processed.append(new_url)
-                else:
-                    logger.warning("Grid overlay imgbb upload failed, using original: %s", url[:60])
-                    processed.append(url)
+                data_url = "data:image/jpeg;base64," + base64.b64encode(grid_bytes).decode()
+                logger.info("Grid overlay applied (base64): %s", url[:60])
+                processed.append(data_url)
             except Exception:
                 logger.exception("Grid overlay failed for url=%s, using original", url[:60])
                 processed.append(url)
@@ -6149,9 +6152,14 @@ async def preview_refs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     for i, url in enumerate(processed, start=1):
         try:
-            await update.message.reply_photo(url, caption=f"Реф {i}/{len(processed)}")
+            if url.startswith("data:"):
+                _, b64data = url.split(",", 1)
+                photo_bytes = base64.b64decode(b64data)
+                await update.message.reply_photo(photo_bytes, caption=f"Реф {i}/{len(processed)}")
+            else:
+                await update.message.reply_photo(url, caption=f"Реф {i}/{len(processed)}")
         except Exception:
-            await update.message.reply_text(f"Реф {i}: {url}")
+            await update.message.reply_text(f"Реф {i}: не удалось отправить")
 
 
 def main():
@@ -6164,6 +6172,10 @@ def main():
         .post_shutdown(post_shutdown)
         .build()
     )
+
+    if TEST_MODE:
+        logger.warning("TEST MODE ENABLED — bot responds only to admins: %s", ADMIN_IDS)
+        app.add_handler(TypeHandler(object, _test_mode_guard), group=-999)
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("balance", balance))

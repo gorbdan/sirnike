@@ -68,7 +68,7 @@ FAPIHUB_API_KEY = os.getenv("FAPIHUB_API_KEY", "").strip()
 FAL_API_KEY = os.getenv("FAL_API_KEY", "").strip()
 FAL_API_BASE = os.getenv("FAL_API_BASE", "https://queue.fal.run").strip()
 
-IMGBB_API_KEY = _required_env("IMGBB_API_KEY")
+IMGBB_API_KEY = os.getenv("IMGBB_API_KEY", "").strip()
 PROVIDER_TOKEN = _required_env("PROVIDER_TOKEN")
 
 KLING_API_BASE = os.getenv("KLING_API_BASE", "https://api.yesai.su/v2/yesvideo")
@@ -142,3 +142,5 @@ BUY_PACKS = [
 ]
 
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "320423776").split(",") if x.strip()]
+
+TEST_MODE = os.getenv("TEST_MODE", "0").strip().lower() in ("1", "true", "yes", "on")

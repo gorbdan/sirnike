@@ -200,6 +200,7 @@ class UserState:
     pending_avatar_kind: str = "female"
     generating_avatar: bool = False
     avatar_photos: List[str] = field(default_factory=list)
+    avatar_status_msg_id: Optional[int] = None
     waiting_for_problem_report: bool = False
     motion_prompt: str = ""
     motion_video_url: Optional[str] = None
@@ -756,10 +757,21 @@ def avatar_kind_label(kind: str) -> str:
     return "женский 👩"
 
 AVATAR_REFSHEET_PROMPT = (
-    "Create a character reference sheet on one white canvas. "
-    "Show the same person in 4 views: front face, 3/4 left, side profile, and full body shot. "
-    "Keep all facial features, hair color, skin tone, and clothing identical across all views. "
-    "Clean white background, studio lighting, photorealistic style."
+    "Using the person in this reference photo, generate a single square image containing a 2x2 character reference sheet (4 cells in one image): "
+    "Top-left: FRONT VIEW (face straight at camera, neutral expression). "
+    "Top-right: SIDE PROFILE (90° left profile view). "
+    "Bottom-left: THREE-QUARTER VIEW (3/4 angle, slightly turned). "
+    "Bottom-right: FULL BODY (head to toe, same person, same clothing). "
+    "CRITICAL RULES: "
+    "- Keep the EXACT same person: same face shape, hair color/style, skin tone, clothing, body proportions. "
+    "- Each cell should have a clean, simple background (light gray or white). "
+    "- Professional character sheet layout — clear separation between cells. "
+    "- Realistic photographic style — looks like real studio photography. "
+    "- Natural skin textures, real lighting, no cartoon/illustration effects. "
+    "- Square output (1:1 aspect ratio). "
+    "- High quality, detailed rendering. "
+    "- Do NOT add any text labels, captions, or titles on the image. "
+    "Output exactly ONE square image."
 )
 
 def avatar_actions_kb() -> InlineKeyboardMarkup:
@@ -1924,13 +1936,27 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if direct_url not in state.avatar_photos:
                 state.avatar_photos.append(direct_url)
             count = len(state.avatar_photos)
-            await update.message.reply_text(
-                f"Фото {count} добавлено ✅\n"
-                "Можешь отправить ещё фото с других ракурсов или нажать «Готово».",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton(f"Готово ({count} фото) ▶️", callback_data="avatar_gen_start")
-                ]]),
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"Готово ({count} фото) ▶️", callback_data="avatar_gen_start")
+            ]])
+            status_text = (
+                f"Получено фото: {count} ✅\n"
+                "Можешь отправить ещё с других ракурсов или нажать «Готово»."
             )
+            if state.avatar_status_msg_id:
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=update.effective_chat.id,
+                        message_id=state.avatar_status_msg_id,
+                        text=status_text,
+                        reply_markup=kb,
+                    )
+                except Exception:
+                    sent = await update.message.reply_text(status_text, reply_markup=kb)
+                    state.avatar_status_msg_id = sent.message_id
+            else:
+                sent = await update.message.reply_text(status_text, reply_markup=kb)
+                state.avatar_status_msg_id = sent.message_id
             return
 
         if state.waiting_for_avatar_upload:
@@ -3254,6 +3280,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.prompt = AVATAR_REFSHEET_PROMPT
         state.references = []
         state.avatar_photos = []
+        state.avatar_status_msg_id = None
         state.generating_avatar = True
         await query.message.reply_text(
             "Отправь фото для генерации аватара 📸\n\n"

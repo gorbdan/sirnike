@@ -352,17 +352,35 @@ def _existing_prompt_library_fallbacks() -> List[str]:
 def _bootstrap_prompt_library_primary() -> None:
     """
     Ensure primary storage exists.
-    If primary file is missing, seed it from the freshest fallback (webapp/repo),
-    otherwise keep runtime edits untouched.
+    If a fallback file (uploaded manually) is newer than primary — use it.
     """
-    if os.path.exists(PROMPT_LIBRARY_PRIMARY_PATH):
-        return
-
     fallback_candidates = _existing_prompt_library_fallbacks()
-    if not fallback_candidates:
+
+    # Find the freshest fallback
+    if fallback_candidates:
+        source_path = max(fallback_candidates, key=lambda p: os.path.getmtime(p))
+    else:
+        source_path = None
+
+    primary_exists = os.path.exists(PROMPT_LIBRARY_PRIMARY_PATH)
+
+    # Copy if: primary missing, OR a fallback is newer than primary
+    should_copy = False
+    if not primary_exists:
+        should_copy = True
+    elif source_path:
+        primary_mtime = os.path.getmtime(PROMPT_LIBRARY_PRIMARY_PATH)
+        fallback_mtime = os.path.getmtime(source_path)
+        if fallback_mtime > primary_mtime + 5:  # 5-second grace to avoid false triggers
+            should_copy = True
+            logger.info(
+                "Prompt library: fallback is newer (%.0fs), will update primary",
+                fallback_mtime - primary_mtime,
+            )
+
+    if not should_copy or not source_path:
         return
 
-    source_path = max(fallback_candidates, key=lambda p: os.path.getmtime(p))
     try:
         primary_dir = os.path.dirname(PROMPT_LIBRARY_PRIMARY_PATH)
         if primary_dir:

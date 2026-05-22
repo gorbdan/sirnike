@@ -3077,7 +3077,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 image_url = pending["image_url"]
                 if _is_img_ref(image_url):
                     img_b = _resolve_image_bytes(image_url)
-                    stable_example_url = (await _upload_bytes_to_catbox(img_b, "example.jpg") if img_b else None) or image_url
+                    if img_b:
+                        stable_example_url = await _upload_bytes_to_telegraph(img_b, "example.jpg")
+                        if not stable_example_url:
+                            stable_example_url = await _upload_bytes_to_catbox(img_b, "example.jpg")
+                    stable_example_url = stable_example_url or image_url
                 else:
                     stable_example_url = await upload_image_url_to_imgbb(image_url)
                     if not stable_example_url:
@@ -4752,7 +4756,9 @@ async def _start_seedance_task_fal(
                     if img_bytes is None:
                         logger.warning("fal.ai: could not resolve image ref, skipping")
                         continue
-                    uploaded = await _upload_bytes_to_catbox(img_bytes, "ref.jpg")
+                    uploaded = await _upload_bytes_to_telegraph(img_bytes, "ref.jpg")
+                    if not uploaded:
+                        uploaded = await _upload_bytes_to_catbox(img_bytes, "ref.jpg")
                     if uploaded:
                         http_image_urls.append(uploaded)
                     else:

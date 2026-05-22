@@ -3025,9 +3025,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             else:
                 image_url = pending["image_url"]
-                stable_example_url = await upload_image_url_to_imgbb(image_url)
-                if not stable_example_url:
-                    stable_example_url = image_url
+                if _is_img_ref(image_url):
+                    img_b = _resolve_image_bytes(image_url)
+                    stable_example_url = (await _upload_bytes_to_catbox(img_b, "example.jpg") if img_b else None) or image_url
+                else:
+                    stable_example_url = await upload_image_url_to_imgbb(image_url)
+                    if not stable_example_url:
+                        stable_example_url = image_url
                 data[cat_idx]["items"].append(
                     {
                         "title": pending["title"],
@@ -3586,10 +3590,10 @@ async def prompt_library_import_from_reply(update: Update, context: ContextTypes
         bio = io.BytesIO()
         await tg_file.download_to_memory(out=bio)
         bio.seek(0)
-        stable_example_url = await upload_image_bytes_to_imgbb(bio.read(), filename=filename)
+        img_bytes = bio.read()
+        stable_example_url = await upload_image_bytes_to_imgbb(img_bytes, filename=filename)
         if not stable_example_url:
-            await update.message.reply_text("Не удалось загрузить изображение для импорта. Попробуй ещё раз.")
-            return
+            stable_example_url = _cache_image(img_bytes)
     except Exception:
         logger.exception("prompt_library_import_from_reply failed")
         await update.message.reply_text("Не удалось импортировать изображение из реплая.")

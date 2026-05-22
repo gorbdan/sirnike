@@ -5370,7 +5370,9 @@ async def _post_to_results_channel(
     caption: str,
 ) -> None:
     if not RESULTS_CHANNEL_ID:
+        logger.warning("_post_to_results_channel: RESULTS_CHANNEL_ID is not set, skipping")
         return
+    logger.info("_post_to_results_channel: posting %s to channel %s", kind, RESULTS_CHANNEL_ID)
     try:
         buf = io.BytesIO(media_bytes)
         if kind == "video":
@@ -5388,6 +5390,7 @@ async def _post_to_results_channel(
                 photo=buf,
                 caption=caption,
             )
+        logger.info("_post_to_results_channel: success kind=%s channel=%s", kind, RESULTS_CHANNEL_ID)
     except Exception:
         logger.exception("Failed to post result to channel %s", RESULTS_CHANNEL_ID)
 
@@ -5850,10 +5853,12 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 ).strip()
                 _ch_bytes = _resolve_image_bytes(image_url) if _is_img_ref(image_url) else None
                 async def _send_img_to_channel(photo=_ch_bytes or image_url, cap=channel_caption):
+                    logger.info("_send_img_to_channel: posting image to channel %s", RESULTS_CHANNEL_ID)
                     try:
                         await app.bot.send_photo(chat_id=RESULTS_CHANNEL_ID, photo=photo, caption=cap)
+                        logger.info("_send_img_to_channel: success channel=%s", RESULTS_CHANNEL_ID)
                     except Exception:
-                        logger.exception("Failed to post image result to channel")
+                        logger.exception("Failed to post image result to channel %s", RESULTS_CHANNEL_ID)
                 app.create_task(_send_img_to_channel())
             return
         except Exception as e:

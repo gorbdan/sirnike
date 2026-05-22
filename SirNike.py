@@ -53,6 +53,7 @@ from config import (
     REMOVE_BG_API_KEY,
     PHOTOROOM_API_KEY,
     FAPIHUB_API_KEY,
+    CLIPDROP_API_KEY,
     FAL_API_KEY,
     FAL_API_BASE,
     IMGBB_API_KEY,
@@ -2372,9 +2373,31 @@ async def build_seedance_reference_sheet_url(image_urls: List[str]) -> Optional[
 # ----------------------------
 
 async def _remove_background_api(image_bytes: bytes) -> bytes:
-    """Remove background. Tries FAPIhub → PhotoRoom → remove.bg in order."""
+    """Remove background. Tries Clipdrop → FAPIhub → PhotoRoom → remove.bg in order."""
     png_bytes: Optional[bytes] = None
     last_error = "No background removal API key configured"
+
+    if CLIPDROP_API_KEY and png_bytes is None:
+        try:
+            async with aiohttp.ClientSession() as session:
+                form = aiohttp.FormData()
+                form.add_field("image_file", image_bytes, filename="photo.jpg", content_type="image/jpeg")
+                async with session.post(
+                    "https://clipdrop-api.co/remove-background/v1",
+                    data=form,
+                    headers={"x-api-key": CLIPDROP_API_KEY},
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        last_error = f"Clipdrop error {resp.status}: {body[:200]}"
+                        logger.warning("Clipdrop bg removal failed: %s", last_error)
+                    else:
+                        png_bytes = await resp.read()
+                        logger.info("Background removed via Clipdrop")
+        except Exception as e:
+            last_error = f"Clipdrop exception: {e}"
+            logger.warning("Clipdrop bg removal exception: %s", e)
 
     if FAPIHUB_API_KEY and png_bytes is None:
         try:

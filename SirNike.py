@@ -5635,8 +5635,11 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
             if prompt and prompt.strip():
                 user_content.append({"type": "text", "text": prompt})
             for ref_url in (references or [])[:8]:
-                if isinstance(ref_url, str) and ref_url.startswith("http"):
-                    user_content.append({"type": "image_url", "image_url": {"url": ref_url}})
+                if not isinstance(ref_url, str):
+                    continue
+                resolved = _ref_to_data_url(ref_url) if _is_img_ref(ref_url) else ref_url
+                if resolved and (resolved.startswith("http") or resolved.startswith("data:")):
+                    user_content.append({"type": "image_url", "image_url": {"url": resolved}})
 
             base_payload = {
                 "model": ZVENO_IMAGE_MODEL,
@@ -5943,7 +5946,8 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 "outputFormat": "jpg",
             }
             if references:
-                payload["imageUrls"] = references[:8]
+                resolved_refs = [_ref_to_data_url(r) if _is_img_ref(r) else r for r in references[:8]]
+                payload["imageUrls"] = [r for r in resolved_refs if r]
             create_paths = [
                 f"/v1/tasks/{MASHAGPT_IMAGE_MODEL}",
                 f"/tasks/{MASHAGPT_IMAGE_MODEL}",
@@ -6098,7 +6102,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                     "prompt": prompt,
                     "style": "0",
                     "dimensions": "9:16",
-                    "references_urls": references,
+                    "references_urls": [_ref_to_data_url(r) if _is_img_ref(r) else r for r in (references or [])],
                     "customer_id": user_id,
                 }
 

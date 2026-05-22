@@ -5721,7 +5721,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 )
 
             request_url = build_zveno_url(ZVENO_API_BASE, "/v1/chat/completions")
-            logger.info(f"Zveno image endpoint: {request_url}")
+            logger.info("Zveno image start: user=%s refs=%s endpoint=%s", user_id, len(references or []), request_url)
 
             response_data = None
             image_url = None
@@ -5737,6 +5737,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                         timeout=aiohttp.ClientTimeout(total=180),
                     ) as resp:
                         response_text = await resp.text()
+                        logger.info("Zveno image response: status=%s attempt=%s/%s", resp.status, attempt_idx, len(payload_variants))
                         if not (200 <= resp.status < 300):
                             raise Exception(f"Zveno image error: {resp.status}. {response_text}")
                         try:
@@ -5794,6 +5795,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
             if not image_url:
                 raise Exception(extract_zveno_error_text(response_data))
 
+            logger.info("Zveno image success: user=%s image_ref=%s", user_id, str(image_url)[:60])
             last_generated_prompt[user_id] = prompt
             add_generation_history(user_id=user_id, prompt=prompt, image_url=image_url)
             await send_generation_result_by_url(app, chat_id, user_id, image_url)

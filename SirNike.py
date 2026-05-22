@@ -199,6 +199,7 @@ class UserState:
     waiting_for_avatar_upload: bool = False
     pending_avatar_kind: str = "female"
     generating_avatar: bool = False
+    avatar_photos: List[str] = field(default_factory=list)
     waiting_for_problem_report: bool = False
     motion_prompt: str = ""
     motion_video_url: Optional[str] = None
@@ -1920,22 +1921,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         direct_url = _cache_image(image_bytes)
 
         if state.generating_avatar:
-            state.generating_avatar = False
-            job = GenerationJob(
-                chat_id=update.effective_chat.id,
-                user_id=user.id,
-                prompt=AVATAR_REFSHEET_PROMPT,
-                references=[direct_url],
-                cost=0,
-                was_free=False,
-                save_as_avatar=True,
-            )
-            queued_user_ids.add(user.id)
-            await generation_queue.put(job)
-            context.user_data["state"] = UserState()
+            if direct_url not in state.avatar_photos:
+                state.avatar_photos.append(direct_url)
+            count = len(state.avatar_photos)
             await update.message.reply_text(
-                "Фото получено ✅ Запускаю генерацию аватара…",
-                reply_markup=main_menu_kb(),
+                f"Фото {count} добавлено ✅\n"
+                "Можешь отправить ещё фото с других ракурсов или нажать «Готово».",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(f"Готово ({count} фото) ▶️", callback_data="avatar_gen_start")
+                ]]),
             )
             return
 
@@ -3259,9 +3253,39 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         deactivate_motion_session(state)
         state.prompt = AVATAR_REFSHEET_PROMPT
         state.references = []
+        state.avatar_photos = []
         state.generating_avatar = True
         await query.message.reply_text(
-            "Отправь фото, на котором хорошо видно лицо — я сгенерирую аватар и сохраню его. 📸",
+            "Отправь фото для генерации аватара 📸\n\n"
+            "Чем больше фото с разных ракурсов — тем лучше результат.\n"
+            "Важно: на фото должно быть хорошо видно лицо.\n\n"
+            "Когда загрузишь все фото — нажми «Готово».",
+        )
+        return
+
+    if query.data == "avatar_gen_start":
+        state = get_or_init_state(context)
+        photos = list(state.avatar_photos)
+        if not photos:
+            await query.answer("Сначала отправь хотя бы одно фото.", show_alert=True)
+            return
+        state.generating_avatar = False
+        state.avatar_photos = []
+        job = GenerationJob(
+            chat_id=update.effective_chat.id,
+            user_id=user.id,
+            prompt=AVATAR_REFSHEET_PROMPT,
+            references=photos,
+            cost=0,
+            was_free=False,
+            save_as_avatar=True,
+        )
+        queued_user_ids.add(user.id)
+        await generation_queue.put(job)
+        context.user_data["state"] = UserState()
+        await query.message.reply_text(
+            f"Запускаю генерацию аватара по {len(photos)} фото… ✨",
+            reply_markup=main_menu_kb(),
         )
         return
 

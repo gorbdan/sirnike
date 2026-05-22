@@ -2251,6 +2251,34 @@ async def handle_webapp_data_v2(update: Update, context: ContextTypes.DEFAULT_TY
 # РАБОТА С МЕДИА: хостинг изображений, удаление фона, сетка для рефов
 # ══════════════════════════════════════════════════════════════
 
+async def _upload_bytes_to_telegraph(image_bytes: bytes, filename: str = "image.jpg") -> Optional[str]:
+    """Upload image to telegra.ph — Telegram-owned, free, no API key, VPS-friendly."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            form = aiohttp.FormData()
+            form.add_field("file", image_bytes, filename=filename, content_type="image/jpeg")
+            async with session.post(
+                "https://telegra.ph/upload",
+                data=form,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                body = await resp.text()
+                if resp.status != 200:
+                    logger.warning("telegra.ph upload failed: status=%s body=%s", resp.status, body[:100])
+                    return None
+                import json as _json
+                data = _json.loads(body)
+                if isinstance(data, list) and data and "src" in data[0]:
+                    url = "https://telegra.ph" + data[0]["src"]
+                    logger.info("telegra.ph upload ok: %s", url)
+                    return url
+                logger.warning("telegra.ph upload unexpected response: %s", body[:100])
+                return None
+    except Exception as e:
+        logger.warning("telegra.ph upload exception: %s", e)
+        return None
+
+
 async def _upload_bytes_to_catbox(image_bytes: bytes, filename: str = "image.jpg") -> Optional[str]:
     """Upload image to catbox.moe — free, permanent, no API key required."""
     try:
@@ -2305,7 +2333,10 @@ async def _upload_bytes_to_imgbb(image_bytes: bytes, filename: str = "image.jpg"
 
 
 async def upload_image_bytes_to_imgbb(image_bytes: bytes, filename: str = "import.jpg") -> Optional[str]:
-    """Upload image bytes — tries catbox.moe first, falls back to imgbb."""
+    """Upload image bytes — tries telegra.ph → catbox.moe → imgbb."""
+    url = await _upload_bytes_to_telegraph(image_bytes, filename)
+    if url:
+        return url
     url = await _upload_bytes_to_catbox(image_bytes, filename)
     if url:
         return url
@@ -5376,11 +5407,14 @@ async def _persist_image_ref(ref: str) -> str:
     if not img_bytes:
         return ref
     try:
+        url = await _upload_bytes_to_telegraph(img_bytes, "avatar.jpg")
+        if url:
+            return url
         url = await _upload_bytes_to_catbox(img_bytes, "avatar.jpg")
         if url:
             return url
     except Exception:
-        logger.exception("_persist_image_ref: catbox upload failed")
+        logger.exception("_persist_image_ref: upload failed")
     return ref
 
 

@@ -470,7 +470,19 @@ _sync_prompt_library_from_remote()
 PROMPT_LIBRARY = load_prompt_library()
 
 
+def _sort_prompt_library(data: list) -> list:
+    """Sort items within each category: added_at newest-first, then items without date."""
+    for cat in data:
+        items = cat.get("items") or []
+        with_date = [(i, it) for i, it in enumerate(items) if it.get("added_at")]
+        without_date = [it for it in items if not it.get("added_at")]
+        with_date.sort(key=lambda x: x[1]["added_at"], reverse=True)
+        cat["items"] = [it for _, it in with_date] + without_date
+    return data
+
+
 def save_prompt_library(data: list) -> None:
+    data = _sort_prompt_library(data)
     write_paths = [PROMPT_LIBRARY_PRIMARY_PATH]
     if PROMPT_LIBRARY_MIRROR_LEGACY and PROMPT_LIBRARY_LEGACY_PATH not in write_paths:
         write_paths.append(PROMPT_LIBRARY_LEGACY_PATH)
@@ -3133,6 +3145,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             data[cat_idx].setdefault("items", [])
             item_kind = str(pending.get("item_kind") or "image").strip().lower()
+            added_at_iso = datetime.utcnow().isoformat()
             if item_kind == "video":
                 data[cat_idx]["items"].append(
                     {
@@ -3141,6 +3154,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "type": "video",
                         "video_url": pending["video_url"],
                         "poster_url": pending.get("poster_url") or "",
+                        "added_at": added_at_iso,
                     }
                 )
             else:
@@ -3161,6 +3175,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "title": pending["title"],
                         "prompt": pending["prompt"],
                         "example_url": stable_example_url,
+                        "added_at": added_at_iso,
                     }
                 )
 

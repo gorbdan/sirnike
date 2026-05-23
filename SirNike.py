@@ -2340,6 +2340,34 @@ async def _upload_bytes_to_telegraph(image_bytes: bytes, filename: str = "image.
         return None
 
 
+async def _upload_bytes_to_freeimage(image_bytes: bytes, filename: str = "image.jpg") -> Optional[str]:
+    """Upload image to freeimage.host — free, permanent, no registration."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            form = aiohttp.FormData()
+            form.add_field("key", "6d207e02198a847aa98d0a2a901485a5")
+            form.add_field("action", "upload")
+            form.add_field("source", image_bytes, filename=filename, content_type="image/jpeg")
+            async with session.post(
+                "https://freeimage.host/api/1/upload",
+                data=form,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning("freeimage.host upload failed: status=%s", resp.status)
+                    return None
+                data = await resp.json()
+                url = (data.get("image") or {}).get("url")
+                if url:
+                    logger.info("freeimage.host upload ok: %s", url)
+                    return url
+                logger.warning("freeimage.host upload: no url in response")
+                return None
+    except Exception as e:
+        logger.warning("freeimage.host upload exception: %s", e)
+        return None
+
+
 async def _upload_bytes_to_catbox(image_bytes: bytes, filename: str = "image.jpg") -> Optional[str]:
     """Upload image to catbox.moe — free, permanent, no API key required."""
     try:
@@ -2394,8 +2422,8 @@ async def _upload_bytes_to_imgbb(image_bytes: bytes, filename: str = "image.jpg"
 
 
 async def upload_image_bytes_to_imgbb(image_bytes: bytes, filename: str = "import.jpg") -> Optional[str]:
-    """Upload image bytes — tries telegra.ph → catbox.moe → imgbb."""
-    url = await _upload_bytes_to_telegraph(image_bytes, filename)
+    """Upload image bytes — tries freeimage.host → catbox.moe → imgbb."""
+    url = await _upload_bytes_to_freeimage(image_bytes, filename)
     if url:
         return url
     url = await _upload_bytes_to_catbox(image_bytes, filename)
@@ -3120,7 +3148,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if _is_img_ref(image_url):
                     img_b = _resolve_image_bytes(image_url)
                     if img_b:
-                        stable_example_url = await _upload_bytes_to_telegraph(img_b, "example.jpg")
+                        stable_example_url = await _upload_bytes_to_freeimage(img_b, "example.jpg")
                         if not stable_example_url:
                             stable_example_url = await _upload_bytes_to_catbox(img_b, "example.jpg")
                     stable_example_url = stable_example_url or image_url
@@ -4798,7 +4826,7 @@ async def _start_seedance_task_fal(
                     if img_bytes is None:
                         logger.warning("fal.ai: could not resolve image ref, skipping")
                         continue
-                    uploaded = await _upload_bytes_to_telegraph(img_bytes, "ref.jpg")
+                    uploaded = await _upload_bytes_to_freeimage(img_bytes, "ref.jpg")
                     if not uploaded:
                         uploaded = await _upload_bytes_to_catbox(img_bytes, "ref.jpg")
                     if uploaded:
@@ -5474,7 +5502,7 @@ async def _persist_image_ref(ref: str) -> str:
     if not img_bytes:
         return ref
     try:
-        url = await _upload_bytes_to_telegraph(img_bytes, "avatar.jpg")
+        url = await _upload_bytes_to_freeimage(img_bytes, "avatar.jpg")
         if url:
             return url
         url = await _upload_bytes_to_catbox(img_bytes, "avatar.jpg")

@@ -314,87 +314,20 @@ DEFAULT_PROMPT_LIBRARY = [
 # БИБЛИОТЕКА ПРОМТОВ: загрузка, сохранение, пути
 # ══════════════════════════════════════════════════════════════
 
+# Primary runtime path: /app/data/prompt_library.json on Bothost, BASE_DIR locally.
+# Source of truth is the webapp repo (Cloudflare Pages); bot syncs from it at startup.
 PROMPT_LIBRARY_DATA_PATH = os.path.join(RUNTIME_DIR, "prompt_library.json")
-PROMPT_LIBRARY_LEGACY_PATH = os.path.join(os.path.dirname(__file__), "prompt_library.json")
-PROMPT_LIBRARY_WEBAPP_PATH = os.path.join(os.path.dirname(__file__), "webapp", "prompt_library.json")
-_PROMPT_LIBRARY_PRIMARY_ENV = os.getenv("PROMPT_LIBRARY_PRIMARY_PATH", "").strip()
-PROMPT_LIBRARY_MIRROR_LEGACY = os.getenv("PROMPT_LIBRARY_MIRROR_LEGACY", "0").strip() == "1"
-
-def _is_placeholder_path(path: str) -> bool:
-    p = (path or "").strip().lower().replace("\\", "/")
-    if not p:
-        return False
-    placeholder_markers = (
-        "/путь/к/",
-        "путь/к/",
-        "/path/to/",
-        "path/to/",
-        "your/path",
-        "example/path",
-    )
-    return any(marker in p for marker in placeholder_markers)
-
-
-if _PROMPT_LIBRARY_PRIMARY_ENV and not _is_placeholder_path(_PROMPT_LIBRARY_PRIMARY_ENV):
-    PROMPT_LIBRARY_PRIMARY_PATH = _PROMPT_LIBRARY_PRIMARY_ENV
-else:
-    # Single source of truth on runtime hosts (Bothost persists /app/data).
-    PROMPT_LIBRARY_PRIMARY_PATH = PROMPT_LIBRARY_DATA_PATH
-
-
-def _existing_prompt_library_fallbacks() -> List[str]:
-    paths: List[str] = []
-    for path in (PROMPT_LIBRARY_WEBAPP_PATH, PROMPT_LIBRARY_LEGACY_PATH):
-        if path != PROMPT_LIBRARY_PRIMARY_PATH and os.path.exists(path):
-            paths.append(path)
-    return paths
+PROMPT_LIBRARY_PRIMARY_PATH = os.getenv("PROMPT_LIBRARY_PRIMARY_PATH", "").strip() or PROMPT_LIBRARY_DATA_PATH
 
 
 def _bootstrap_prompt_library_primary() -> None:
-    """
-    Ensure primary storage exists.
-    If a fallback file (uploaded manually) is newer than primary — use it.
-    """
-    fallback_candidates = _existing_prompt_library_fallbacks()
-
-    # Find the freshest fallback
-    if fallback_candidates:
-        source_path = max(fallback_candidates, key=lambda p: os.path.getmtime(p))
-    else:
-        source_path = None
-
-    primary_exists = os.path.exists(PROMPT_LIBRARY_PRIMARY_PATH)
-
-    # Copy if: primary missing, OR a fallback is newer than primary
-    should_copy = False
-    if not primary_exists:
-        should_copy = True
-    elif source_path:
-        primary_mtime = os.path.getmtime(PROMPT_LIBRARY_PRIMARY_PATH)
-        fallback_mtime = os.path.getmtime(source_path)
-        if fallback_mtime > primary_mtime + 5:  # 5-second grace to avoid false triggers
-            should_copy = True
-            logger.info(
-                "Prompt library: fallback is newer (%.0fs), will update primary",
-                fallback_mtime - primary_mtime,
-            )
-
-    if not should_copy or not source_path:
-        return
-
+    """Ensure primary storage directory exists. Cloudflare Pages is source of truth."""
     try:
         primary_dir = os.path.dirname(PROMPT_LIBRARY_PRIMARY_PATH)
         if primary_dir:
             os.makedirs(primary_dir, exist_ok=True)
-        with open(source_path, "rb") as src, open(PROMPT_LIBRARY_PRIMARY_PATH, "wb") as dst:
-            dst.write(src.read())
-        logger.info(
-            "Prompt library bootstrapped: %s -> %s",
-            source_path,
-            PROMPT_LIBRARY_PRIMARY_PATH,
-        )
     except Exception:
-        logger.exception("Failed to bootstrap prompt library primary storage")
+        logger.exception("Failed to create prompt library storage directory")
 
 
 def _sync_prompt_library_from_remote() -> None:
@@ -425,9 +358,6 @@ def load_prompt_library() -> list:
     candidates: List[str] = []
     if os.path.exists(PROMPT_LIBRARY_PRIMARY_PATH):
         candidates.append(PROMPT_LIBRARY_PRIMARY_PATH)
-    for path in _existing_prompt_library_fallbacks():
-        if path not in candidates:
-            candidates.append(path)
 
     if not candidates:
         return DEFAULT_PROMPT_LIBRARY
@@ -483,16 +413,12 @@ def _sort_prompt_library(data: list) -> list:
 
 def save_prompt_library(data: list) -> None:
     data = _sort_prompt_library(data)
-    write_paths = [PROMPT_LIBRARY_PRIMARY_PATH]
-    if PROMPT_LIBRARY_MIRROR_LEGACY and PROMPT_LIBRARY_LEGACY_PATH not in write_paths:
-        write_paths.append(PROMPT_LIBRARY_LEGACY_PATH)
-
-    for path in write_paths:
-        dir_path = os.path.dirname(path)
-        if dir_path and not os.path.isdir(dir_path):
-            os.makedirs(dir_path, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+    path = PROMPT_LIBRARY_PRIMARY_PATH
+    dir_path = os.path.dirname(path)
+    if dir_path and not os.path.isdir(dir_path):
+        os.makedirs(dir_path, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
     # Автобэкап в /app/data/ при каждом изменении
     try:
@@ -4018,15 +3944,7 @@ async def prompt_library_where(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     _bootstrap_prompt_library_primary()
-    active_path = None
-    candidates: List[str] = []
-    if os.path.exists(PROMPT_LIBRARY_PRIMARY_PATH):
-        candidates.append(PROMPT_LIBRARY_PRIMARY_PATH)
-    for path in _existing_prompt_library_fallbacks():
-        if path not in candidates:
-            candidates.append(path)
-    if candidates:
-        active_path = candidates[0]
+    active_path = PROMPT_LIBRARY_PRIMARY_PATH if os.path.exists(PROMPT_LIBRARY_PRIMARY_PATH) else None
 
     if not active_path:
         await message.reply_text("Файл библиотеки не найден.")
@@ -4038,8 +3956,6 @@ async def prompt_library_where(update: Update, context: ContextTypes.DEFAULT_TYP
     await message.reply_text(
         "Текущий источник библиотеки:\n"
         f"{active_path}\n\n"
-        f"Primary path: {PROMPT_LIBRARY_PRIMARY_PATH}\n"
-        f"Legacy mirror: {'on' if PROMPT_LIBRARY_MIRROR_LEGACY else 'off'}\n\n"
         f"WebApp URL: {PROMPT_WEBAPP_URL or 'не задан'}\n\n"
         f"Обновлен: {mtime}\n"
         f"Категорий: {cats}\n"

@@ -331,8 +331,12 @@ def _bootstrap_prompt_library_primary() -> None:
 
 
 def _sync_prompt_library_from_remote() -> None:
-    """Fetch prompt_library.json from Cloudflare and save as primary if valid."""
+    """Seed prompt_library.json from Cloudflare ONLY on first boot (local file absent).
+    If the local file already exists it is the authoritative version — do not overwrite it."""
     if not PROMPT_LIBRARY_REMOTE_URL:
+        return
+    if os.path.exists(PROMPT_LIBRARY_PRIMARY_PATH):
+        logger.info("Prompt library already exists locally — skipping remote sync")
         return
     try:
         import urllib.request as _req
@@ -347,9 +351,9 @@ def _sync_prompt_library_from_remote() -> None:
             os.makedirs(primary_dir, exist_ok=True)
         with open(PROMPT_LIBRARY_PRIMARY_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        logger.info("Prompt library synced from remote: %s (%d categories)", PROMPT_LIBRARY_REMOTE_URL, len(data))
+        logger.info("Prompt library seeded from remote: %s (%d categories)", PROMPT_LIBRARY_REMOTE_URL, len(data))
     except Exception as e:
-        logger.warning("Failed to sync prompt library from remote: %s", e)
+        logger.warning("Failed to seed prompt library from remote: %s", e)
 
 
 def load_prompt_library() -> list:

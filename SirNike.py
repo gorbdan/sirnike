@@ -4015,6 +4015,62 @@ async def prompt_library_sync_from_cloudflare(update: Update, context: ContextTy
         await message.reply_text(f"❌ Ошибка синхронизации: {e}")
 
 
+async def prompt_library_list_backups(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List available backup files and send the requested one."""
+    user = update.effective_user
+    message = update.effective_message
+    if not message or not is_admin(user.id):
+        return
+
+    backup_dir = os.path.join(DATA_DIR, "pl_backups")
+    args = (context.args or [])
+
+    # If a number is passed — send that backup file
+    if args and args[0].isdigit():
+        idx = int(args[0])
+        try:
+            files = sorted(os.listdir(backup_dir), reverse=True)
+            if idx < 1 or idx > len(files):
+                await message.reply_text(f"Нет бэкапа №{idx}. Всего бэкапов: {len(files)}")
+                return
+            path = os.path.join(backup_dir, files[idx - 1])
+            data = json.load(open(path, encoding="utf-8"))
+            total = sum(len(c.get("items", [])) for c in data)
+            with open(path, "rb") as f:
+                doc = io.BytesIO(f.read())
+            doc.name = files[idx - 1]
+            await message.reply_document(
+                document=doc,
+                caption=f"Бэкап №{idx}: {files[idx - 1]}\nКатегорий: {len(data)}, шаблонов: {total}",
+            )
+        except Exception:
+            logger.exception("Failed to send backup")
+            await message.reply_text("Не удалось отправить бэкап.")
+        return
+
+    # No args — list backups
+    if not os.path.isdir(backup_dir):
+        await message.reply_text("Папка бэкапов не найдена.")
+        return
+    files = sorted(os.listdir(backup_dir), reverse=True)
+    if not files:
+        await message.reply_text("Бэкапов нет.")
+        return
+    lines = []
+    for i, name in enumerate(files[:20], 1):
+        path = os.path.join(backup_dir, name)
+        try:
+            data = json.load(open(path, encoding="utf-8"))
+            total = sum(len(c.get("items", [])) for c in data)
+            lines.append(f"{i}. {name} — {total} шаблонов")
+        except Exception:
+            lines.append(f"{i}. {name} — (ошибка чтения)")
+    await message.reply_text(
+        "Бэкапы (новые сверху):\n\n" + "\n".join(lines) +
+        "\n\nЧтобы скачать: /pl_backups <номер>"
+    )
+
+
 async def prompt_library_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = update.effective_message
@@ -6546,6 +6602,7 @@ def main():
     app.add_handler(CommandHandler("pl_history", prompt_library_history_command))
     app.add_handler(CommandHandler("pl_export", prompt_library_export))
     app.add_handler(CommandHandler("pl_sync", prompt_library_sync_from_cloudflare))
+    app.add_handler(CommandHandler("pl_backups", prompt_library_list_backups))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VIDEO, handle_video))
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data_v2))

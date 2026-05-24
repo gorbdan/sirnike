@@ -340,7 +340,11 @@ def _sync_prompt_library_from_remote() -> None:
         return
     try:
         import urllib.request as _req
-        with _req.urlopen(PROMPT_LIBRARY_REMOTE_URL, timeout=10) as resp:
+        req = _req.Request(
+            PROMPT_LIBRARY_REMOTE_URL,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; SirNikeBot/1.0)"},
+        )
+        with _req.urlopen(req, timeout=10) as resp:
             raw = resp.read()
         data = json.loads(raw)
         if not isinstance(data, list):
@@ -3984,7 +3988,11 @@ async def prompt_library_sync_from_cloudflare(update: Update, context: ContextTy
     await message.reply_text("⏳ Синхронизирую с Cloudflare…")
     try:
         import urllib.request as _req
-        with _req.urlopen(PROMPT_LIBRARY_REMOTE_URL, timeout=15) as resp:
+        req = _req.Request(
+            PROMPT_LIBRARY_REMOTE_URL,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; SirNikeBot/1.0)"},
+        )
+        with _req.urlopen(req, timeout=15) as resp:
             raw = resp.read()
         data = json.loads(raw)
         if not isinstance(data, list):

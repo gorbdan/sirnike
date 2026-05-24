@@ -3967,6 +3967,46 @@ async def prompt_library_where(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 
+async def prompt_library_sync_from_cloudflare(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Force-pull prompt_library.json from Cloudflare Pages, overwrite local copy."""
+    user = update.effective_user
+    message = update.effective_message
+    if not message:
+        return
+    if not is_admin(user.id):
+        await message.reply_text("У тебя нет доступа к этой команде.")
+        return
+
+    if not PROMPT_LIBRARY_REMOTE_URL:
+        await message.reply_text("PROMPT_LIBRARY_REMOTE_URL не задан в .env")
+        return
+
+    await message.reply_text("⏳ Синхронизирую с Cloudflare…")
+    try:
+        import urllib.request as _req
+        with _req.urlopen(PROMPT_LIBRARY_REMOTE_URL, timeout=15) as resp:
+            raw = resp.read()
+        data = json.loads(raw)
+        if not isinstance(data, list):
+            await message.reply_text("❌ Ответ с Cloudflare не является списком категорий.")
+            return
+        primary_dir = os.path.dirname(PROMPT_LIBRARY_PRIMARY_PATH)
+        if primary_dir:
+            os.makedirs(primary_dir, exist_ok=True)
+        with open(PROMPT_LIBRARY_PRIMARY_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        refresh_prompt_library()
+        total = sum(len(c.get("items", [])) for c in data)
+        await message.reply_text(
+            f"✅ Библиотека обновлена с Cloudflare.\n"
+            f"Категорий: {len(data)}, шаблонов: {total}"
+        )
+        logger.info("Prompt library force-synced from Cloudflare by admin %s", user.id)
+    except Exception as e:
+        logger.exception("Failed to force-sync prompt library from Cloudflare")
+        await message.reply_text(f"❌ Ошибка синхронизации: {e}")
+
+
 async def prompt_library_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = update.effective_message
@@ -6497,6 +6537,7 @@ def main():
     app.add_handler(CommandHandler("pl_where", prompt_library_where))
     app.add_handler(CommandHandler("pl_history", prompt_library_history_command))
     app.add_handler(CommandHandler("pl_export", prompt_library_export))
+    app.add_handler(CommandHandler("pl_sync", prompt_library_sync_from_cloudflare))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VIDEO, handle_video))
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data_v2))

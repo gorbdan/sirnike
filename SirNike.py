@@ -120,6 +120,7 @@ from db import (
     get_avatar_url,
     get_avatar_urls,
     clear_avatar_url,
+    purge_stale_avatar_refs,
     log_generation_event,
     get_audience_overview,
     add_generation_history,
@@ -1969,16 +1970,19 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if state.waiting_for_avatar_upload:
             avatar_kind = str(getattr(state, "pending_avatar_kind", "female") or "female").strip().lower()
             persistent_url = await _persist_image_ref(direct_url)
-            set_avatar_url(user.id, persistent_url, avatar_kind)
-            state.animation_source_url = persistent_url
+            if persistent_url:
+                set_avatar_url(user.id, persistent_url, avatar_kind)
+                state.animation_source_url = persistent_url
+                saved_msg = f"Аватар ({avatar_kind_label(avatar_kind)}) сохранён ✅\nТеперь можешь просто отправлять промпты без повторной загрузки фото."
+            else:
+                state.animation_source_url = direct_url  # keep in-memory for this session
+                saved_msg = (
+                    f"Фото получено, но сохранить аватар не удалось — все хостинги недоступны.\n"
+                    "В этой сессии аватар работает, но после перезапуска бота его нужно загрузить снова."
+                )
             state.waiting_for_avatar_upload = False
             state.pending_avatar_kind = "female"
-
-            await update.message.reply_text(
-                f"Аватар ({avatar_kind_label(avatar_kind)}) сохранён ✅\n"
-                "Теперь можешь просто отправлять промпты без повторной загрузки фото.",
-                reply_markup=main_menu_kb()
-            )
+            await update.message.reply_text(saved_msg, reply_markup=main_menu_kb())
             return
 
         if state.waiting_for_motion_image:
@@ -5534,12 +5538,13 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         processing_user_ids.discard(user.id)
 
 async def _persist_image_ref(ref: str) -> str:
-    """Convert __img__ cache ref to a persistent catbox URL. Returns original ref if upload fails."""
+    """Upload __img__ cache ref to permanent hosting. Returns persistent URL or empty string on failure."""
     if not _is_img_ref(ref):
         return ref
     img_bytes = _resolve_image_bytes(ref)
     if not img_bytes:
-        return ref
+        logger.warning("_persist_image_ref: cache miss for ref %s", ref)
+        return ""
     try:
         url = await _upload_bytes_to_freeimage(img_bytes, "avatar.jpg")
         if url:
@@ -5547,9 +5552,15 @@ async def _persist_image_ref(ref: str) -> str:
         url = await _upload_bytes_to_catbox(img_bytes, "avatar.jpg")
         if url:
             return url
+        url = await _upload_image_to_imgbb(img_bytes)
+        if url:
+            return url
     except Exception:
-        logger.exception("_persist_image_ref: upload failed")
-    return ref
+        logger.exception("_persist_image_ref: all uploads failed")
+    logger.error(
+        "_persist_image_ref: could not upload avatar to any host — avatar will NOT be saved to DB"
+    )
+    return ""
 
 
 async def _post_to_results_channel(
@@ -6020,8 +6031,11 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
             await send_generation_result_by_url(app, chat_id, user_id, image_url)
             if getattr(job, "save_as_avatar", False):
                 persistent_avatar_url = await _persist_image_ref(image_url)
-                set_avatar_url(user_id, persistent_avatar_url, "female")
-                await app.bot.send_message(chat_id=chat_id, text="Аватар сохранён ✅")
+                if persistent_avatar_url:
+                    set_avatar_url(user_id, persistent_avatar_url, "female")
+                    await app.bot.send_message(chat_id=chat_id, text="Аватар сохранён ✅")
+                else:
+                    await app.bot.send_message(chat_id=chat_id, text="⚠️ Аватар сгенерирован, но сохранить не удалось — хостинг недоступен. Загрузи фото вручную через меню.")
             log_generation_event(
                 user_id=user_id,
                 kind="image",
@@ -6269,8 +6283,11 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                             await send_generation_result_by_url(app, chat_id, user_id, image_url)
                             if getattr(job, "save_as_avatar", False):
                                 persistent_avatar_url = await _persist_image_ref(image_url)
-                                set_avatar_url(user_id, persistent_avatar_url, "female")
-                                await app.bot.send_message(chat_id=chat_id, text="Аватар сохранён ✅")
+                                if persistent_avatar_url:
+                                    set_avatar_url(user_id, persistent_avatar_url, "female")
+                                    await app.bot.send_message(chat_id=chat_id, text="Аватар сохранён ✅")
+                                else:
+                                    await app.bot.send_message(chat_id=chat_id, text="⚠️ Аватар сгенерирован, но сохранить не удалось — хостинг недоступен. Загрузи фото вручную через меню.")
                             log_generation_event(
                                 user_id=user_id,
                                 kind="image",
@@ -6560,6 +6577,7 @@ async def preview_refs(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     init_db()
+    purge_stale_avatar_refs()
 
     app = (
         Application.builder()

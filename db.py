@@ -292,6 +292,13 @@ def _avatar_column(kind: str) -> str:
 
 
 def set_avatar_url(user_id: int, avatar_url: str, kind: str = "female"):
+    # Never persist in-memory cache refs — they evaporate on restart
+    if not avatar_url or avatar_url.startswith("__img_"):
+        logger.warning(
+            "set_avatar_url: refused to save non-persistent ref for user %s kind=%s ref=%s",
+            user_id, kind, avatar_url[:40] if avatar_url else "None",
+        )
+        return
     col = _avatar_column(kind)
     with get_conn() as conn:
         conn.execute(
@@ -350,6 +357,29 @@ def clear_avatar_url(user_id: int, kind: str = "female"):
                 (user_id,),
             )
         conn.commit()
+
+
+def purge_stale_avatar_refs() -> int:
+    """Clear any __img__ cache refs from avatar columns — they evaporate on restart."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """UPDATE users SET
+                avatar_url          = CASE WHEN avatar_url          LIKE '__img_%' THEN NULL ELSE avatar_url          END,
+                avatar_female_url   = CASE WHEN avatar_female_url   LIKE '__img_%' THEN NULL ELSE avatar_female_url   END,
+                avatar_male_url     = CASE WHEN avatar_male_url     LIKE '__img_%' THEN NULL ELSE avatar_male_url     END,
+                avatar_child_url    = CASE WHEN avatar_child_url    LIKE '__img_%' THEN NULL ELSE avatar_child_url    END
+            WHERE avatar_url LIKE '__img_%'
+               OR avatar_female_url LIKE '__img_%'
+               OR avatar_male_url   LIKE '__img_%'
+               OR avatar_child_url  LIKE '__img_%'
+            """
+        )
+        count = cur.rowcount
+        conn.commit()
+    if count:
+        logger.warning("purge_stale_avatar_refs: cleared __img__ refs from %d user(s)", count)
+    return count
 
 
 def payment_exists(payment_id: str) -> bool:

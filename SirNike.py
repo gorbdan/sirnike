@@ -4206,6 +4206,7 @@ async def _queue_worker_supervised(app: Application):
         except Exception:
             logger.exception("queue_worker crashed unexpectedly — restarting in 3s")
             processing_user_ids.clear()
+            queued_user_ids.clear()
             await asyncio.sleep(3)
 
 

@@ -1201,27 +1201,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     avatar_urls = get_avatar_urls(user.id)
     avatar_status = ", ".join([avatar_kind_label(k) for k, v in avatar_urls.items() if v]) or "нет"
 
-    text = (
-        f"Привет от Сырника! 🧀\n\n"
-        f"Отправь фото и текст → получи красивый AI-образ.\n\n"
-        f"Баланс: {bal} изюминок · бесплатно сегодня: {free_count}/{FREE_GENERATIONS_PER_DAY}\n"
-        f"Аватары: {avatar_status}\n"
-    )
-    await update.message.reply_text(text, reply_markup=main_menu_kb())
-
     if is_new_user:
-        onboarding_text = (
+        text = (
+            f"Привет от Сырника! 🧀\n\n"
             f"Тебе начислено {START_BONUS} изюминок в подарок 🎁\n\n"
             "Как получить первый образ:\n"
-            "1. Нажми «Библиотека промптов 📚» — выбери стиль из готовых шаблонов\n"
-            "2. Загрузи своё фото — бот запомнит его как аватар и будет использовать автоматически\n"
-            "3. Нажми «Запустить генерацию ⚡» — результат придёт через ~30 секунд\n\n"
-            f"Стоимость: {BASE_GENERATION_COST} изюминок за фото · чуть больше за видео\n"
-            f"Каждый день {FREE_GENERATIONS_PER_DAY} генерация бесплатно 🆓\n\n"
-            "Пополнить изюминки: «Купить изюминки 💰»\n"
-            "Пригласить друга и получить бонус: /ref"
+            "1. «Библиотека промптов 📚» — выбери стиль\n"
+            "2. Загрузи фото — аватар сохранится автоматически\n"
+            "3. «Запустить генерацию ⚡» — результат через ~30 сек\n\n"
+            f"Стоимость: {BASE_GENERATION_COST} изюминок за фото · каждый день {FREE_GENERATIONS_PER_DAY} бесплатно 🆓\n"
+            "Друзья: /ref · Пополнить: «Купить изюминки 💰»"
         )
-        await update.message.reply_text(onboarding_text, reply_markup=main_menu_kb())
+    else:
+        text = (
+            f"Привет от Сырника! 🧀\n\n"
+            f"Баланс: {bal} изюминок · бесплатно сегодня: {free_count}/{FREE_GENERATIONS_PER_DAY}\n"
+            f"Аватары: {avatar_status}\n"
+        )
+    await update.message.reply_text(text, reply_markup=main_menu_kb())
 
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user

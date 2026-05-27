@@ -3378,6 +3378,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "seedance_retry":
+        user_r = update.effective_user
+        if user_r.id in queued_user_ids or user_r.id in processing_user_ids:
+            await query.answer("Уже выполняется другая задача. Подожди.", show_alert=False)
+            return
         state = get_or_init_state(context)
         state.motion_session_active = False
         context.application.create_task(run_seedance(update, context))
@@ -5376,6 +5380,9 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Reserve slot immediately to prevent concurrent launches during async validation below
+    processing_user_ids.add(user.id)
+
     motion_images = get_motion_image_urls(state)
     logger.info(
         "run_seedance: user=%s animation_source_urls=%s motion_prompt=%r",
@@ -5384,6 +5391,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     prompt_text = (state.motion_prompt or "").strip()
     if not motion_images and not prompt_text:
+        processing_user_ids.discard(user.id)
         await reply_target.reply_text(
             "Для Seedance добавь изображение и/или промпт, затем запусти снова."
         )
@@ -5395,6 +5403,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ok_img, reason_img = await validate_image_url(img_url)
         if not ok_img:
             short_reason = reason_img[:120] if len(reason_img) > 120 else reason_img
+            processing_user_ids.discard(user.id)
             await reply_target.reply_text(f"Фото-референс #{idx} недоступен: {short_reason}")
             return
 
@@ -5411,27 +5420,28 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     selected_model_slug = SEEDANCE_FAST_MODEL if selected_model == "seedance2_fast" else SEEDANCE_MODEL
 
     if selected_model in {"seedance2", "seedance2_fast"} and len(motion_images) < 1:
+        processing_user_ids.discard(user.id)
         await reply_target.reply_text(
-            "Загрузи хотя бы 1 фото-референс и запусти снова.",
+            "Загрузи хотя бы 1 фото-ференс и запусти снова.",
             reply_markup=motion_control_kb(state),
         )
         return
 
     bal = get_balance(user.id)
     if bal < selected_cost:
+        processing_user_ids.discard(user.id)
         await reply_target.reply_text(
             f"Не хватает изюминок.\nНужно: {selected_cost}\nУ тебя: {bal}\n\nНапиши /buy."
         )
         return
 
     if not spend_izyminki(user.id, selected_cost):
+        processing_user_ids.discard(user.id)
         await reply_target.reply_text("Не удалось списать изюминки. Попробуй ещё раз.")
         return
 
     eta_min = max(2, int(selected_duration * 0.8))
     eta_max = max(eta_min + 1, int(selected_duration * 2.0))
-
-    processing_user_ids.add(user.id)
     try:
         await reply_target.reply_text(
             f"Запускаю {selected_model_label} 🎬\n"

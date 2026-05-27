@@ -295,15 +295,25 @@ def mark_referral_bonus(user_id: int) -> bool:
         return cur.rowcount > 0
 
 
+_AVATAR_COLUMNS = {
+    "female": "avatar_female_url",
+    "male": "avatar_male_url",
+    "child": "avatar_child_url",
+}
+_AVATAR_COLUMN_ALIASES = {
+    "default": "female", "main": "female", "woman": "female",
+    "man": "male",
+    "kid": "child", "children": "child",
+}
+_AVATAR_COLUMN_SAFE = frozenset(_AVATAR_COLUMNS.values())
+
+
 def _avatar_column(kind: str) -> str:
     raw = (kind or "female").strip().lower()
-    if raw in {"default", "main", "woman", "female"}:
-        return "avatar_female_url"
-    if raw in {"man", "male"}:
-        return "avatar_male_url"
-    if raw in {"kid", "child", "children"}:
-        return "avatar_child_url"
-    return "avatar_female_url"
+    normalized = _AVATAR_COLUMN_ALIASES.get(raw, raw)
+    col = _AVATAR_COLUMNS.get(normalized, "avatar_female_url")
+    assert col in _AVATAR_COLUMN_SAFE, f"unsafe column name: {col!r}"
+    return col
 
 
 def set_avatar_url(user_id: int, avatar_url: str, kind: str = "female"):

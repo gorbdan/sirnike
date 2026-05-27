@@ -2166,7 +2166,12 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
         try:
             cat_idx = int(payload.get("cat_idx") if payload.get("cat_idx") is not None else payload.get("ci"))
             item_idx = int(payload.get("item_idx") if payload.get("item_idx") is not None else payload.get("ii"))
-            item = PROMPT_LIBRARY[cat_idx]["items"][item_idx]
+            if not (0 <= cat_idx < len(PROMPT_LIBRARY)):
+                raise ValueError(f"cat_idx out of range: {cat_idx}")
+            cat_items = PROMPT_LIBRARY[cat_idx].get("items") or []
+            if not (0 <= item_idx < len(cat_items)):
+                raise ValueError(f"item_idx out of range: {item_idx}")
+            item = cat_items[item_idx]
             resolved_title = str(item.get("title") or "").strip()
             resolved_prompt = str(item.get("prompt") or "").strip()
             if resolved_title:

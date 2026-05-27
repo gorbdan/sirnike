@@ -5464,23 +5464,6 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "output audio may contain sensitive information" in err_text
                     or "sensitive information" in err_text
                 )
-                timeout_like = (
-                    "превышено время ожидания" in err_text
-                    or "polling exceeded" in err_text
-                    or "timeout" in err_text
-                )
-                if seedance_attempt < max_seedance_attempts and timeout_like:
-                    logger.warning(
-                        "Seedance attempt timeout. Auto-restart same model: attempt=%s/%s user_id=%s model=%s",
-                        seedance_attempt,
-                        max_seedance_attempts,
-                        user.id,
-                        selected_model,
-                    )
-                    await reply_target.reply_text(
-                        "Генерация зависла в очереди. Автоматически перезапускаю задачу на той же модели..."
-                    )
-                    continue
                 if seedance_attempt < max_seedance_attempts and sensitive_audio_like:
                     logger.warning(
                         "Seedance moderation fail. Auto-restart with silent-safe prompt: attempt=%s/%s user_id=%s model=%s",

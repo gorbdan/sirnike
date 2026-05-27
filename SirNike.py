@@ -2677,9 +2677,13 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Reserve slot immediately — before any awaits — to prevent concurrent submissions
+    queued_user_ids.add(user.id)
+
     state = get_or_init_state(context)
 
     if not state.prompt:
+        queued_user_ids.discard(user.id)
         await reply_target.reply_text("Сначала отправь текст промпта.")
         return
 
@@ -2730,6 +2734,7 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "Загрузи новый аватар, если хочешь снова использовать авто-референс."
                 )
             if original_refs_count > 0 and len(valid_refs) == 0:
+                queued_user_ids.discard(user.id)
                 await reply_target.reply_text(
                     "Все фото-референсы сейчас недоступны (битые или удалённые ссылки).\n"
                     "Перезагрузи фото и запусти генерацию снова."
@@ -2745,6 +2750,7 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not use_free:
         bal = get_balance(user.id)
         if bal < cost:
+            queued_user_ids.discard(user.id)
             await reply_target.reply_text(
                 f"Не хватает изюминок.\n"
                 f"Нужно: {cost}\n"
@@ -2754,6 +2760,7 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if not spend_izyminki(user.id, cost):
+            queued_user_ids.discard(user.id)
             await reply_target.reply_text("Не удалось списать изюминки. Попробуй ещё раз.")
             return
 
@@ -2774,9 +2781,6 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cost=cost if paid else 0,
             was_free=use_free,
 )
-        
-
-        queued_user_ids.add(user.id)
         await generation_queue.put(job)
 
         await reply_target.reply_text(

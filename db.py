@@ -263,6 +263,19 @@ def use_free_generation(user_id: int):
         conn.commit()
 
 
+def restore_free_generation(user_id: int):
+    """Undo a use_free_generation call — used when generation fails after the slot was consumed."""
+    today = date.today().isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE users
+               SET free_used_count = MAX(0, free_used_count - 1)
+               WHERE user_id = ? AND free_used_date = ?""",
+            (user_id, today),
+        )
+        conn.commit()
+
+
 def has_referral_bonus(user_id: int) -> bool:
     with get_conn() as conn:
         cur = conn.cursor()
@@ -271,13 +284,15 @@ def has_referral_bonus(user_id: int) -> bool:
         return bool(row and row[0] == 1)
 
 
-def mark_referral_bonus(user_id: int):
+def mark_referral_bonus(user_id: int) -> bool:
+    """Atomically mark referral bonus as given. Returns True if this call was first (not already marked)."""
     with get_conn() as conn:
-        conn.execute(
-            "UPDATE users SET referral_bonus_given = 1 WHERE user_id = ?",
+        cur = conn.execute(
+            "UPDATE users SET referral_bonus_given = 1 WHERE user_id = ? AND (referral_bonus_given IS NULL OR referral_bonus_given = 0)",
             (user_id,)
         )
         conn.commit()
+        return cur.rowcount > 0
 
 
 def _avatar_column(kind: str) -> str:

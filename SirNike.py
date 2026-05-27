@@ -121,6 +121,7 @@ from db import (
     get_avatar_urls,
     clear_avatar_url,
     purge_stale_avatar_refs,
+    restore_free_generation,
     log_generation_event,
     get_audience_overview,
     add_generation_history,
@@ -1188,10 +1189,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     is_new_user = create_user_if_not_exists(user.id, user.username, START_BONUS, referrer_id=referrer_id)
 
-    if referrer_id and not has_referral_bonus(user.id):
+    if referrer_id and is_new_user and mark_referral_bonus(user.id):
         add_izyminki(user.id, REFERRAL_BONUS_NEW_USER)
         add_izyminki(referrer_id, REFERRAL_BONUS_REFERRER)
-        mark_referral_bonus(user.id)
 
     bal = get_balance(user.id)
     free_date, free_count = get_free_info(user.id)
@@ -1212,10 +1212,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         onboarding_text = (
             f"Тебе начислено {START_BONUS} изюминок в подарок 🎁\n\n"
             "Как получить первый образ:\n"
-            "1. Открой «Библиотека промптов 📚» и выбери стиль\n"
-            "2. Добавь своё фото (необязательно)\n"
-            "3. Нажми «Запустить генерацию⚡»\n\n"
-            "Одна генерация = 5 изюминок. Каждый день 1 бесплатно 🆓"
+            "1. Нажми «Библиотека промптов 📚» — выбери стиль из готовых шаблонов\n"
+            "2. Загрузи своё фото — бот запомнит его как аватар и будет использовать автоматически\n"
+            "3. Нажми «Запустить генерацию ⚡» — результат придёт через ~30 секунд\n\n"
+            f"Стоимость: {BASE_GENERATION_COST} изюминок за фото · чуть больше за видео\n"
+            f"Каждый день {FREE_GENERATIONS_PER_DAY} генерация бесплатно 🆓\n\n"
+            "Пополнить изюминки: «Купить изюминки 💰»\n"
+            "Пригласить друга и получить бонус: /ref"
         )
         await update.message.reply_text(onboarding_text, reply_markup=main_menu_kb())
 
@@ -1442,14 +1445,25 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
     payment_id = payment.telegram_payment_charge_id
     payload = payment.invoice_payload
 
-    _, count_str, price_str = payload.split("_")
-    count = int(count_str)
+    try:
+        parts = payload.split("_")
+        if len(parts) < 2:
+            raise ValueError("too few parts")
+        count = int(parts[1])
+        if count <= 0:
+            raise ValueError("non-positive count")
+        valid_counts = {p["count"] for p in BUY_PACKS}
+        if count not in valid_counts:
+            raise ValueError(f"unknown pack count: {count}")
+    except Exception as e:
+        logger.error("Invalid payment payload %r from user %s: %s", payload, user.id, e)
+        await update.message.reply_text("Ошибка обработки платежа. Обратись в поддержку.")
+        return
 
     if not save_payment_once(user.id, payment_id, count):
         await update.message.reply_text("Платёж уже обработан.")
         return
 
-    # начисляем
     add_izyminki(user.id, count)
 
     await update.message.reply_text(
@@ -2736,7 +2750,8 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         last_generated_prompt[user.id] = state.prompt
-        last_generation_references[user.id] = list(references)
+        # Store only persistent URLs — __img__ refs evaporate after restart
+        last_generation_references[user.id] = [r for r in references if not _is_img_ref(r)]
 
         job = GenerationJob(
             chat_id=update.effective_chat.id,
@@ -4157,9 +4172,22 @@ async def prompt_library_history_command(update: Update, context: ContextTypes.D
 # ОЧЕРЕДЬ И ЖИЗНЕННЫЙ ЦИКЛ БОТА: worker, post_init, shutdown
 # ══════════════════════════════════════════════════════════════
 
+async def _queue_worker_supervised(app: Application):
+    """Wraps queue_worker with auto-restart on unexpected crash."""
+    while True:
+        try:
+            await queue_worker(app)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("queue_worker crashed unexpectedly — restarting in 3s")
+            processing_user_ids.clear()
+            await asyncio.sleep(3)
+
+
 async def post_init(app: Application):
     global queue_worker_task
-    queue_worker_task = asyncio.create_task(queue_worker(app))
+    queue_worker_task = asyncio.create_task(_queue_worker_supervised(app))
 
 
 async def post_shutdown(app: Application):
@@ -4185,11 +4213,19 @@ async def queue_worker(app: Application):
                 await generate_image_by_job(app, job)
 
             except Exception:
-                logger.exception("Queue worker error")
+                logger.exception("Queue worker error for user=%s", job.user_id)
+                try:
+                    if getattr(job, "cost", 0) > 0:
+                        add_izyminki(job.user_id, job.cost)
+                        logger.info("Refunded %d izyminki to user %s after worker crash", job.cost, job.user_id)
+                    if getattr(job, "was_free", False):
+                        restore_free_generation(job.user_id)
+                except Exception:
+                    logger.exception("Failed to refund after worker crash for user=%s", job.user_id)
                 try:
                     await app.bot.send_message(
                         chat_id=job.chat_id,
-                        text="Ой, Сырник споткнулся на пути к магии. Попробуй ещё раз чуть позже."
+                        text="Ой, Сырник споткнулся на пути к магии. Попробуй ещё раз чуть позже.\n\nСписанные изюминки возвращены на баланс.",
                     )
                 except Exception:
                     pass
@@ -6073,6 +6109,9 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
             if getattr(job, "cost", 0) > 0 and not refunded:
                 add_izyminki(job.user_id, job.cost)
                 refunded = True
+            if getattr(job, "was_free", False) and not refunded:
+                restore_free_generation(job.user_id)
+                refunded = True
 
             await app.bot.send_message(
                 chat_id=chat_id,
@@ -6318,6 +6357,9 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
 
             if getattr(job, "cost", 0) > 0 and not refunded:
                 add_izyminki(job.user_id, job.cost)
+                refunded = True
+            if getattr(job, "was_free", False) and not refunded:
+                restore_free_generation(job.user_id)
                 refunded = True
 
             await app.bot.send_message(

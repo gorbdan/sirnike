@@ -225,6 +225,7 @@ class GenerationJob:
     cost: int = 0
     was_free: bool = False
     save_as_avatar: bool = False
+    avatar_kind: str = "female"
 
 generation_queue = asyncio.Queue()
 queued_user_ids = set()
@@ -3420,6 +3421,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cost=0,
             was_free=False,
             save_as_avatar=True,
+            avatar_kind=getattr(state, "pending_avatar_kind", "female") or "female",
         )
         queued_user_ids.add(user.id)
         await generation_queue.put(job)
@@ -6085,7 +6087,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
             if getattr(job, "save_as_avatar", False):
                 persistent_avatar_url = await _persist_image_ref(image_url)
                 if persistent_avatar_url:
-                    set_avatar_url(user_id, persistent_avatar_url, "female")
+                    set_avatar_url(user_id, persistent_avatar_url, getattr(job, "avatar_kind", "female"))
                     await app.bot.send_message(chat_id=chat_id, text="Аватар сохранён ✅")
                 else:
                     await app.bot.send_message(chat_id=chat_id, text="⚠️ Аватар сгенерирован, но сохранить не удалось — хостинг недоступен. Загрузи фото вручную через меню.")
@@ -6340,7 +6342,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                             if getattr(job, "save_as_avatar", False):
                                 persistent_avatar_url = await _persist_image_ref(image_url)
                                 if persistent_avatar_url:
-                                    set_avatar_url(user_id, persistent_avatar_url, "female")
+                                    set_avatar_url(user_id, persistent_avatar_url, getattr(job, "avatar_kind", "female"))
                                     await app.bot.send_message(chat_id=chat_id, text="Аватар сохранён ✅")
                                 else:
                                     await app.bot.send_message(chat_id=chat_id, text="⚠️ Аватар сгенерирован, но сохранить не удалось — хостинг недоступен. Загрузи фото вручную через меню.")

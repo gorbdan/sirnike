@@ -1436,6 +1436,21 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.pre_checkout_query
+    payload = query.invoice_payload
+    try:
+        parts = payload.split("_")
+        if len(parts) < 2:
+            raise ValueError("too few parts")
+        count = int(parts[1])
+        if count <= 0:
+            raise ValueError("non-positive count")
+        valid_counts = {p["count"] for p in BUY_PACKS}
+        if count not in valid_counts:
+            raise ValueError(f"unknown pack count: {count}")
+    except Exception as e:
+        logger.warning("Invalid precheckout payload %r from user %s: %s", payload, query.from_user.id, e)
+        await query.answer(ok=False, error_message="Ошибка: неверный платёжный пакет.")
+        return
     await query.answer(ok=True)
 
 async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):

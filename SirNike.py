@@ -4985,6 +4985,7 @@ async def _poll_seedance_fal(
     response_url: str,
     max_attempts: int,
     poll_interval: int,
+    status_callback=None,
 ) -> str:
     """Poll fal.ai queue for Seedance 2.0 result."""
     result_url = response_url
@@ -4995,6 +4996,12 @@ async def _poll_seedance_fal(
     )
     async with aiohttp.ClientSession() as session:
         for attempt in range(max_attempts):
+            if status_callback and attempt > 0 and attempt % 8 == 0:
+                elapsed_min = (attempt * poll_interval) // 60
+                try:
+                    await status_callback(f"⏳ Генерация видео... прошло ~{elapsed_min} мин.")
+                except Exception:
+                    pass
             await asyncio.sleep(poll_interval)
             logger.info("fal.ai poll tick: attempt=%s/%s", attempt + 1, max_attempts)
             try:
@@ -5044,13 +5051,14 @@ async def poll_seedance_task(
     max_attempts: int,
     poll_interval: int,
     expected_refs_count: int = 0,
+    status_callback=None,
 ) -> str:
     # fal.ai task — delegate to fal.ai poller
     if task_id.startswith("__FAL__|"):
         parts = task_id.split("|", 3)
         fal_status_url = parts[1] if len(parts) > 1 else ""
         fal_response_url = parts[2] if len(parts) > 2 else ""
-        return await _poll_seedance_fal(fal_status_url, fal_response_url, max_attempts, poll_interval)
+        return await _poll_seedance_fal(fal_status_url, fal_response_url, max_attempts, poll_interval, status_callback)
 
     if not ZVENO_API_KEY:
         raise Exception("ZVENO_API_KEY is empty")
@@ -5126,6 +5134,12 @@ async def poll_seedance_task(
     async with aiohttp.ClientSession() as session:
         for attempt in range(max_attempts):
             logger.info(f"Seedance poll tick: attempt={attempt + 1}/{max_attempts}")
+            if status_callback and attempt > 0 and attempt % 8 == 0:
+                elapsed_min = (attempt * poll_interval) // 60
+                try:
+                    await status_callback(f"⏳ Генерация видео... прошло ~{elapsed_min} мин.")
+                except Exception:
+                    pass
             await asyncio.sleep(poll_interval)
 
             data = None
@@ -5455,6 +5469,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     max_attempts=per_attempt_max_polls,
                     poll_interval=SEEDANCE_POLL_INTERVAL,
                     expected_refs_count=expected_refs_count,
+                    status_callback=reply_target.reply_text,
                 )
                 break
             except Exception as e:

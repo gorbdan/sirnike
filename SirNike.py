@@ -2708,8 +2708,15 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if avatar_url and ref_url == avatar_url:
                     dropped_avatar_ref = True
                 continue
-            if ref_url.startswith("data:") or _is_img_ref(ref_url):
+            if ref_url.startswith("data:"):
                 valid_refs.append(ref_url)
+                continue
+            if _is_img_ref(ref_url):
+                if _resolve_image_bytes(ref_url) is not None:
+                    valid_refs.append(ref_url)
+                else:
+                    dropped_count += 1
+                    logger.warning("Dropped stale __img__ ref (cache miss after restart): user=%s", user.id)
                 continue
             ok_ref, reason_ref = await validate_image_url(ref_url)
             if ok_ref:
@@ -3503,7 +3510,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data[buy_key] = now_ts
 
-        await send_invoice(update, context, count, price)
+        try:
+            await send_invoice(update, context, count, price)
+        except Exception:
+            context.user_data.pop(buy_key, None)
+            raise
         return
     
     if query.data in {"set_avatar", "set_avatar_female", "set_avatar_male", "set_avatar_child"}:

@@ -2794,6 +2794,8 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if paid:
             add_izyminki(user.id, cost)
+        elif use_free:
+            restore_free_generation(user.id)
 
         await reply_target.reply_text(
             "Не получилось взять задачу в работу. Попробуй ещё раз."

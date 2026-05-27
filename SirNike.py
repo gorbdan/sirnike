@@ -5737,6 +5737,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
     references = job.references
 
     refunded = False
+    generation_succeeded = False
     last_error_text = "Неизвестная ошибка"
 
     await app.bot.send_message(
@@ -6091,6 +6092,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 raise Exception(extract_zveno_error_text(response_data))
 
             logger.info("Zveno image success: user=%s image_ref=%s", user_id, str(image_url)[:60])
+            generation_succeeded = True
             last_generated_prompt[user_id] = prompt
             add_generation_history(user_id=user_id, prompt=prompt, image_url=image_url)
             await send_generation_result_by_url(app, chat_id, user_id, image_url)
@@ -6135,12 +6137,13 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
             logger.exception("Zveno generation failed")
             logger.error(f"Generation debug | provider=ZVENO | user_id={user_id} | error={last_error_text}")
 
-            if getattr(job, "cost", 0) > 0 and not refunded:
-                add_izyminki(job.user_id, job.cost)
-                refunded = True
-            if getattr(job, "was_free", False) and not refunded:
-                restore_free_generation(job.user_id)
-                refunded = True
+            if not generation_succeeded:
+                if getattr(job, "cost", 0) > 0 and not refunded:
+                    add_izyminki(job.user_id, job.cost)
+                    refunded = True
+                if getattr(job, "was_free", False) and not refunded:
+                    restore_free_generation(job.user_id)
+                    refunded = True
 
             await app.bot.send_message(
                 chat_id=chat_id,
@@ -6346,6 +6349,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                             image_url = extract_mashagpt_image_url(status_data)
                             if not image_url:
                                 raise Exception(f"MashaGPT task completed but image url not found: {status_data}")
+                            generation_succeeded = True
                             last_generated_prompt[user_id] = prompt
                             add_generation_history(user_id=user_id, prompt=prompt, image_url=image_url)
                             await send_generation_result_by_url(app, chat_id, user_id, image_url)
@@ -6384,12 +6388,13 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
             logger.exception("MashaGPT generation failed")
             logger.error(f"Generation debug | provider=MASHAGPT | user_id={user_id} | error={last_error_text}")
 
-            if getattr(job, "cost", 0) > 0 and not refunded:
-                add_izyminki(job.user_id, job.cost)
-                refunded = True
-            if getattr(job, "was_free", False) and not refunded:
-                restore_free_generation(job.user_id)
-                refunded = True
+            if not generation_succeeded:
+                if getattr(job, "cost", 0) > 0 and not refunded:
+                    add_izyminki(job.user_id, job.cost)
+                    refunded = True
+                if getattr(job, "was_free", False) and not refunded:
+                    restore_free_generation(job.user_id)
+                    refunded = True
 
             await app.bot.send_message(
                 chat_id=chat_id,

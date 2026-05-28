@@ -1585,7 +1585,7 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
         await update.message.reply_text("Платёж уже обработан.")
         return
 
-    add_izyminki(user.id, count)
+    # add_izyminki is now done atomically inside save_payment_once
     new_balance = get_balance(user.id)
 
     await update.message.reply_text(
@@ -3022,19 +3022,19 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data["state"] = UserState()
 
-    except BaseException:
-        logger.exception("Failed to enqueue generation job")
+    except BaseException as _enqueue_exc:
         queued_user_ids.discard(user.id)
-
         if paid:
             add_izyminki(user.id, cost)
         elif use_free:
             restore_free_generation(user.id)
+        if not isinstance(_enqueue_exc, asyncio.CancelledError):
+            logger.exception("Failed to enqueue generation job")
+            try:
+                await reply_target.reply_text("Не получилось взять задачу в работу. Попробуй ещё раз.")
+            except Exception:
+                pass
         raise
-
-        await reply_target.reply_text(
-            "Не получилось взять задачу в работу. Попробуй ещё раз."
-        )
 
 
 

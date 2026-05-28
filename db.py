@@ -450,18 +450,29 @@ def save_payment(user_id: int, payment_id: str, amount: int) -> None:
 
 
 def save_payment_once(user_id: int, payment_id: str, amount: int) -> bool:
+    """Record payment and credit coins atomically in a single transaction.
+    Returns True if this is a new payment (coins credited), False if duplicate."""
     with get_conn() as conn:
         try:
-            conn.execute(
+            conn.execute("BEGIN")
+            cur = conn.execute(
                 """
                 INSERT INTO payments (user_id, telegram_payment_id, amount, created_at)
                 VALUES (?, ?, ?, ?)
                 """,
                 (user_id, payment_id, amount, datetime.utcnow().isoformat())
             )
+            if cur.rowcount == 0:
+                conn.rollback()
+                return False
+            conn.execute(
+                "UPDATE users SET balance = balance + ? WHERE user_id = ?",
+                (amount, user_id)
+            )
             conn.commit()
             return True
         except sqlite3.IntegrityError:
+            conn.rollback()
             return False
 
 

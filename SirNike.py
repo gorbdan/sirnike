@@ -174,11 +174,48 @@ logger = logging.getLogger(__name__)
 
 photo_tasks = {}
 photo_counts = {}
-_image_cache: Dict[str, bytes] = {}
+_IMAGE_CACHE_MAX_ENTRIES = 200
+_IMAGE_CACHE_MAX_BYTES = 500 * 1024 * 1024  # 500 MB
+
+
+class _BoundedImageCache:
+    """LRU image cache capped by entry count and total bytes."""
+
+    def __init__(self, max_entries: int, max_bytes: int) -> None:
+        self._max_entries = max_entries
+        self._max_bytes = max_bytes
+        self._data: "OrderedDict[str, bytes]" = __import__("collections").OrderedDict()
+        self._total_bytes = 0
+
+    def __setitem__(self, key: str, value: bytes) -> None:
+        if key in self._data:
+            self._total_bytes -= len(self._data[key])
+            del self._data[key]
+        self._data[key] = value
+        self._total_bytes += len(value)
+        self._evict()
+
+    def __getitem__(self, key: str) -> bytes:
+        self._data.move_to_end(key)
+        return self._data[key]
+
+    def get(self, key: str, default: Optional[bytes] = None) -> Optional[bytes]:
+        if key not in self._data:
+            return default
+        return self[key]
+
+    def _evict(self) -> None:
+        while (len(self._data) > self._max_entries or self._total_bytes > self._max_bytes) and self._data:
+            _, evicted = self._data.popitem(last=False)
+            self._total_bytes -= len(evicted)
+
+
+_image_cache: _BoundedImageCache = _BoundedImageCache(_IMAGE_CACHE_MAX_ENTRIES, _IMAGE_CACHE_MAX_BYTES)
 last_generated_image_url = {}
 last_generated_prompt = {}
 last_generation_references = {}
-MEDIA_GROUP_CACHE: Dict[Tuple[int, str], List[Dict[str, Any]]] = {}
+import collections as _collections
+MEDIA_GROUP_CACHE: "_collections.OrderedDict[Tuple[int, str], List[Dict[str, Any]]]" = _collections.OrderedDict()
 MAX_CACHED_MEDIA_GROUPS = 300
 MAX_MEDIA_GROUP_CHUNK_SIZE = 10
 try:
@@ -410,6 +447,14 @@ def load_prompt_library() -> list:
 
 _sync_prompt_library_from_remote()
 PROMPT_LIBRARY = load_prompt_library()
+_prompt_library_lock: Optional[asyncio.Lock] = None  # initialised lazily after event loop starts
+
+
+def _get_prompt_library_lock() -> asyncio.Lock:
+    global _prompt_library_lock
+    if _prompt_library_lock is None:
+        _prompt_library_lock = asyncio.Lock()
+    return _prompt_library_lock
 
 
 def _sort_prompt_library(data: list) -> list:
@@ -455,6 +500,13 @@ def save_prompt_library(data: list) -> None:
 def refresh_prompt_library() -> None:
     global PROMPT_LIBRARY
     PROMPT_LIBRARY = load_prompt_library()
+
+
+async def _locked_save_and_refresh(data: list) -> None:
+    """Thread-safe save + reload of the prompt library. Use in async admin handlers."""
+    async with _get_prompt_library_lock():
+        save_prompt_library(data)
+        refresh_prompt_library()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -700,16 +752,17 @@ def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int
     async def send_done_later():
         try:
             await asyncio.sleep(2.0)
-            count = photo_counts.get(chat_id, 0)
+            count = photo_counts.pop(chat_id, 0)
             if count > 0:
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=f"Фото успешно загружены: {count} шт.",
                     reply_markup=main_menu_kb()
                 )
-                photo_counts[chat_id] = 0
         except asyncio.CancelledError:
             pass
+        finally:
+            photo_tasks.pop(chat_id, None)
 
     photo_tasks[chat_id] = asyncio.create_task(send_done_later())
 
@@ -1117,6 +1170,9 @@ def cache_media_group_message(message) -> None:
         return
 
     cache_key = (int(message.chat_id), str(media_group_id))
+    # Move to end so OrderedDict insertion-order reflects recency
+    if cache_key in MEDIA_GROUP_CACHE:
+        MEDIA_GROUP_CACHE.move_to_end(cache_key)
     bucket = MEDIA_GROUP_CACHE.setdefault(cache_key, [])
     if any(item.get("message_id") == media_item["message_id"] for item in bucket):
         return
@@ -1124,15 +1180,9 @@ def cache_media_group_message(message) -> None:
     bucket.append(media_item)
     bucket.sort(key=lambda item: int(item.get("message_id", 0)))
 
+    # O(1) eviction: pop the oldest (first) entry when over the limit
     while len(MEDIA_GROUP_CACHE) > MAX_CACHED_MEDIA_GROUPS:
-        oldest_key = min(
-            MEDIA_GROUP_CACHE.keys(),
-            key=lambda key: min(
-                (float(item.get("added_at", 0.0)) for item in MEDIA_GROUP_CACHE.get(key, [])),
-                default=float("inf"),
-            ),
-        )
-        MEDIA_GROUP_CACHE.pop(oldest_key, None)
+        MEDIA_GROUP_CACHE.popitem(last=False)
 
 
 def get_cached_media_group(chat_id: int, media_group_id: Optional[str]) -> List[Dict[str, Any]]:
@@ -3198,13 +3248,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             else:
                 image_url = pending["image_url"]
+                stable_example_url = ""
                 if _is_img_ref(image_url):
                     img_b = _resolve_image_bytes(image_url)
                     if img_b:
                         stable_example_url = await _upload_bytes_to_freeimage(img_b, "example.jpg")
                         if not stable_example_url:
                             stable_example_url = await _upload_bytes_to_catbox(img_b, "example.jpg")
-                    stable_example_url = stable_example_url or image_url
+                        if not stable_example_url:
+                            stable_example_url = await _upload_bytes_to_imgbb(img_b, "example.jpg")
+                    # Never save an __img__ ref as example_url — it won't survive a restart
+                    if not stable_example_url:
+                        await query.answer("Не удалось загрузить изображение на хостинг — сохранение без картинки.", show_alert=False)
                 else:
                     stable_example_url = await upload_image_url_to_imgbb(image_url)
                     if not stable_example_url:
@@ -3218,8 +3273,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     }
                 )
 
-            save_prompt_library(data)
-            refresh_prompt_library()
+            await _locked_save_and_refresh(data)
             context.user_data.pop("pending_pl_save", None)
 
             await query.message.reply_text(
@@ -3965,8 +4019,7 @@ def _create_prompt_library_category(raw_title: str) -> tuple[bool, str]:
         return False, f"Категория «{title}» уже существует."
 
     data.append({"title": title, "emoji": emoji, "items": []})
-    save_prompt_library(data)
-    refresh_prompt_library()
+    await _locked_save_and_refresh(data)
     return True, f"Готово ✅ Категория «{title}» создана."
 
 
@@ -4027,8 +4080,7 @@ async def prompt_library_rename_category(update: Update, context: ContextTypes.D
             return
 
         data[old_idx]["title"] = new_title
-        save_prompt_library(data)
-        refresh_prompt_library()
+        await _locked_save_and_refresh(data)
         await update.message.reply_text(f"Готово ✅ Категория переименована в «{new_title}».")
     except Exception:
         logger.exception("Failed to rename prompt library category")
@@ -4059,8 +4111,7 @@ async def prompt_library_delete_category(update: Update, context: ContextTypes.D
             return
 
         removed = data.pop(idx)
-        save_prompt_library(data)
-        refresh_prompt_library()
+        await _locked_save_and_refresh(data)
         await update.message.reply_text(
             f"Готово ✅ Категория «{removed.get('title', title)}» удалена."
         )
@@ -4169,9 +4220,10 @@ async def prompt_library_sync_from_cloudflare(update: Update, context: ContextTy
         primary_dir = os.path.dirname(PROMPT_LIBRARY_PRIMARY_PATH)
         if primary_dir:
             os.makedirs(primary_dir, exist_ok=True)
-        with open(PROMPT_LIBRARY_PRIMARY_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        refresh_prompt_library()
+        async with _get_prompt_library_lock():
+            with open(PROMPT_LIBRARY_PRIMARY_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            refresh_prompt_library()
         total = sum(len(c.get("items", [])) for c in data)
         await message.reply_text(
             f"✅ Библиотека обновлена с Cloudflare.\n"
@@ -4250,8 +4302,7 @@ async def prompt_library_export(update: Update, context: ContextTypes.DEFAULT_TY
 
     try:
         data = load_prompt_library()
-        save_prompt_library(data)
-        refresh_prompt_library()
+        await _locked_save_and_refresh(data)
 
         with open(PROMPT_LIBRARY_PRIMARY_PATH, "rb") as f:
             payload = f.read()
@@ -5534,235 +5585,231 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         processing_user_ids.add(user.id)
 
-    motion_images = get_motion_image_urls(state)
-    logger.info(
-        "run_seedance: user=%s animation_source_urls=%s motion_prompt=%r",
-        user.id, state.animation_source_urls, state.motion_prompt,
-    )
-
-    prompt_text = (state.motion_prompt or "").strip()
-    if not motion_images and not prompt_text:
-        processing_user_ids.discard(user.id)
-        await reply_target.reply_text(
-            "Для Seedance добавь изображение и/или промпт, затем запусти снова."
-        )
-        return
-
-    for idx, img_url in enumerate(motion_images, start=1):
-        if img_url.startswith("data:") or _is_img_ref(img_url):
-            continue
-        ok_img, reason_img = await validate_image_url(img_url)
-        if not ok_img:
-            short_reason = reason_img[:120] if len(reason_img) > 120 else reason_img
-            processing_user_ids.discard(user.id)
-            await reply_target.reply_text(f"Фото-референс #{idx} недоступен: {short_reason}")
-            return
-
-    selected_duration = get_selected_seedance_duration(state)
-    selected_model = get_motion_model(state)
-    selected_model_label = get_motion_model_label(selected_model)
-    selected_cps = get_motion_model_cost_per_second(selected_model)
-    selected_cost = calc_seedance_cost(selected_duration, selected_cps)
-    selected_endpoint = SEEDANCE_FAST_ENDPOINT if selected_model == "seedance2_fast" else SEEDANCE_ENDPOINT
-    selected_mode = get_selected_seedance_mode(state)
-    selected_model_slug = SEEDANCE_FAST_MODEL if selected_model == "seedance2_fast" else SEEDANCE_MODEL
-
-    if selected_model in {"seedance2", "seedance2_fast"} and len(motion_images) < 1:
-        processing_user_ids.discard(user.id)
-        await reply_target.reply_text(
-            "Загрузи хотя бы 1 фото-ференс и запусти снова.",
-            reply_markup=motion_control_kb(state),
-        )
-        return
-
-    # Check balance BEFORE heavy image processing
-    bal = get_balance(user.id)
-    if bal < selected_cost:
-        processing_user_ids.discard(user.id)
-        await reply_target.reply_text(
-            f"Не хватает изюминок.\nНужно: {selected_cost}\nУ тебя: {bal}\n\nНапиши /buy."
-        )
-        return
-
-    if motion_images:
-        motion_images = await apply_grid_overlay_to_refs(motion_images)
-
-    if not spend_izyminki(user.id, selected_cost):
-        processing_user_ids.discard(user.id)
-        await reply_target.reply_text("Не удалось списать изюминки. Попробуй ещё раз.")
-        return
-
-    eta_min = max(2, int(selected_duration * 0.8))
-    eta_max = max(eta_min + 1, int(selected_duration * 2.0))
-    try:
-        await reply_target.reply_text(
-            f"Запускаю {selected_model_label} 🎬\n"
-            f"Обычно это занимает {eta_min}–{eta_max} минут."
-        )
-        expected_refs_count = len(motion_images)
-
-        per_attempt_max_polls = min(
-            SEEDANCE_MAX_POLL_ATTEMPTS,
-            max(1, SEEDANCE_ATTEMPT_TIMEOUT_SECONDS // max(1, int(SEEDANCE_POLL_INTERVAL))),
-        )
-        max_seedance_attempts = 3
-        active_prompt = prompt_text
-        safety_suffix = (
-            "Generate a silent video only. No speech, no voice-over, no subtitles, "
-            "no readable text, no letters, no logos, no captions."
-        )
-
-        # Single status message that gets edited in place — no chat spam
-        status_msg = await reply_target.reply_text("⏳ Генерирую видео…")
-
-        async def _edit_status(text: str) -> None:
-            try:
-                await status_msg.edit_text(text)
-            except Exception:
-                pass
-
-        video_url = None
-        last_seedance_error: Optional[Exception] = None
-        for seedance_attempt in range(1, max_seedance_attempts + 1):
-            task_id = await start_seedance_task(
-                prompt=active_prompt,
-                image_url=motion_images[0] if motion_images else None,
-                image_urls=motion_images,
-                user_id=user.id,
-                duration=selected_duration,
-                endpoint=selected_endpoint,
-                mode=selected_mode,
-                model_slug=selected_model_slug,
-                model_code=selected_model,
-            )
-
-            try:
-                video_url = await poll_seedance_task(
-                    task_id=task_id,
-                    max_attempts=per_attempt_max_polls,
-                    poll_interval=SEEDANCE_POLL_INTERVAL,
-                    expected_refs_count=expected_refs_count,
-                    status_callback=_edit_status,
-                )
-                break
-            except Exception as e:
-                last_seedance_error = e
-                err_text = str(e).lower()
-                sensitive_audio_like = (
-                    "output audio may contain sensitive information" in err_text
-                    or "sensitive information" in err_text
-                )
-                if seedance_attempt < max_seedance_attempts and sensitive_audio_like:
-                    logger.warning(
-                        "Seedance moderation fail. Auto-restart with silent-safe prompt: attempt=%s/%s user_id=%s model=%s",
-                        seedance_attempt,
-                        max_seedance_attempts,
-                        user.id,
-                        selected_model,
-                    )
-                    if safety_suffix.lower() not in active_prompt.lower():
-                        active_prompt = (active_prompt.strip() + "\n\n" + safety_suffix).strip()
-                    await reply_target.reply_text(
-                        "Провайдер отклонил аудио. Автоматически перезапускаю в беззвучном безопасном режиме..."
-                    )
-                    continue
-                raise
-
-        if not video_url:
-            if last_seedance_error:
-                raise last_seedance_error
-            raise Exception("Seedance video URL missing after retries")
-
-        video_bytes = await download_video_bytes_with_fallback(video_url)
-        saved_path = save_video_debug_copy(video_bytes, user.id, selected_model_label)
-        if saved_path:
-            logger.info(f"Seedance local copy saved: {saved_path}")
-
-        video_buffer = io.BytesIO(video_bytes)
-        video_buffer.name = "seedance.mp4"
-
-        await context.bot.send_video(
-            chat_id=update.effective_chat.id,
-            video=video_buffer,
-            supports_streaming=True,
-            caption=f"Готово 🎬\n{selected_model_label} завершён.",
-        )
-        log_generation_event(
-            user_id=user.id,
-            kind="video",
-            status="success",
-            provider="ZVENO",
-            cost=selected_cost,
-            was_free=False,
-            references_count=len(motion_images),
-            prompt=prompt_text[:500] if prompt_text else None,
-            username=user.username,
-        )
-        uname = f"@{user.username}" if user.username else f"id{user.id}"
-        channel_caption = (
-            f"🎬 Видео | {selected_model_label}\n"
-            f"👤 {uname}\n"
-            + (f"📝 {prompt_text[:200]}" if prompt_text else "")
-        ).strip()
-        context.application.create_task(
-            _post_to_results_channel(context.application, "video", video_bytes, channel_caption)
-        )
+    try:  # outer try/finally guarantees processing_user_ids is always cleared
+        motion_images = get_motion_image_urls(state)
         logger.info(
-            "Seedance send_video success: chat_id=%s, user_id=%s, model=%s",
-            update.effective_chat.id,
-            user.id,
-            selected_model_label,
+            "run_seedance: user=%s animation_source_urls=%s motion_prompt=%r",
+            user.id, state.animation_source_urls, state.motion_prompt,
         )
-    except Exception as e:
-        logger.exception("Seedance generation failed")
-        add_izyminki(user.id, selected_cost)
-        # Restore state so "Повторить" can reuse the same images/prompt
-        state.animation_source_urls = _saved_animation_source_urls
-        state.motion_prompt = _saved_motion_prompt
-        log_generation_event(
-            user_id=user.id,
-            kind="video",
-            status="failed",
-            provider="ZVENO",
-            cost=selected_cost,
-            was_free=False,
-            references_count=len(motion_images),
-        )
-        error_text = str(e).lower()
-        if is_seedance_privacy_moderation_error(error_text):
+
+        prompt_text = (state.motion_prompt or "").strip()
+        if not motion_images and not prompt_text:
             await reply_target.reply_text(
-                f"Не удалось выполнить {selected_model_label}.\n"
-                "Seedance отклонил фото-референс модерацией.\n"
-                "Код: InputImageSensitiveContentDetected.PrivacyInformation.\n"
-                "Это ограничение модерации Seedance, а не технический сбой бота.\n"
-                "Попробуй другой референс (менее похожий на фото реального человека).\n\n"
-                "Списанные изюминки возвращены на баланс."
-            )
-            await reply_target.reply_text(
-                "Повторить попытку?",
-                reply_markup=seedance_retry_kb(),
+                "Для Seedance добавь изображение и/или промпт, затем запусти снова."
             )
             return
-        if "insufficient_funds" in error_text or "insufficient funds" in error_text:
+
+        for idx, img_url in enumerate(motion_images, start=1):
+            if img_url.startswith("data:") or _is_img_ref(img_url):
+                continue
+            ok_img, reason_img = await validate_image_url(img_url)
+            if not ok_img:
+                short_reason = reason_img[:120] if len(reason_img) > 120 else reason_img
+                await reply_target.reply_text(f"Фото-референс #{idx} недоступен: {short_reason}")
+                return
+
+        selected_duration = get_selected_seedance_duration(state)
+        selected_model = get_motion_model(state)
+        selected_model_label = get_motion_model_label(selected_model)
+        selected_cps = get_motion_model_cost_per_second(selected_model)
+        selected_cost = calc_seedance_cost(selected_duration, selected_cps)
+        selected_endpoint = SEEDANCE_FAST_ENDPOINT if selected_model == "seedance2_fast" else SEEDANCE_ENDPOINT
+        selected_mode = get_selected_seedance_mode(state)
+        selected_model_slug = SEEDANCE_FAST_MODEL if selected_model == "seedance2_fast" else SEEDANCE_MODEL
+
+        if selected_model in {"seedance2", "seedance2_fast"} and len(motion_images) < 1:
+            await reply_target.reply_text(
+                "Загрузи хотя бы 1 фото-ференс и запусти снова.",
+                reply_markup=motion_control_kb(state),
+            )
+            return
+
+        # Check balance BEFORE heavy image processing
+        bal = get_balance(user.id)
+        if bal < selected_cost:
+            await reply_target.reply_text(
+                f"Не хватает изюминок.\nНужно: {selected_cost}\nУ тебя: {bal}\n\nНапиши /buy."
+            )
+            return
+
+        if motion_images:
+            motion_images = await apply_grid_overlay_to_refs(motion_images)
+
+        if not spend_izyminki(user.id, selected_cost):
+            await reply_target.reply_text("Не удалось списать изюминки. Попробуй ещё раз.")
+            return
+
+        eta_min = max(2, int(selected_duration * 0.8))
+        eta_max = max(eta_min + 1, int(selected_duration * 2.0))
+        try:
+            await reply_target.reply_text(
+                f"Запускаю {selected_model_label} 🎬\n"
+                f"Обычно это занимает {eta_min}–{eta_max} минут."
+            )
+            expected_refs_count = len(motion_images)
+    
+            per_attempt_max_polls = min(
+                SEEDANCE_MAX_POLL_ATTEMPTS,
+                max(1, SEEDANCE_ATTEMPT_TIMEOUT_SECONDS // max(1, int(SEEDANCE_POLL_INTERVAL))),
+            )
+            max_seedance_attempts = 3
+            active_prompt = prompt_text
+            safety_suffix = (
+                "Generate a silent video only. No speech, no voice-over, no subtitles, "
+                "no readable text, no letters, no logos, no captions."
+            )
+    
+            # Single status message that gets edited in place — no chat spam
+            status_msg = await reply_target.reply_text("⏳ Генерирую видео…")
+    
+            async def _edit_status(text: str) -> None:
+                try:
+                    await status_msg.edit_text(text)
+                except Exception:
+                    pass
+    
+            video_url = None
+            last_seedance_error: Optional[Exception] = None
+            for seedance_attempt in range(1, max_seedance_attempts + 1):
+                task_id = await start_seedance_task(
+                    prompt=active_prompt,
+                    image_url=motion_images[0] if motion_images else None,
+                    image_urls=motion_images,
+                    user_id=user.id,
+                    duration=selected_duration,
+                    endpoint=selected_endpoint,
+                    mode=selected_mode,
+                    model_slug=selected_model_slug,
+                    model_code=selected_model,
+                )
+    
+                try:
+                    video_url = await poll_seedance_task(
+                        task_id=task_id,
+                        max_attempts=per_attempt_max_polls,
+                        poll_interval=SEEDANCE_POLL_INTERVAL,
+                        expected_refs_count=expected_refs_count,
+                        status_callback=_edit_status,
+                    )
+                    break
+                except Exception as e:
+                    last_seedance_error = e
+                    err_text = str(e).lower()
+                    sensitive_audio_like = (
+                        "output audio may contain sensitive information" in err_text
+                        or "sensitive information" in err_text
+                    )
+                    if seedance_attempt < max_seedance_attempts and sensitive_audio_like:
+                        logger.warning(
+                            "Seedance moderation fail. Auto-restart with silent-safe prompt: attempt=%s/%s user_id=%s model=%s",
+                            seedance_attempt,
+                            max_seedance_attempts,
+                            user.id,
+                            selected_model,
+                        )
+                        if safety_suffix.lower() not in active_prompt.lower():
+                            active_prompt = (active_prompt.strip() + "\n\n" + safety_suffix).strip()
+                        await reply_target.reply_text(
+                            "Провайдер отклонил аудио. Автоматически перезапускаю в беззвучном безопасном режиме..."
+                        )
+                        continue
+                    raise
+    
+            if not video_url:
+                if last_seedance_error:
+                    raise last_seedance_error
+                raise Exception("Seedance video URL missing after retries")
+    
+            video_bytes = await download_video_bytes_with_fallback(video_url)
+            saved_path = save_video_debug_copy(video_bytes, user.id, selected_model_label)
+            if saved_path:
+                logger.info(f"Seedance local copy saved: {saved_path}")
+    
+            video_buffer = io.BytesIO(video_bytes)
+            video_buffer.name = "seedance.mp4"
+    
+            await context.bot.send_video(
+                chat_id=update.effective_chat.id,
+                video=video_buffer,
+                supports_streaming=True,
+                caption=f"Готово 🎬\n{selected_model_label} завершён.",
+            )
+            log_generation_event(
+                user_id=user.id,
+                kind="video",
+                status="success",
+                provider="ZVENO",
+                cost=selected_cost,
+                was_free=False,
+                references_count=len(motion_images),
+                prompt=prompt_text[:500] if prompt_text else None,
+                username=user.username,
+            )
+            uname = f"@{user.username}" if user.username else f"id{user.id}"
+            channel_caption = (
+                f"🎬 Видео | {selected_model_label}\n"
+                f"👤 {uname}\n"
+                + (f"📝 {prompt_text[:200]}" if prompt_text else "")
+            ).strip()
+            context.application.create_task(
+                _post_to_results_channel(context.application, "video", video_bytes, channel_caption)
+            )
+            logger.info(
+                "Seedance send_video success: chat_id=%s, user_id=%s, model=%s",
+                update.effective_chat.id,
+                user.id,
+                selected_model_label,
+            )
+        except Exception as e:
+            logger.exception("Seedance generation failed")
+            add_izyminki(user.id, selected_cost)
+            # Restore state so "Повторить" can reuse the same images/prompt
+            state.animation_source_urls = _saved_animation_source_urls
+            state.motion_prompt = _saved_motion_prompt
+            log_generation_event(
+                user_id=user.id,
+                kind="video",
+                status="failed",
+                provider="ZVENO",
+                cost=selected_cost,
+                was_free=False,
+                references_count=len(motion_images),
+            )
+            error_text = str(e).lower()
+            if is_seedance_privacy_moderation_error(error_text):
+                await reply_target.reply_text(
+                    f"Не удалось выполнить {selected_model_label}.\n"
+                    "Seedance отклонил фото-референс модерацией.\n"
+                    "Код: InputImageSensitiveContentDetected.PrivacyInformation.\n"
+                    "Это ограничение модерации Seedance, а не технический сбой бота.\n"
+                    "Попробуй другой референс (менее похожий на фото реального человека).\n\n"
+                    "Списанные изюминки возвращены на баланс."
+                )
+                await reply_target.reply_text(
+                    "Повторить попытку?",
+                    reply_markup=seedance_retry_kb(),
+                )
+                return
+            if "insufficient_funds" in error_text or "insufficient funds" in error_text:
+                await reply_target.reply_text(
+                    f"Не удалось выполнить {selected_model_label}.\n"
+                    "У провайдера видео сейчас закончился баланс (insufficient funds).\n"
+                    "Списанные изюминки возвращены на баланс."
+                )
+                await reply_target.reply_text(
+                    "Попробовать еще раз?",
+                    reply_markup=seedance_retry_kb(),
+                )
+                return
             await reply_target.reply_text(
                 f"Не удалось выполнить {selected_model_label}.\n"
-                "У провайдера видео сейчас закончился баланс (insufficient funds).\n"
+                "Временный технический сбой. Попробуй еще раз через минуту.\n\n"
                 "Списанные изюминки возвращены на баланс."
             )
             await reply_target.reply_text(
                 "Попробовать еще раз?",
                 reply_markup=seedance_retry_kb(),
             )
-            return
-        await reply_target.reply_text(
-            f"Не удалось выполнить {selected_model_label}.\n"
-            "Временный технический сбой. Попробуй еще раз через минуту.\n\n"
-            "Списанные изюминки возвращены на баланс."
-        )
-        await reply_target.reply_text(
-            "Попробовать еще раз?",
-            reply_markup=seedance_retry_kb(),
-        )
     finally:
         processing_user_ids.discard(user.id)
 
@@ -5781,7 +5828,10 @@ async def _persist_image_ref(ref: str) -> str:
         url = await _upload_bytes_to_catbox(img_bytes, "avatar.jpg")
         if url:
             return url
-        url = await _upload_image_to_imgbb(img_bytes)
+        url = await _upload_bytes_to_imgbb(img_bytes, "avatar.jpg")
+        if url:
+            return url
+        url = await _upload_bytes_to_telegraph(img_bytes, "avatar.jpg")
         if url:
             return url
     except Exception:

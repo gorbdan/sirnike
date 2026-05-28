@@ -2218,7 +2218,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         state.animation_source_url = direct_url
-        state.references.append(direct_url)
+        if len(state.references) < 8:  # cap to max used in generation
+            state.references.append(direct_url)
 
         chat_id = update.effective_chat.id
         photo_counts[chat_id] = photo_counts.get(chat_id, 0) + 1
@@ -4623,6 +4624,7 @@ async def queue_worker(app: Application):
                 await generate_image_by_job(app, job)
 
             except BaseException as _job_exc:
+
                 is_cancelled = isinstance(_job_exc, asyncio.CancelledError)
                 if not is_cancelled:
                     logger.exception("Queue worker error for user=%s", job.user_id)
@@ -4645,9 +4647,13 @@ async def queue_worker(app: Application):
                 if is_cancelled:
                     raise
             finally:
-                _worker_current_job = None  # clear after job is done
+                # Don't clear _worker_current_job here — supervisor reads it after crash.
+                # It gets overwritten at the start of the next iteration or stays set
+                # until supervisor's drain loop runs (which is correct).
                 processing_user_ids.discard(job.user_id)
                 generation_queue.task_done()
+
+            _worker_current_job = None  # clear only on clean completion of job
     except asyncio.CancelledError:
         logger.info("queue_worker stopped")
         raise

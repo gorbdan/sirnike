@@ -2718,35 +2718,52 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         valid_refs: List[str] = []
         dropped_count = 0
         dropped_avatar_ref = False
-        for ref_url in references[:8]:
+
+        # Split refs into instant (no HTTP needed) and those requiring validation
+        instant_refs: List[tuple] = []   # (original_index, ref_url)
+        to_validate: List[tuple] = []    # (original_index, ref_url)
+        for i, ref_url in enumerate(references[:8]):
             if not is_image_url_like(ref_url):
                 dropped_count += 1
                 if avatar_url and ref_url == avatar_url:
                     dropped_avatar_ref = True
-                continue
-            if ref_url.startswith("data:"):
-                valid_refs.append(ref_url)
-                continue
-            if _is_img_ref(ref_url):
+            elif ref_url.startswith("data:"):
+                instant_refs.append((i, ref_url))
+            elif _is_img_ref(ref_url):
                 if _resolve_image_bytes(ref_url) is not None:
-                    valid_refs.append(ref_url)
+                    instant_refs.append((i, ref_url))
                 else:
                     dropped_count += 1
                     logger.warning("Dropped stale __img__ ref (cache miss after restart): user=%s", user.id)
-                continue
-            ok_ref, reason_ref = await validate_image_url(ref_url)
-            if ok_ref:
-                valid_refs.append(ref_url)
             else:
-                dropped_count += 1
-                if avatar_url and ref_url == avatar_url:
-                    dropped_avatar_ref = True
-                logger.warning(
-                    "Dropped invalid image reference before Zveno request: url=%s reason=%s user_id=%s",
-                    ref_url[:80],
-                    reason_ref,
-                    user.id,
-                )
+                to_validate.append((i, ref_url))
+
+        # Validate HTTP refs concurrently instead of sequentially (was up to 96 s for 8 refs)
+        if to_validate:
+            results = await asyncio.gather(
+                *(validate_image_url(ref_url) for _, ref_url in to_validate),
+                return_exceptions=True,
+            )
+            for (i, ref_url), result in zip(to_validate, results):
+                if isinstance(result, Exception):
+                    ok_ref, reason_ref = False, str(result)
+                else:
+                    ok_ref, reason_ref = result
+                if ok_ref:
+                    instant_refs.append((i, ref_url))
+                else:
+                    dropped_count += 1
+                    if avatar_url and ref_url == avatar_url:
+                        dropped_avatar_ref = True
+                    logger.warning(
+                        "Dropped invalid image reference before Zveno request: url=%s reason=%s user_id=%s",
+                        ref_url[:80], reason_ref, user.id,
+                    )
+
+        # Rebuild valid_refs in original order
+        instant_refs.sort(key=lambda x: x[0])
+        valid_refs = [ref_url for _, ref_url in instant_refs]
+
         if dropped_count > 0:
             references = valid_refs
             state.references = list(valid_refs)

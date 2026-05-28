@@ -1193,6 +1193,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if referrer_id and is_new_user and mark_referral_bonus(user.id):
         add_izyminki(user.id, REFERRAL_BONUS_NEW_USER)
         add_izyminki(referrer_id, REFERRAL_BONUS_REFERRER)
+        referrer_balance = get_balance(referrer_id)
+        try:
+            await context.bot.send_message(
+                chat_id=referrer_id,
+                text=(
+                    f"🎉 По твоей реферальной ссылке зарегистрировался новый пользователь!\n"
+                    f"Тебе начислено +{REFERRAL_BONUS_REFERRER} изюминок 🧀\n"
+                    f"Твой баланс: {referrer_balance} изюминок"
+                ),
+            )
+        except Exception:
+            logger.warning("Failed to notify referrer %s about bonus", referrer_id)
 
     bal = get_balance(user.id)
     free_date, free_count = get_free_info(user.id)
@@ -1437,14 +1449,15 @@ async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     payload = query.invoice_payload
     try:
         parts = payload.split("_")
-        if len(parts) < 2:
+        if len(parts) < 3:
             raise ValueError("too few parts")
         count = int(parts[1])
+        price = int(parts[2])
         if count <= 0:
             raise ValueError("non-positive count")
-        valid_counts = {p["count"] for p in BUY_PACKS}
-        if count not in valid_counts:
-            raise ValueError(f"unknown pack count: {count}")
+        valid_pack = next((p for p in BUY_PACKS if p["count"] == count and p["price"] == price), None)
+        if valid_pack is None:
+            raise ValueError(f"unknown pack count={count} price={price}")
     except Exception as e:
         logger.warning("Invalid precheckout payload %r from user %s: %s", payload, query.from_user.id, e)
         await query.answer(ok=False, error_message="Ошибка: неверный платёжный пакет.")
@@ -1478,10 +1491,13 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
         return
 
     add_izyminki(user.id, count)
+    new_balance = get_balance(user.id)
 
     await update.message.reply_text(
         f"Оплата прошла успешно ✅\n"
-        f"Начислено {count} изюминок 🧀"
+        f"Начислено {count} изюминок 🧀\n"
+        f"Твой баланс: {new_balance} изюминок",
+        reply_markup=main_menu_kb(),
     )
 
 

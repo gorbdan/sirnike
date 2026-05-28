@@ -167,6 +167,13 @@ def create_user_if_not_exists(
             conn.commit()
             return True
 
+        # Update username if it has changed
+        if username is not None:
+            cur.execute(
+                "UPDATE users SET username = ? WHERE user_id = ? AND (username IS NULL OR username != ?)",
+                (username, user_id, username)
+            )
+            conn.commit()
         return False
 
 

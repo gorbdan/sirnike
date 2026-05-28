@@ -3370,10 +3370,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if video_cb == "video_start":
+        user_vs = update.effective_user
+        if user_vs.id in queued_user_ids or user_vs.id in processing_user_ids:
+            await query.answer("Уже выполняется другая задача. Подожди.", show_alert=False)
+            return
         state = get_or_init_state(context)
         logger.info(
             "video_start: user=%s animation_source_urls=%s motion_prompt=%r",
-            update.effective_user.id, state.animation_source_urls, state.motion_prompt,
+            user_vs.id, state.animation_source_urls, state.motion_prompt,
         )
         if not state.animation_source_urls and not (state.motion_prompt or "").strip():
             msg_date = getattr(query.message, "date", None)
@@ -3386,6 +3390,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
         state.waiting_for_motion_image = False
         state.motion_session_active = False
+        # Add to processing_user_ids BEFORE create_task to close the race window
+        processing_user_ids.add(user_vs.id)
         context.application.create_task(run_seedance(update, context))
         return
 
@@ -3396,6 +3402,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         state = get_or_init_state(context)
         state.motion_session_active = False
+        processing_user_ids.add(user_r.id)
         context.application.create_task(run_seedance(update, context))
         return
 
@@ -5385,20 +5392,27 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     create_user_if_not_exists(user.id, user.username, START_BONUS)
     reply_target = update.callback_query.message if update.callback_query else update.message
     state = get_or_init_state(context)
+
+    # Snapshot state before clearing — used to restore on error so "Повторить" still works
+    _saved_animation_source_urls = list(state.animation_source_urls or [])
+    _saved_motion_prompt = state.motion_prompt
+
     state.motion_session_active = False
 
     if not SEEDANCE_ENABLED:
         await reply_target.reply_text(motion_unavailable_text(), reply_markup=main_menu_kb())
         return
 
-    if user.id in queued_user_ids or user.id in processing_user_ids:
-        await reply_target.reply_text(
-            "Сейчас уже выполняется другая твоя задача. Дождись результата и запусти снова."
-        )
-        return
-
-    # Reserve slot immediately to prevent concurrent launches during async validation below
-    processing_user_ids.add(user.id)
+    # Caller (video_start / seedance_retry) already added us to processing_user_ids before
+    # create_task to close the race window.  If we were called directly (future callers or
+    # tests) we still do the check + add here as a safety net.
+    if user.id not in processing_user_ids:
+        if user.id in queued_user_ids:
+            await reply_target.reply_text(
+                "Сейчас уже выполняется другая твоя задача. Дождись результата и запусти снова."
+            )
+            return
+        processing_user_ids.add(user.id)
 
     motion_images = get_motion_image_urls(state)
     logger.info(
@@ -5424,9 +5438,6 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await reply_target.reply_text(f"Фото-референс #{idx} недоступен: {short_reason}")
             return
 
-    if motion_images:
-        motion_images = await apply_grid_overlay_to_refs(motion_images)
-
     selected_duration = get_selected_seedance_duration(state)
     selected_model = get_motion_model(state)
     selected_model_label = get_motion_model_label(selected_model)
@@ -5444,6 +5455,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Check balance BEFORE heavy image processing
     bal = get_balance(user.id)
     if bal < selected_cost:
         processing_user_ids.discard(user.id)
@@ -5451,6 +5463,9 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Не хватает изюминок.\nНужно: {selected_cost}\nУ тебя: {bal}\n\nНапиши /buy."
         )
         return
+
+    if motion_images:
+        motion_images = await apply_grid_overlay_to_refs(motion_images)
 
     if not spend_izyminki(user.id, selected_cost):
         processing_user_ids.discard(user.id)
@@ -5571,6 +5586,9 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.exception("Seedance generation failed")
         add_izyminki(user.id, selected_cost)
+        # Restore state so "Повторить" can reuse the same images/prompt
+        state.animation_source_urls = _saved_animation_source_urls
+        state.motion_prompt = _saved_motion_prompt
         log_generation_event(
             user_id=user.id,
             kind="video",

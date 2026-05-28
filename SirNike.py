@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import collections as _collections
 import io
 import json
 import logging
@@ -184,7 +185,7 @@ class _BoundedImageCache:
     def __init__(self, max_entries: int, max_bytes: int) -> None:
         self._max_entries = max_entries
         self._max_bytes = max_bytes
-        self._data: "OrderedDict[str, bytes]" = __import__("collections").OrderedDict()
+        self._data: "_collections.OrderedDict[str, bytes]" = _collections.OrderedDict()
         self._total_bytes = 0
 
     def __setitem__(self, key: str, value: bytes) -> None:
@@ -214,7 +215,6 @@ _image_cache: _BoundedImageCache = _BoundedImageCache(_IMAGE_CACHE_MAX_ENTRIES, 
 last_generated_image_url = {}
 last_generated_prompt = {}
 last_generation_references = {}
-import collections as _collections
 MEDIA_GROUP_CACHE: "_collections.OrderedDict[Tuple[int, str], List[Dict[str, Any]]]" = _collections.OrderedDict()
 MAX_CACHED_MEDIA_GROUPS = 300
 MAX_MEDIA_GROUP_CHUNK_SIZE = 10
@@ -451,9 +451,8 @@ _prompt_library_lock: Optional[asyncio.Lock] = None  # initialised lazily after 
 
 
 def _get_prompt_library_lock() -> asyncio.Lock:
-    global _prompt_library_lock
     if _prompt_library_lock is None:
-        _prompt_library_lock = asyncio.Lock()
+        raise RuntimeError("_prompt_library_lock used before post_init — call post_init first")
     return _prompt_library_lock
 
 
@@ -1929,7 +1928,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not is_admin(user.id):
                     await update.message.reply_text("У тебя нет доступа к этой операции.")
                     return
-                _, message = _create_prompt_library_category(text.strip())
+                _, message = await _create_prompt_library_category(text.strip())
                 await update.message.reply_text(message, reply_markup=prompt_library_admin_kb())
             except Exception:
                 logger.exception("Failed to create prompt category from admin text mode")
@@ -4009,7 +4008,7 @@ def _parse_category_title_and_emoji(raw: str) -> tuple[str, str]:
     return title, emoji
 
 
-def _create_prompt_library_category(raw_title: str) -> tuple[bool, str]:
+async def _create_prompt_library_category(raw_title: str) -> tuple[bool, str]:
     title, emoji = _parse_category_title_and_emoji(raw_title)
     if not title:
         return False, "Название категории пустое."
@@ -4040,7 +4039,7 @@ async def prompt_library_new_category(update: Update, context: ContextTypes.DEFA
         return
 
     try:
-        _, message = _create_prompt_library_category(raw)
+        _, message = await _create_prompt_library_category(raw)
         await update.message.reply_text(message)
     except Exception:
         logger.exception("Failed to create prompt library category")
@@ -4404,7 +4403,8 @@ def _cleanup_old_outputs(max_age_days: int = 3) -> int:
 
 
 async def post_init(app: Application):
-    global queue_worker_task
+    global queue_worker_task, _prompt_library_lock
+    _prompt_library_lock = asyncio.Lock()  # created inside running event loop — safe
     queue_worker_task = asyncio.create_task(_queue_worker_supervised(app))
     _cleanup_old_outputs(max_age_days=3)
 

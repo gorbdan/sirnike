@@ -88,6 +88,7 @@ from config import (
     SEEDANCE_COST_PER_SECOND,
     SEEDANCE_MAX_POLL_ATTEMPTS,
     SEEDANCE_POLL_INTERVAL,
+    SEEDANCE_ATTEMPT_TIMEOUT_SECONDS,
     SEEDANCE_ENABLED,
     SEEDANCE_FAST_ENABLED,
     SEEDANCE_FAST_ENDPOINT,
@@ -784,8 +785,8 @@ AVATAR_REFSHEET_PROMPT = (
     "Output exactly ONE square image."
 )
 
-def avatar_actions_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+def avatar_actions_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
+    rows = [
         [InlineKeyboardButton("🎨 Сгенерировать аватар", callback_data="avatar_gen_refsheet")],
         [
             InlineKeyboardButton("Загрузить женский 👩", callback_data="set_avatar_female"),
@@ -793,14 +794,30 @@ def avatar_actions_kb() -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton("Загрузить детский 🧒", callback_data="set_avatar_child")],
         [InlineKeyboardButton("Показать аватары 👀", callback_data="show_avatar")],
-        [
-            InlineKeyboardButton("Удалить женский 🗑", callback_data="delete_avatar_female"),
-            InlineKeyboardButton("Удалить мужской 🗑", callback_data="delete_avatar_male"),
-        ],
-        [InlineKeyboardButton("Удалить детский 🗑", callback_data="delete_avatar_child")],
-        [InlineKeyboardButton("Удалить все аватары 🧹", callback_data="delete_avatar")],
-        [InlineKeyboardButton("Назад в меню ↩️", callback_data="avatar_back_menu")],
-    ])
+    ]
+    # Show delete buttons only for avatars that actually exist
+    existing = {}
+    if user_id is not None:
+        try:
+            existing = get_avatar_urls(user_id)
+        except Exception:
+            pass
+    else:
+        # Fallback: show all delete buttons if user_id not provided
+        existing = {"female": True, "male": True, "child": True}
+    del_row = []
+    if existing.get("female"):
+        del_row.append(InlineKeyboardButton("Удалить женский 🗑", callback_data="delete_avatar_female"))
+    if existing.get("male"):
+        del_row.append(InlineKeyboardButton("Удалить мужской 🗑", callback_data="delete_avatar_male"))
+    if del_row:
+        rows.append(del_row)
+    if existing.get("child"):
+        rows.append([InlineKeyboardButton("Удалить детский 🗑", callback_data="delete_avatar_child")])
+    if any(existing.values()):
+        rows.append([InlineKeyboardButton("Удалить все аватары 🧹", callback_data="delete_avatar")])
+    rows.append([InlineKeyboardButton("Назад в меню ↩️", callback_data="avatar_back_menu")])
+    return InlineKeyboardMarkup(rows)
 
 def webapp_open_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
@@ -2709,9 +2726,14 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     references = list(state.references)
-    avatar_url = get_avatar_url(user.id)
+    # Pick best available avatar: use the first non-None among female/male/child
+    _all_avatars = get_avatar_urls(user.id)
+    avatar_url = (
+        _all_avatars.get("female")
+        or _all_avatars.get("male")
+        or _all_avatars.get("child")
+    )
     if avatar_url and not references:
-        
         references = [avatar_url]
     if AI_PROVIDER == "ZVENO" and references:
         original_refs_count = len(references)
@@ -3240,7 +3262,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "generate":
         state = get_or_init_state(context)
+        was_in_motion = state.motion_session_active
         deactivate_motion_session(state)
+        if was_in_motion and not state.prompt:
+            await query.message.reply_text(
+                "Режим Seedance закрыт. Теперь отправь текст промпта и нажми «Запустить генерацию⚡» снова."
+            )
+            return
         await run_generation(update, context)
         return
 
@@ -3258,7 +3286,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = get_or_init_state(context)
         deactivate_motion_session(state)
         state.prompt = saved_prompt
-        state.references = list(last_generation_references.get(user_id) or [])
+        saved_refs = list(last_generation_references.get(user_id) or [])
+        state.references = saved_refs
+        if not saved_refs:
+            avatar_url_repeat = get_avatar_url(user.id)
+            if not avatar_url_repeat:
+                await query.message.reply_text(
+                    "ℹ️ Фото-референсы не сохранились (загружались в этой сессии).\n"
+                    "Генерирую без референсов."
+                )
         await run_generation(update, context)
         return
     
@@ -3442,7 +3478,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "avatar_actions":
         await query.message.reply_text(
             "Выбери действие с аватаром:",
-            reply_markup=avatar_actions_kb(),
+            reply_markup=avatar_actions_kb(user.id),
         )
         return
 
@@ -4299,9 +4335,27 @@ async def _queue_worker_supervised(app: Application):
             await asyncio.sleep(3)
 
 
+def _cleanup_old_outputs(max_age_days: int = 3) -> int:
+    """Delete video files in OUTPUTS_DIR older than max_age_days. Returns count deleted."""
+    cutoff = time.time() - max_age_days * 86400
+    deleted = 0
+    try:
+        for fname in os.listdir(OUTPUTS_DIR):
+            fpath = os.path.join(OUTPUTS_DIR, fname)
+            if os.path.isfile(fpath) and os.path.getmtime(fpath) < cutoff:
+                os.remove(fpath)
+                deleted += 1
+    except Exception:
+        logger.exception("Failed to clean up OUTPUTS_DIR")
+    if deleted:
+        logger.info("Cleaned up %d old video file(s) from %s", deleted, OUTPUTS_DIR)
+    return deleted
+
+
 async def post_init(app: Application):
     global queue_worker_task
     queue_worker_task = asyncio.create_task(_queue_worker_supervised(app))
+    _cleanup_old_outputs(max_age_days=3)
 
 
 async def post_shutdown(app: Application):
@@ -5547,15 +5601,25 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         expected_refs_count = len(motion_images)
 
-        restart_after_seconds = 10 * 60
-        per_attempt_max_polls = max(1, restart_after_seconds // max(1, int(SEEDANCE_POLL_INTERVAL)))
-        per_attempt_max_polls = min(SEEDANCE_MAX_POLL_ATTEMPTS, per_attempt_max_polls)
+        per_attempt_max_polls = min(
+            SEEDANCE_MAX_POLL_ATTEMPTS,
+            max(1, SEEDANCE_ATTEMPT_TIMEOUT_SECONDS // max(1, int(SEEDANCE_POLL_INTERVAL))),
+        )
         max_seedance_attempts = 3
         active_prompt = prompt_text
         safety_suffix = (
             "Generate a silent video only. No speech, no voice-over, no subtitles, "
             "no readable text, no letters, no logos, no captions."
         )
+
+        # Single status message that gets edited in place — no chat spam
+        status_msg = await reply_target.reply_text("⏳ Генерирую видео…")
+
+        async def _edit_status(text: str) -> None:
+            try:
+                await status_msg.edit_text(text)
+            except Exception:
+                pass
 
         video_url = None
         last_seedance_error: Optional[Exception] = None
@@ -5578,7 +5642,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     max_attempts=per_attempt_max_polls,
                     poll_interval=SEEDANCE_POLL_INTERVAL,
                     expected_refs_count=expected_refs_count,
-                    status_callback=reply_target.reply_text,
+                    status_callback=_edit_status,
                 )
                 break
             except Exception as e:
@@ -5839,11 +5903,6 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
     refunded = False
     generation_succeeded = False
     last_error_text = "Неизвестная ошибка"
-
-    await app.bot.send_message(
-        chat_id=chat_id,
-        text="Сырник шаманит пиксели ✨"
-    )
 
     if AI_PROVIDER == "ZVENO":
         try:

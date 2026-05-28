@@ -112,6 +112,11 @@ SEEDANCE_MAX_POLL_ATTEMPTS = int(
 SEEDANCE_POLL_INTERVAL = int(
     os.getenv("SEEDANCE_POLL_INTERVAL", str(KLING_POLL_INTERVAL))
 )
+# Max seconds to spend polling per attempt before declaring timeout.
+# Default: 25 min so 15-second videos (which can take 20+ min) don't time out prematurely.
+SEEDANCE_ATTEMPT_TIMEOUT_SECONDS = int(
+    os.getenv("SEEDANCE_ATTEMPT_TIMEOUT_SECONDS", str(25 * 60))
+)
 SEEDANCE_ENABLED = os.getenv("SEEDANCE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
 SEEDANCE_FAST_ENABLED = os.getenv("SEEDANCE_FAST_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
 SEEDANCE_FAST_ENDPOINT = os.getenv("SEEDANCE_FAST_ENDPOINT", "/v1/videos")

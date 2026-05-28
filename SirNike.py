@@ -3435,6 +3435,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not photos:
             await query.answer("Сначала отправь хотя бы одно фото.", show_alert=True)
             return
+
+        if user.id in queued_user_ids or user.id in processing_user_ids:
+            await query.answer("Сырник уже занят другой задачей. Подожди.", show_alert=True)
+            return
+
+        # Charge for avatar generation like a normal image
+        avatar_cost = BASE_GENERATION_COST
+        free_date, free_count = get_free_info(user.id)
+        avatar_use_free = free_count < FREE_GENERATIONS_PER_DAY
+        avatar_paid = False
+        if not avatar_use_free:
+            bal = get_balance(user.id)
+            if bal < avatar_cost:
+                await query.message.reply_text(
+                    f"Не хватает изюминок для генерации аватара.\n"
+                    f"Нужно: {avatar_cost}\nУ тебя: {bal}\n\nНапиши /buy."
+                )
+                return
+            if not spend_izyminki(user.id, avatar_cost):
+                await query.message.reply_text("Не удалось списать изюминки. Попробуй ещё раз.")
+                return
+            avatar_paid = True
+        else:
+            use_free_generation(user.id)
+
         state.generating_avatar = False
         state.avatar_photos = []
         job = GenerationJob(
@@ -3442,8 +3467,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_id=user.id,
             prompt=AVATAR_REFSHEET_PROMPT,
             references=photos,
-            cost=0,
-            was_free=False,
+            cost=avatar_cost if avatar_paid else 0,
+            was_free=avatar_use_free,
             save_as_avatar=True,
             avatar_kind=getattr(state, "pending_avatar_kind", "female") or "female",
         )

@@ -270,6 +270,33 @@ def use_free_generation(user_id: int):
         conn.commit()
 
 
+def try_use_free_generation(user_id: int, max_per_day: int) -> bool:
+    """Atomically check and consume a free generation slot.
+    Returns True if a slot was available and consumed, False otherwise.
+    Use instead of get_free_info + use_free_generation to avoid TOCTOU race."""
+    today = date.today().isoformat()
+    with get_conn() as conn:
+        # Case 1: date is today and count < max → increment
+        cur = conn.execute(
+            """UPDATE users
+               SET free_used_count = free_used_count + 1
+               WHERE user_id = ? AND free_used_date = ? AND free_used_count < ?""",
+            (user_id, today, max_per_day),
+        )
+        conn.commit()
+        if cur.rowcount > 0:
+            return True
+        # Case 2: date is not today (new day) → reset to 1
+        cur = conn.execute(
+            """UPDATE users
+               SET free_used_date = ?, free_used_count = 1
+               WHERE user_id = ? AND (free_used_date IS NULL OR free_used_date != ?)""",
+            (today, user_id, today),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def restore_free_generation(user_id: int):
     """Undo a use_free_generation call — used when generation fails after the slot was consumed."""
     today = date.today().isoformat()

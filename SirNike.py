@@ -36,7 +36,7 @@ from telegram import (
     KeyboardButton,
     ReplyKeyboardRemove,
 )
-from telegram.error import BadRequest, Forbidden
+from telegram.error import BadRequest, Forbidden, RetryAfter
 
 from config import (
     TOKEN,
@@ -109,6 +109,7 @@ from db import (
     add_izyminki,
     get_free_info,
     use_free_generation,
+    try_use_free_generation,
     has_referral_bonus,
     mark_referral_bonus,
     get_all_user_ids,
@@ -211,9 +212,18 @@ class _BoundedImageCache:
 
 
 _image_cache: _BoundedImageCache = _BoundedImageCache(_IMAGE_CACHE_MAX_ENTRIES, _IMAGE_CACHE_MAX_BYTES)
-last_generated_image_url = {}
-last_generated_prompt = {}
-last_generation_references = {}
+
+_LAST_GEN_MAX = 1000  # max users to keep in per-user generation caches
+
+def _bounded_set(d: dict, key, value, max_size: int = _LAST_GEN_MAX) -> None:
+    """Insert key→value into d, evicting oldest entry when full."""
+    if key not in d and len(d) >= max_size:
+        d.pop(next(iter(d)))
+    d[key] = value
+
+last_generated_image_url: "_collections.OrderedDict" = _collections.OrderedDict()
+last_generated_prompt: "_collections.OrderedDict" = _collections.OrderedDict()
+last_generation_references: "_collections.OrderedDict" = _collections.OrderedDict()
 MEDIA_GROUP_CACHE: "_collections.OrderedDict[Tuple[int, str], List[Dict[str, Any]]]" = _collections.OrderedDict()
 MAX_CACHED_MEDIA_GROUPS = 300
 MAX_MEDIA_GROUP_CHUNK_SIZE = 10
@@ -264,7 +274,7 @@ class GenerationJob:
     save_as_avatar: bool = False
     avatar_kind: str = "female"
 
-generation_queue = asyncio.Queue()
+generation_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
 queued_user_ids = set()
 processing_user_ids = set()
 queue_worker_task = None
@@ -1196,7 +1206,12 @@ def get_cached_media_group(chat_id: int, media_group_id: Optional[str]) -> List[
     if not media_group_id:
         return []
     cache_key = (int(chat_id), str(media_group_id))
-    items = list(MEDIA_GROUP_CACHE.get(cache_key, []))
+    _now = time.time()
+    _ttl = 600  # 10 minutes
+    items = [
+        i for i in MEDIA_GROUP_CACHE.get(cache_key, [])
+        if (_now - float(i.get("added_at", 0))) < _ttl
+    ]
     items.sort(key=lambda item: int(item.get("message_id", 0)))
     return items
 
@@ -1662,6 +1677,21 @@ async def broadcast_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             sent += 1
             await asyncio.sleep(0.05)
+        except RetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+            try:
+                await context.bot.send_photo(
+                    chat_id=target_user_id,
+                    photo=photo.file_id,
+                    caption=caption_text,
+                    reply_markup=promo_try_kb(promo_id),
+                )
+                sent += 1
+            except Exception:
+                failed += 1
+                logger.warning(f"Повторная отправка не удалась для {target_user_id}")
+        except (Forbidden, BadRequest):
+            failed += 1
         except Exception:
             failed += 1
             logger.exception(f"Не удалось отправить рассылку пользователю {target_user_id}")
@@ -1752,6 +1782,13 @@ async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             from_chat_id=source_message.chat_id,
                             message_id=source_message.message_id,
                         )
+                    except RetryAfter as e:
+                        await asyncio.sleep(e.retry_after + 1)
+                        await context.bot.copy_message(
+                            chat_id=target_user_id,
+                            from_chat_id=source_message.chat_id,
+                            message_id=source_message.message_id,
+                        )
                     except Exception:
                         await context.bot.forward_message(
                             chat_id=target_user_id,
@@ -1771,6 +1808,13 @@ async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             sent += 1
             await asyncio.sleep(0.05)
+        except RetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+            # skip this user after flood wait — counted as failed to avoid double-send
+            failed += 1
+            logger.warning(f"FloodWait при рассылке пользователю {target_user_id}, пропускаем")
+        except (Forbidden, BadRequest):
+            failed += 1
         except Exception:
             failed += 1
             logger.exception(f"Не удалось отправить рассылку пользователю {target_user_id}")
@@ -1811,6 +1855,20 @@ async def broadcast_hide_keyboard(update: Update, context: ContextTypes.DEFAULT_
             )
             sent += 1
             await asyncio.sleep(0.05)
+        except RetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+            try:
+                await context.bot.send_message(
+                    chat_id=target_user_id,
+                    text=text,
+                    reply_markup=ReplyKeyboardRemove(),
+                )
+                sent += 1
+            except Exception:
+                failed += 1
+                logger.warning("Повторная отправка не удалась для %s", target_user_id)
+        except (Forbidden, BadRequest):
+            failed += 1
         except Exception:
             failed += 1
             logger.exception("Не удалось убрать нижнюю клавиатуру у пользователя %s", target_user_id)
@@ -2867,8 +2925,8 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     cost = calc_generation_cost(references)
 
-    free_date, free_count = get_free_info(user.id)
-    use_free = free_count < FREE_GENERATIONS_PER_DAY
+    # Atomic free-slot check-and-consume to prevent TOCTOU double-use
+    use_free = try_use_free_generation(user.id, FREE_GENERATIONS_PER_DAY)
     paid = False
 
     if not use_free:
@@ -2889,15 +2947,13 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         paid = True
-    else:
-        use_free_generation(user.id)
 
     try:
-        last_generated_prompt[user.id] = state.prompt
+        _bounded_set(last_generated_prompt, user.id, state.prompt)
         # Store only persistent URLs — __img__ refs evaporate after restart
         saved_refs = [r for r in references if not _is_img_ref(r)]
         dropped_img_refs = len(references) - len(saved_refs)
-        last_generation_references[user.id] = saved_refs
+        _bounded_set(last_generation_references, user.id, saved_refs)
         if dropped_img_refs > 0:
             await reply_target.reply_text(
                 f"ℹ️ {dropped_img_refs} фото-референс(а) загружены через чат и не сохранятся для «Повторить». "
@@ -3529,7 +3585,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.motion_session_active = False
         # Add to processing_user_ids BEFORE create_task to close the race window
         processing_user_ids.add(user_vs.id)
-        context.application.create_task(run_seedance(update, context))
+        try:
+            context.application.create_task(run_seedance(update, context))
+        except Exception:
+            processing_user_ids.discard(user_vs.id)
+            logger.exception("create_task(run_seedance) failed for user=%s", user_vs.id)
+            await query.answer("Не удалось запустить генерацию. Попробуй ещё раз.", show_alert=True)
         return
 
     if query.data == "seedance_retry":
@@ -3540,7 +3601,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = get_or_init_state(context)
         state.motion_session_active = False
         processing_user_ids.add(user_r.id)
-        context.application.create_task(run_seedance(update, context))
+        try:
+            context.application.create_task(run_seedance(update, context))
+        except Exception:
+            processing_user_ids.discard(user_r.id)
+            logger.exception("create_task(run_seedance retry) failed for user=%s", user_r.id)
+            await query.answer("Не удалось запустить генерацию. Попробуй ещё раз.", show_alert=True)
         return
 
     if query.data == "avatar_actions":
@@ -3579,8 +3645,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Charge for avatar generation like a normal image
         avatar_cost = BASE_GENERATION_COST
-        free_date, free_count = get_free_info(user.id)
-        avatar_use_free = free_count < FREE_GENERATIONS_PER_DAY
+        avatar_use_free = try_use_free_generation(user.id, FREE_GENERATIONS_PER_DAY)
         avatar_paid = False
         if not avatar_use_free:
             bal = get_balance(user.id)
@@ -3594,8 +3659,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.reply_text("Не удалось списать изюминки. Попробуй ещё раз.")
                 return
             avatar_paid = True
-        else:
-            use_free_generation(user.id)
 
         state.generating_avatar = False
         state.avatar_photos = []
@@ -4278,7 +4341,8 @@ async def prompt_library_list_backups(update: Update, context: ContextTypes.DEFA
                 await message.reply_text(f"Нет бэкапа №{idx}. Всего бэкапов: {len(files)}")
                 return
             path = os.path.join(backup_dir, files[idx - 1])
-            data = json.load(open(path, encoding="utf-8"))
+            with open(path, encoding="utf-8") as _f:
+                data = json.load(_f)
             total = sum(len(c.get("items", [])) for c in data)
             with open(path, "rb") as f:
                 doc = io.BytesIO(f.read())
@@ -4304,7 +4368,8 @@ async def prompt_library_list_backups(update: Update, context: ContextTypes.DEFA
     for i, name in enumerate(files[:20], 1):
         path = os.path.join(backup_dir, name)
         try:
-            data = json.load(open(path, encoding="utf-8"))
+            with open(path, encoding="utf-8") as _f:
+                data = json.load(_f)
             total = sum(len(c.get("items", [])) for c in data)
             lines.append(f"{i}. {name} — {total} шаблонов")
         except Exception:
@@ -4407,6 +4472,28 @@ async def _queue_worker_supervised(app: Application):
             logger.exception("queue_worker crashed unexpectedly — restarting in 3s")
             processing_user_ids.clear()
             queued_user_ids.clear()
+            # Drain pending jobs and refund all waiting users
+            drained = 0
+            while not generation_queue.empty():
+                try:
+                    pending_job = generation_queue.get_nowait()
+                    generation_queue.task_done()
+                    drained += 1
+                    try:
+                        if getattr(pending_job, "cost", 0) > 0:
+                            add_izyminki(pending_job.user_id, pending_job.cost)
+                        if getattr(pending_job, "was_free", False):
+                            restore_free_generation(pending_job.user_id)
+                        await app.bot.send_message(
+                            chat_id=pending_job.chat_id,
+                            text="Сырник споткнулся и потерял твою задачу 😔 Изюминки возвращены — попробуй ещё раз."
+                        )
+                    except Exception:
+                        logger.exception("Failed to refund drained job user=%s", getattr(pending_job, "user_id", "?"))
+                except Exception:
+                    break
+            if drained:
+                logger.warning("Drained %d pending jobs from queue after worker crash", drained)
             await asyncio.sleep(3)
 
 
@@ -4898,8 +4985,18 @@ async def start_seedance_task(
         if candidate and candidate not in combined_image_urls:
             combined_image_urls.append(candidate)
     combined_image_urls = combined_image_urls[:MAX_SEEDANCE_IMAGE_REFERENCES]
-    # Resolve __img__ cache refs to data: URLs for API calls
-    combined_image_urls = [_ref_to_data_url(u) or u for u in combined_image_urls]
+    # Resolve __img__ cache refs to data: URLs; drop refs that can't be resolved
+    resolved = []
+    for u in combined_image_urls:
+        if _is_img_ref(u):
+            data_url = _ref_to_data_url(u)
+            if data_url:
+                resolved.append(data_url)
+            else:
+                logger.warning("start_seedance_task: dropping stale __img__ ref %s (cache miss)", u[:30])
+        else:
+            resolved.append(u)
+    combined_image_urls = resolved
 
     prompt_text = build_seedance_prompt_with_refs((prompt or "").strip(), len(combined_image_urls))
     if len(combined_image_urls) > 1 and SEEDANCE_VIDEO_REFERENCE_MODE == "timeline":
@@ -5789,7 +5886,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user.id,
                 selected_model_label,
             )
-        except Exception as e:
+        except BaseException as e:
             logger.exception("Seedance generation failed")
             add_izyminki(user.id, selected_cost)
             # Restore state so "Повторить" can reuse the same images/prompt
@@ -5835,6 +5932,8 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Временный технический сбой. Попробуй еще раз через минуту.\n\n"
                 "Списанные изюминки возвращены на баланс."
             )
+            if isinstance(e, asyncio.CancelledError):
+                raise  # must re-raise so the task actually cancels
             await reply_target.reply_text(
                 "Попробовать еще раз?",
                 reply_markup=seedance_retry_kb(),
@@ -5910,7 +6009,7 @@ async def send_generation_result_by_url(
     image_url: str,
 ) -> None:
     if image_url:
-        last_generated_image_url[user_id] = image_url
+        _bounded_set(last_generated_image_url, user_id, image_url)
 
     await app.bot.send_message(
         chat_id=chat_id,
@@ -6331,8 +6430,11 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
 
             logger.info("Zveno image success: user=%s image_ref=%s", user_id, str(image_url)[:60])
             generation_succeeded = True
-            last_generated_prompt[user_id] = prompt
-            add_generation_history(user_id=user_id, prompt=prompt, image_url=image_url)
+            _bounded_set(last_generated_prompt, user_id, prompt)
+            _hist_url = image_url
+            if _is_img_ref(_hist_url):
+                _hist_url = await _persist_image_ref(_hist_url) or _hist_url
+            add_generation_history(user_id=user_id, prompt=prompt, image_url=_hist_url)
             await send_generation_result_by_url(app, chat_id, user_id, image_url)
             if getattr(job, "save_as_avatar", False):
                 persistent_avatar_url = await _persist_image_ref(image_url)
@@ -6588,8 +6690,11 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                             if not image_url:
                                 raise Exception(f"MashaGPT task completed but image url not found: {status_data}")
                             generation_succeeded = True
-                            last_generated_prompt[user_id] = prompt
-                            add_generation_history(user_id=user_id, prompt=prompt, image_url=image_url)
+                            _bounded_set(last_generated_prompt, user_id, prompt)
+                            _hist_url = image_url
+                            if _is_img_ref(_hist_url):
+                                _hist_url = await _persist_image_ref(_hist_url) or _hist_url
+                            add_generation_history(user_id=user_id, prompt=prompt, image_url=_hist_url)
                             await send_generation_result_by_url(app, chat_id, user_id, image_url)
                             if getattr(job, "save_as_avatar", False):
                                 persistent_avatar_url = await _persist_image_ref(image_url)
@@ -6709,9 +6814,12 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                             if status == 2:
                                 image_url = generation_data.get("result_url")
                                 if image_url:
-                                    last_generated_image_url[user_id] = image_url
-                                    last_generated_prompt[user_id] = prompt
-                                    add_generation_history(user_id=user_id, prompt=prompt, image_url=image_url)
+                                    _bounded_set(last_generated_image_url, user_id, image_url)
+                                    _bounded_set(last_generated_prompt, user_id, prompt)
+                                    _hist_url = image_url
+                                    if _is_img_ref(_hist_url):
+                                        _hist_url = await _persist_image_ref(_hist_url) or _hist_url
+                                    add_generation_history(user_id=user_id, prompt=prompt, image_url=_hist_url)
                                 if not image_url:
                                     raise Exception("Генерация завершилась, но result_url пустой")
 

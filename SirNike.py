@@ -1409,7 +1409,10 @@ async def send_long_text(chat, text: str) -> None:
         if cut < 1000:
             cut = max_len
         await chat.reply_text(payload[:cut].strip())
-        payload = payload[cut:].strip()
+        new_payload = payload[cut:].strip()
+        if new_payload == payload:  # guard against infinite loop on unsplittable text
+            break
+        payload = new_payload
 
 
 async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1664,33 +1667,22 @@ async def broadcast_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Рассылка уже запущена. Дождись её завершения.")
         return
     _broadcast_running = True
+    try:
+        promo_id = f"promo_{user.id}_{update.message.message_id}"
 
-    promo_id = f"promo_{user.id}_{update.message.message_id}"
+        create_promo_broadcast(
+            promo_id=promo_id,
+            admin_user_id=user.id,
+            caption_text=caption_text,
+            promo_prompt=promo_prompt,
+            photo_file_id=photo.file_id,
+        )
 
-    create_promo_broadcast(
-        promo_id=promo_id,
-        admin_user_id=user.id,
-        caption_text=caption_text,
-        promo_prompt=promo_prompt,
-        photo_file_id=photo.file_id,
-    )
+        users = get_all_user_ids()
+        sent = 0
+        failed = 0
 
-    users = get_all_user_ids()
-    sent = 0
-    failed = 0
-
-    for target_user_id in users:
-        try:
-            await context.bot.send_photo(
-                chat_id=target_user_id,
-                photo=photo.file_id,
-                caption=caption_text,
-                reply_markup=promo_try_kb(promo_id),
-            )
-            sent += 1
-            await asyncio.sleep(0.05)
-        except RetryAfter as e:
-            await asyncio.sleep(e.retry_after + 1)
+        for target_user_id in users:
             try:
                 await context.bot.send_photo(
                     chat_id=target_user_id,
@@ -1699,22 +1691,34 @@ async def broadcast_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=promo_try_kb(promo_id),
                 )
                 sent += 1
+                await asyncio.sleep(0.05)
+            except RetryAfter as e:
+                await asyncio.sleep(e.retry_after + 1)
+                try:
+                    await context.bot.send_photo(
+                        chat_id=target_user_id,
+                        photo=photo.file_id,
+                        caption=caption_text,
+                        reply_markup=promo_try_kb(promo_id),
+                    )
+                    sent += 1
+                except Exception:
+                    failed += 1
+                    logger.warning(f"Повторная отправка не удалась для {target_user_id}")
+            except (Forbidden, BadRequest):
+                failed += 1
             except Exception:
                 failed += 1
-                logger.warning(f"Повторная отправка не удалась для {target_user_id}")
-        except (Forbidden, BadRequest):
-            failed += 1
-        except Exception:
-            failed += 1
-            logger.exception(f"Не удалось отправить рассылку пользователю {target_user_id}")
+                logger.exception(f"Не удалось отправить рассылку пользователю {target_user_id}")
 
-    _broadcast_running = False
-    await update.message.reply_text(
-        f"Рассылка завершена.\n"
-        f"Promo ID: {promo_id}\n"
-        f"Отправлено: {sent}\n"
-        f"Ошибок: {failed}"
-    )
+        await update.message.reply_text(
+            f"Рассылка завершена.\n"
+            f"Promo ID: {promo_id}\n"
+            f"Отправлено: {sent}\n"
+            f"Ошибок: {failed}"
+        )
+    finally:
+        _broadcast_running = False
 
 async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global _broadcast_running
@@ -1757,93 +1761,94 @@ async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Рассылка уже запущена. Дождись её завершения.")
         return
     _broadcast_running = True
-
-    users = get_all_user_ids()
-    sent = 0
-    failed = 0
-    library_kb = broadcast_library_kb()
-    source_group_items: List[Dict[str, Any]] = []
-    if source_message and getattr(source_message, "media_group_id", None):
-        source_group_items = get_cached_media_group(
-            chat_id=source_message.chat_id,
-            media_group_id=source_message.media_group_id,
-        )
-        if not source_group_items:
-            await update.message.reply_text(
-                "Я не вижу полный состав этого альбома (обычно после перезапуска бота).\n"
-                "Перешли фото/видео-альбом заново и снова ответь командой /broadcast."
+    try:
+        users = get_all_user_ids()
+        sent = 0
+        failed = 0
+        library_kb = broadcast_library_kb()
+        source_group_items: List[Dict[str, Any]] = []
+        if source_message and getattr(source_message, "media_group_id", None):
+            source_group_items = get_cached_media_group(
+                chat_id=source_message.chat_id,
+                media_group_id=source_message.media_group_id,
             )
-            return
-
-    for target_user_id in users:
-        try:
-            if source_message:
-                if source_group_items:
-                    for start_idx in range(0, len(source_group_items), MAX_MEDIA_GROUP_CHUNK_SIZE):
-                        chunk = source_group_items[start_idx:start_idx + MAX_MEDIA_GROUP_CHUNK_SIZE]
-                        media_payload = build_media_group_payload(chunk)
-                        if not media_payload:
-                            continue
-                        await context.bot.send_media_group(
-                            chat_id=target_user_id,
-                            media=media_payload,
-                        )
-                        await asyncio.sleep(0.02)
-                    await context.bot.send_message(
-                        chat_id=target_user_id,
-                        text="Библиотека промтов 👇",
-                        reply_markup=library_kb,
-                    )
-                else:
-                    try:
-                        await context.bot.copy_message(
-                            chat_id=target_user_id,
-                            from_chat_id=source_message.chat_id,
-                            message_id=source_message.message_id,
-                        )
-                    except RetryAfter as e:
-                        await asyncio.sleep(e.retry_after + 1)
-                        await context.bot.copy_message(
-                            chat_id=target_user_id,
-                            from_chat_id=source_message.chat_id,
-                            message_id=source_message.message_id,
-                        )
-                    except Exception:
-                        await context.bot.forward_message(
-                            chat_id=target_user_id,
-                            from_chat_id=source_message.chat_id,
-                            message_id=source_message.message_id,
-                        )
-                    await context.bot.send_message(
-                        chat_id=target_user_id,
-                        text="Библиотека промтов 👇",
-                        reply_markup=library_kb,
-                    )
-            else:
-                await context.bot.send_message(
-                    chat_id=target_user_id,
-                    text=text,
-                    reply_markup=library_kb,
+            if not source_group_items:
+                await update.message.reply_text(
+                    "Я не вижу полный состав этого альбома (обычно после перезапуска бота).\n"
+                    "Перешли фото/видео-альбом заново и снова ответь командой /broadcast."
                 )
-            sent += 1
-            await asyncio.sleep(0.05)
-        except RetryAfter as e:
-            await asyncio.sleep(e.retry_after + 1)
-            # skip this user after flood wait — counted as failed to avoid double-send
-            failed += 1
-            logger.warning(f"FloodWait при рассылке пользователю {target_user_id}, пропускаем")
-        except (Forbidden, BadRequest):
-            failed += 1
-        except Exception:
-            failed += 1
-            logger.exception(f"Не удалось отправить рассылку пользователю {target_user_id}")
+                return
 
-    _broadcast_running = False
-    await update.message.reply_text(
-        "Рассылка завершена.\n"
-        f"Отправлено: {sent}\n"
-        f"Ошибок: {failed}"
-    )
+        for target_user_id in users:
+            try:
+                if source_message:
+                    if source_group_items:
+                        for start_idx in range(0, len(source_group_items), MAX_MEDIA_GROUP_CHUNK_SIZE):
+                            chunk = source_group_items[start_idx:start_idx + MAX_MEDIA_GROUP_CHUNK_SIZE]
+                            media_payload = build_media_group_payload(chunk)
+                            if not media_payload:
+                                continue
+                            await context.bot.send_media_group(
+                                chat_id=target_user_id,
+                                media=media_payload,
+                            )
+                            await asyncio.sleep(0.02)
+                        await context.bot.send_message(
+                            chat_id=target_user_id,
+                            text="Библиотека промтов 👇",
+                            reply_markup=library_kb,
+                        )
+                    else:
+                        try:
+                            await context.bot.copy_message(
+                                chat_id=target_user_id,
+                                from_chat_id=source_message.chat_id,
+                                message_id=source_message.message_id,
+                            )
+                        except RetryAfter as e:
+                            await asyncio.sleep(e.retry_after + 1)
+                            await context.bot.copy_message(
+                                chat_id=target_user_id,
+                                from_chat_id=source_message.chat_id,
+                                message_id=source_message.message_id,
+                            )
+                        except Exception:
+                            await context.bot.forward_message(
+                                chat_id=target_user_id,
+                                from_chat_id=source_message.chat_id,
+                                message_id=source_message.message_id,
+                            )
+                        await context.bot.send_message(
+                            chat_id=target_user_id,
+                            text="Библиотека промтов 👇",
+                            reply_markup=library_kb,
+                        )
+                else:
+                    await context.bot.send_message(
+                        chat_id=target_user_id,
+                        text=text,
+                        reply_markup=library_kb,
+                    )
+                sent += 1
+                await asyncio.sleep(0.05)
+            except RetryAfter as e:
+                await asyncio.sleep(e.retry_after + 1)
+                # skip this user after flood wait — counted as failed to avoid double-send
+                failed += 1
+                logger.warning(f"FloodWait при рассылке пользователю {target_user_id}, пропускаем")
+            except (Forbidden, BadRequest):
+                failed += 1
+            except Exception:
+                    failed += 1
+                    logger.exception(f"Не удалось отправить рассылку пользователю {target_user_id}")
+    
+        await update.message.reply_text(
+            "Рассылка завершена.\n"
+            f"Отправлено: {sent}\n"
+            f"Ошибок: {failed}"
+        )
+    finally:
+        _broadcast_running = False
 
 
 async def broadcast_hide_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1861,28 +1866,18 @@ async def broadcast_hide_keyboard(update: Update, context: ContextTypes.DEFAULT_
         await message.reply_text("⚠️ Рассылка уже запущена. Дождись её завершения.")
         return
     _broadcast_running = True
+    try:
+        text = (
+            "Обновили библиотеку промптов 📚\n"
+            "Открывай её через кнопку «Библиотека промптов» в меню бота."
+        )
+        users = get_all_user_ids()
+        sent = 0
+        failed = 0
 
-    text = (
-        "Обновили библиотеку промптов 📚\n"
-        "Открывай её через кнопку «Библиотека промптов» в меню бота."
-    )
-    users = get_all_user_ids()
-    sent = 0
-    failed = 0
+        await message.reply_text(f"Начинаю убирать старую нижнюю кнопку у {len(users)} пользователей.")
 
-    await message.reply_text(f"Начинаю убирать старую нижнюю кнопку у {len(users)} пользователей.")
-
-    for target_user_id in users:
-        try:
-            await context.bot.send_message(
-                chat_id=target_user_id,
-                text=text,
-                reply_markup=ReplyKeyboardRemove(),
-            )
-            sent += 1
-            await asyncio.sleep(0.05)
-        except RetryAfter as e:
-            await asyncio.sleep(e.retry_after + 1)
+        for target_user_id in users:
             try:
                 await context.bot.send_message(
                     chat_id=target_user_id,
@@ -1890,21 +1885,32 @@ async def broadcast_hide_keyboard(update: Update, context: ContextTypes.DEFAULT_
                     reply_markup=ReplyKeyboardRemove(),
                 )
                 sent += 1
+                await asyncio.sleep(0.05)
+            except RetryAfter as e:
+                await asyncio.sleep(e.retry_after + 1)
+                try:
+                    await context.bot.send_message(
+                        chat_id=target_user_id,
+                        text=text,
+                        reply_markup=ReplyKeyboardRemove(),
+                    )
+                    sent += 1
+                except Exception:
+                    failed += 1
+                    logger.warning("Повторная отправка не удалась для %s", target_user_id)
+            except (Forbidden, BadRequest):
+                failed += 1
             except Exception:
                 failed += 1
-                logger.warning("Повторная отправка не удалась для %s", target_user_id)
-        except (Forbidden, BadRequest):
-            failed += 1
-        except Exception:
-            failed += 1
-            logger.exception("Не удалось убрать нижнюю клавиатуру у пользователя %s", target_user_id)
+                logger.exception("Не удалось убрать нижнюю клавиатуру у пользователя %s", target_user_id)
 
-    _broadcast_running = False
-    await message.reply_text(
-        "Готово.\n"
-        f"Клавиатуру убрали: {sent}\n"
-        f"Ошибок: {failed}"
-    )
+        await message.reply_text(
+            "Готово.\n"
+            f"Клавиатуру убрали: {sent}\n"
+            f"Ошибок: {failed}"
+        )
+    finally:
+        _broadcast_running = False
 
 
 async def admin_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2994,8 +3000,19 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             references=references,
             cost=cost if paid else 0,
             was_free=use_free,
-)
-        await generation_queue.put(job)
+        )
+        try:
+            generation_queue.put_nowait(job)
+        except asyncio.QueueFull:
+            queued_user_ids.discard(user.id)
+            if paid:
+                add_izyminki(user.id, cost)
+            elif use_free:
+                restore_free_generation(user.id)
+            await reply_target.reply_text(
+                "Сырник сейчас очень занят — очередь переполнена 😔 Попробуй через минуту."
+            )
+            return
 
         await reply_target.reply_text(
             "Сырник всё понял 🧀\n"
@@ -3004,7 +3021,7 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data["state"] = UserState()
 
-    except Exception:
+    except BaseException:
         logger.exception("Failed to enqueue generation job")
         queued_user_ids.discard(user.id)
 
@@ -3012,6 +3029,7 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             add_izyminki(user.id, cost)
         elif use_free:
             restore_free_generation(user.id)
+        raise
 
         await reply_target.reply_text(
             "Не получилось взять задачу в работу. Попробуй ещё раз."
@@ -3702,8 +3720,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         queued_user_ids.add(user.id)
         try:
-            await generation_queue.put(job)
-        except Exception:
+            generation_queue.put_nowait(job)
+        except asyncio.QueueFull:
+            queued_user_ids.discard(user.id)
+            if avatar_paid:
+                add_izyminki(user.id, avatar_cost)
+            elif avatar_use_free:
+                restore_free_generation(user.id)
+            await query.message.reply_text("Сырник сейчас очень занят — очередь переполнена 😔 Попробуй через минуту.")
+            return
+        except BaseException:
             queued_user_ids.discard(user.id)
             if avatar_paid:
                 add_izyminki(user.id, avatar_cost)
@@ -3711,7 +3737,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 restore_free_generation(user.id)
             logger.exception("Failed to enqueue avatar job for user=%s", user.id)
             await query.message.reply_text("Не удалось запустить генерацию. Попробуй ещё раз.")
-            return
+            raise
         context.user_data["state"] = UserState()
         await query.message.reply_text(
             f"Запускаю генерацию аватара по {len(photos)} фото… ✨",
@@ -4596,23 +4622,28 @@ async def queue_worker(app: Application):
             try:
                 await generate_image_by_job(app, job)
 
-            except Exception:
-                logger.exception("Queue worker error for user=%s", job.user_id)
+            except BaseException as _job_exc:
+                is_cancelled = isinstance(_job_exc, asyncio.CancelledError)
+                if not is_cancelled:
+                    logger.exception("Queue worker error for user=%s", job.user_id)
                 try:
                     if getattr(job, "cost", 0) > 0:
                         add_izyminki(job.user_id, job.cost)
-                        logger.info("Refunded %d izyminki to user %s after worker crash", job.cost, job.user_id)
+                        logger.info("Refunded %d izyminki to user %s after worker error", job.cost, job.user_id)
                     if getattr(job, "was_free", False):
                         restore_free_generation(job.user_id)
                 except Exception:
-                    logger.exception("Failed to refund after worker crash for user=%s", job.user_id)
-                try:
-                    await app.bot.send_message(
-                        chat_id=job.chat_id,
-                        text="Ой, Сырник споткнулся на пути к магии. Попробуй ещё раз чуть позже.\n\nСписанные изюминки возвращены на баланс.",
-                    )
-                except Exception:
-                    pass
+                    logger.exception("Failed to refund after worker error for user=%s", job.user_id)
+                if not is_cancelled:
+                    try:
+                        await app.bot.send_message(
+                            chat_id=job.chat_id,
+                            text="Ой, Сырник споткнулся на пути к магии. Попробуй ещё раз чуть позже.\n\nСписанные изюминки возвращены на баланс.",
+                        )
+                    except Exception:
+                        pass
+                if is_cancelled:
+                    raise
             finally:
                 _worker_current_job = None  # clear after job is done
                 processing_user_ids.discard(job.user_id)
@@ -5735,8 +5766,9 @@ def save_video_debug_copy(video_bytes: bytes, user_id: int, model_label: str) ->
         return None
         
 async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+    user = None
     try:  # outer try/finally: guarantees processing_user_ids.discard runs from the very first line
+        user = update.effective_user
         create_user_if_not_exists(user.id, user.username, START_BONUS)
         reply_target = update.callback_query.message if update.callback_query else update.message
         state = get_or_init_state(context)
@@ -5989,7 +6021,8 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=seedance_retry_kb(),
             )
     finally:
-        processing_user_ids.discard(user.id)
+        if user is not None:
+            processing_user_ids.discard(user.id)
 
 async def _persist_image_ref(ref: str) -> str:
     """Upload __img__ cache ref to permanent hosting. Returns persistent URL or empty string on failure."""

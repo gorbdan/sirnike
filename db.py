@@ -152,29 +152,26 @@ def create_user_if_not_exists(
 ):
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
-        row = cur.fetchone()
+        # INSERT OR IGNORE is atomic — avoids SELECT+INSERT race on simultaneous /start
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO users (
+                user_id, username, balance, referrer_id, referral_bonus_given, created_at
+            ) VALUES (?, ?, ?, ?, 0, ?)
+            """,
+            (user_id, username, start_bonus, referrer_id, datetime.utcnow().isoformat())
+        )
+        conn.commit()
+        is_new = cur.rowcount > 0
 
-        if row is None:
-            cur.execute(
-                """
-                INSERT INTO users (
-                    user_id, username, balance, referrer_id, referral_bonus_given, created_at
-                ) VALUES (?, ?, ?, ?, 0, ?)
-                """,
-                (user_id, username, start_bonus, referrer_id, datetime.utcnow().isoformat())
-            )
-            conn.commit()
-            return True
-
-        # Update username if it has changed
-        if username is not None:
+        if not is_new and username is not None:
+            # Update username if it has changed
             cur.execute(
                 "UPDATE users SET username = ? WHERE user_id = ? AND (username IS NULL OR username != ?)",
                 (username, user_id, username)
             )
             conn.commit()
-        return False
+        return is_new
 
 
 def user_exists(user_id: int) -> bool:

@@ -1183,6 +1183,8 @@ def cache_media_group_message(message) -> None:
     bucket = MEDIA_GROUP_CACHE.setdefault(cache_key, [])
     if any(item.get("message_id") == media_item["message_id"] for item in bucket):
         return
+    if len(bucket) >= MAX_MEDIA_GROUP_CHUNK_SIZE:
+        return  # bucket full — ignore extra items (prevents DoS)
 
     bucket.append(media_item)
     bucket.sort(key=lambda item: int(item.get("message_id", 0)))
@@ -1562,14 +1564,15 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
 
     try:
         parts = payload.split("_")
-        if len(parts) < 2:
+        if len(parts) < 3:
             raise ValueError("too few parts")
         count = int(parts[1])
-        if count <= 0:
-            raise ValueError("non-positive count")
-        valid_counts = {p["count"] for p in BUY_PACKS}
-        if count not in valid_counts:
-            raise ValueError(f"unknown pack count: {count}")
+        price = int(parts[2])
+        if count <= 0 or price <= 0:
+            raise ValueError("non-positive count or price")
+        valid_pack = next((p for p in BUY_PACKS if p["count"] == count and p["price"] == price), None)
+        if valid_pack is None:
+            raise ValueError(f"unknown pack count={count} price={price}")
     except Exception as e:
         logger.error("Invalid payment payload %r from user %s: %s", payload, user.id, e)
         await update.message.reply_text("Ошибка обработки платежа. Обратись в поддержку.")
@@ -1621,7 +1624,11 @@ async def send_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE, count
 # АДМИН: рассылки, статистика, управление
 # ══════════════════════════════════════════════════════════════
 
+_broadcast_running = False  # guard against parallel broadcasts
+
+
 async def broadcast_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global _broadcast_running
     user = update.effective_user
 
     if not is_admin(user.id):
@@ -1652,6 +1659,11 @@ async def broadcast_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not promo_prompt:
         await update.message.reply_text("Промт пустой.")
         return
+
+    if _broadcast_running:
+        await update.message.reply_text("⚠️ Рассылка уже запущена. Дождись её завершения.")
+        return
+    _broadcast_running = True
 
     promo_id = f"promo_{user.id}_{update.message.message_id}"
 
@@ -1696,6 +1708,7 @@ async def broadcast_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             failed += 1
             logger.exception(f"Не удалось отправить рассылку пользователю {target_user_id}")
 
+    _broadcast_running = False
     await update.message.reply_text(
         f"Рассылка завершена.\n"
         f"Promo ID: {promo_id}\n"
@@ -1704,6 +1717,7 @@ async def broadcast_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global _broadcast_running
     user = update.effective_user
 
     if not is_admin(user.id):
@@ -1738,6 +1752,11 @@ async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/broadcast Привет! Сегодня добавили новые стили генерации."
         )
         return
+
+    if _broadcast_running:
+        await update.message.reply_text("⚠️ Рассылка уже запущена. Дождись её завершения.")
+        return
+    _broadcast_running = True
 
     users = get_all_user_ids()
     sent = 0
@@ -1819,6 +1838,7 @@ async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             failed += 1
             logger.exception(f"Не удалось отправить рассылку пользователю {target_user_id}")
 
+    _broadcast_running = False
     await update.message.reply_text(
         "Рассылка завершена.\n"
         f"Отправлено: {sent}\n"
@@ -1827,6 +1847,7 @@ async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def broadcast_hide_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global _broadcast_running
     user = update.effective_user
     message = update.effective_message
     if not message:
@@ -1835,6 +1856,11 @@ async def broadcast_hide_keyboard(update: Update, context: ContextTypes.DEFAULT_
     if not is_admin(user.id):
         await message.reply_text("У тебя нет доступа к этой команде.")
         return
+
+    if _broadcast_running:
+        await message.reply_text("⚠️ Рассылка уже запущена. Дождись её завершения.")
+        return
+    _broadcast_running = True
 
     text = (
         "Обновили библиотеку промптов 📚\n"
@@ -1873,6 +1899,7 @@ async def broadcast_hide_keyboard(update: Update, context: ContextTypes.DEFAULT_
             failed += 1
             logger.exception("Не удалось убрать нижнюю клавиатуру у пользователя %s", target_user_id)
 
+    _broadcast_running = False
     await message.reply_text(
         "Готово.\n"
         f"Клавиатуру убрали: {sent}\n"
@@ -3353,6 +3380,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         except Exception:
             logger.exception("Failed to save prompt library item via category picker")
+            context.user_data.pop("pending_pl_save", None)  # clear stale state on error
             await query.message.reply_text("Не удалось сохранить шаблон. Попробуй ещё раз.")
             return
 
@@ -4461,6 +4489,9 @@ async def prompt_library_history_command(update: Update, context: ContextTypes.D
 # ОЧЕРЕДЬ И ЖИЗНЕННЫЙ ЦИКЛ БОТА: worker, post_init, shutdown
 # ══════════════════════════════════════════════════════════════
 
+_worker_current_job = None  # tracks the job being processed right now
+
+
 async def _queue_worker_supervised(app: Application):
     """Wraps queue_worker with auto-restart on unexpected crash."""
     while True:
@@ -4472,6 +4503,22 @@ async def _queue_worker_supervised(app: Application):
             logger.exception("queue_worker crashed unexpectedly — restarting in 3s")
             processing_user_ids.clear()
             queued_user_ids.clear()
+
+            # Refund the job that was actively being processed when the crash happened
+            _crashed_job = _worker_current_job
+            if _crashed_job is not None:
+                try:
+                    if getattr(_crashed_job, "cost", 0) > 0:
+                        add_izyminki(_crashed_job.user_id, _crashed_job.cost)
+                    if getattr(_crashed_job, "was_free", False):
+                        restore_free_generation(_crashed_job.user_id)
+                    await app.bot.send_message(
+                        chat_id=_crashed_job.chat_id,
+                        text="Сырник споткнулся и потерял твою задачу 😔 Изюминки возвращены — попробуй ещё раз."
+                    )
+                except Exception:
+                    logger.exception("Failed to refund current job after crash user=%s", getattr(_crashed_job, "user_id", "?"))
+
             # Drain pending jobs and refund all waiting users
             drained = 0
             while not generation_queue.empty():
@@ -4537,12 +4584,14 @@ async def post_shutdown(app: Application):
 
 
 async def queue_worker(app: Application):
+    global _worker_current_job
     try:
         while True:
             job = await generation_queue.get()
 
             queued_user_ids.discard(job.user_id)
             processing_user_ids.add(job.user_id)
+            _worker_current_job = job  # track for crash recovery in supervisor
 
             try:
                 await generate_image_by_job(app, job)
@@ -4565,6 +4614,7 @@ async def queue_worker(app: Application):
                 except Exception:
                     pass
             finally:
+                _worker_current_job = None  # clear after job is done
                 processing_user_ids.discard(job.user_id)
                 generation_queue.task_done()
     except asyncio.CancelledError:
@@ -6485,11 +6535,14 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                     restore_free_generation(job.user_id)
                     refunded = True
 
-            await app.bot.send_message(
-                chat_id=chat_id,
-                text=generation_failure_user_text(refunded),
-                reply_markup=result_actions_kb(),
-            )
+            try:
+                await app.bot.send_message(
+                    chat_id=chat_id,
+                    text=generation_failure_user_text(refunded),
+                    reply_markup=result_actions_kb(),
+                )
+            except Exception:
+                logger.warning("Failed to send ZVENO failure message to user %s", user_id)
             log_generation_event(
                 user_id=user_id,
                 kind="image",
@@ -6739,11 +6792,14 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                     restore_free_generation(job.user_id)
                     refunded = True
 
-            await app.bot.send_message(
-                chat_id=chat_id,
-                text=generation_failure_user_text(refunded),
-                reply_markup=result_actions_kb(),
-            )
+            try:
+                await app.bot.send_message(
+                    chat_id=chat_id,
+                    text=generation_failure_user_text(refunded),
+                    reply_markup=result_actions_kb(),
+                )
+            except Exception:
+                logger.warning("Failed to send MASHAGPT failure message to user %s", user_id)
             log_generation_event(
                 user_id=user_id,
                 kind="image",

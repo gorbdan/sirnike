@@ -406,16 +406,11 @@ def get_avatar_urls(user_id: int) -> dict:
 def clear_avatar_url(user_id: int, kind: str = "female"):
     col = _avatar_column(kind)
     with get_conn() as conn:
-        if col == "avatar_female_url":
-            conn.execute(
-                "UPDATE users SET avatar_female_url = NULL, avatar_url = NULL WHERE user_id = ?",
-                (user_id,),
-            )
-        else:
-            conn.execute(
-                f"UPDATE users SET {col} = NULL WHERE user_id = ?",
-                (user_id,),
-            )
+        # Only clear the specific slot — never touch avatar_url (legacy shared fallback)
+        conn.execute(
+            f"UPDATE users SET {col} = NULL WHERE user_id = ?",
+            (user_id,),
+        )
         conn.commit()
 
 

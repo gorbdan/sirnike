@@ -3607,10 +3607,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("У тебя пока нет сохранённых аватаров.")
             return
         for kind, url in present:
-            await query.message.reply_photo(
-                photo=url,
-                caption=f"Аватар: {avatar_kind_label(kind)}"
-            )
+            try:
+                await query.message.reply_photo(
+                    photo=url,
+                    caption=f"Аватар: {avatar_kind_label(kind)}"
+                )
+            except Exception:
+                logger.warning("show_avatar: failed to send photo url=%s kind=%s", url[:60], kind)
+                clear_avatar_url(update.effective_user.id, kind)
+                await query.message.reply_text(
+                    f"Аватар «{avatar_kind_label(kind)}» недоступен (ссылка протухла) и удалён.\n"
+                    "Загрузи новый аватар через меню."
+                )
         return
 
     if query.data in {"delete_avatar", "delete_avatar_female", "delete_avatar_male", "delete_avatar_child"}:

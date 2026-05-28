@@ -319,7 +319,8 @@ def _avatar_column(kind: str) -> str:
     raw = (kind or "female").strip().lower()
     normalized = _AVATAR_COLUMN_ALIASES.get(raw, raw)
     col = _AVATAR_COLUMNS.get(normalized, "avatar_female_url")
-    assert col in _AVATAR_COLUMN_SAFE, f"unsafe column name: {col!r}"
+    if col not in _AVATAR_COLUMN_SAFE:
+        raise ValueError(f"unsafe column name: {col!r}")
     return col
 
 
@@ -414,26 +415,19 @@ def purge_stale_avatar_refs() -> int:
     return count
 
 
+# DEPRECATED: payment_exists and save_payment are dead code.
+# Always use save_payment_once which is atomic (INSERT OR IGNORE + rowcount check).
+# Using payment_exists + save_payment separately breaks atomicity and risks double-crediting.
 def payment_exists(payment_id: str) -> bool:
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT 1 FROM payments WHERE telegram_payment_id = ?",
-            (payment_id,)
-        )
-        return cur.fetchone() is not None
+    raise NotImplementedError(
+        "payment_exists is deprecated — use save_payment_once which is atomic"
+    )
 
 
-def save_payment(user_id: int, payment_id: str, amount: int):
-    with get_conn() as conn:
-        conn.execute(
-            """
-            INSERT INTO payments (user_id, telegram_payment_id, amount, created_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            (user_id, payment_id, amount, datetime.utcnow().isoformat())
-        )
-        conn.commit()
+def save_payment(user_id: int, payment_id: str, amount: int) -> None:
+    raise NotImplementedError(
+        "save_payment is deprecated — use save_payment_once which is atomic"
+    )
 
 
 def save_payment_once(user_id: int, payment_id: str, amount: int) -> bool:

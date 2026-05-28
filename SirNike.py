@@ -116,7 +116,6 @@ from db import (
     get_promo_broadcast,
     register_promo_click,
     get_promo_stats,
-    payment_exists,
     save_payment_once,
     set_avatar_url,
     get_avatar_url,
@@ -445,7 +444,6 @@ def load_prompt_library() -> list:
     return DEFAULT_PROMPT_LIBRARY
 
 
-_sync_prompt_library_from_remote()
 PROMPT_LIBRARY = load_prompt_library()
 _prompt_library_lock: Optional[asyncio.Lock] = None  # initialised lazily after event loop starts
 
@@ -1179,7 +1177,17 @@ def cache_media_group_message(message) -> None:
     bucket.append(media_item)
     bucket.sort(key=lambda item: int(item.get("message_id", 0)))
 
-    # O(1) eviction: pop the oldest (first) entry when over the limit
+    # TTL eviction: drop entries whose oldest item is more than 10 minutes old
+    _media_group_ttl = 600  # seconds
+    _now = time.time()
+    stale_keys = [
+        k for k, v in MEDIA_GROUP_CACHE.items()
+        if v and (_now - float(v[0].get("added_at", _now))) > _media_group_ttl
+    ]
+    for k in stale_keys:
+        MEDIA_GROUP_CACHE.pop(k, None)
+
+    # Hard cap: O(1) eviction of oldest entry when still over the limit
     while len(MEDIA_GROUP_CACHE) > MAX_CACHED_MEDIA_GROUPS:
         MEDIA_GROUP_CACHE.popitem(last=False)
 
@@ -2887,7 +2895,14 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         last_generated_prompt[user.id] = state.prompt
         # Store only persistent URLs — __img__ refs evaporate after restart
-        last_generation_references[user.id] = [r for r in references if not _is_img_ref(r)]
+        saved_refs = [r for r in references if not _is_img_ref(r)]
+        dropped_img_refs = len(references) - len(saved_refs)
+        last_generation_references[user.id] = saved_refs
+        if dropped_img_refs > 0:
+            await reply_target.reply_text(
+                f"ℹ️ {dropped_img_refs} фото-референс(а) загружены через чат и не сохранятся для «Повторить». "
+                "Чтобы сохранить — загрузи аватар через меню Аватар."
+            )
 
         job = GenerationJob(
             chat_id=update.effective_chat.id,
@@ -3595,7 +3610,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             avatar_kind=getattr(state, "pending_avatar_kind", "female") or "female",
         )
         queued_user_ids.add(user.id)
-        await generation_queue.put(job)
+        try:
+            await generation_queue.put(job)
+        except Exception:
+            queued_user_ids.discard(user.id)
+            if avatar_paid:
+                add_izyminki(user.id, avatar_cost)
+            elif avatar_use_free:
+                restore_free_generation(user.id)
+            logger.exception("Failed to enqueue avatar job for user=%s", user.id)
+            await query.message.reply_text("Не удалось запустить генерацию. Попробуй ещё раз.")
+            return
         context.user_data["state"] = UserState()
         await query.message.reply_text(
             f"Запускаю генерацию аватара по {len(photos)} фото… ✨",
@@ -4405,6 +4430,10 @@ def _cleanup_old_outputs(max_age_days: int = 3) -> int:
 async def post_init(app: Application):
     global queue_worker_task, _prompt_library_lock
     _prompt_library_lock = asyncio.Lock()  # created inside running event loop — safe
+    # Seed prompt library from remote in a thread so we don't block the event loop
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _sync_prompt_library_from_remote)
+    refresh_prompt_library()
     queue_worker_task = asyncio.create_task(_queue_worker_supervised(app))
     _cleanup_old_outputs(max_age_days=3)
 
@@ -5560,32 +5589,32 @@ def save_video_debug_copy(video_bytes: bytes, user_id: int, model_label: str) ->
         
 async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    create_user_if_not_exists(user.id, user.username, START_BONUS)
-    reply_target = update.callback_query.message if update.callback_query else update.message
-    state = get_or_init_state(context)
+    try:  # outer try/finally: guarantees processing_user_ids.discard runs from the very first line
+        create_user_if_not_exists(user.id, user.username, START_BONUS)
+        reply_target = update.callback_query.message if update.callback_query else update.message
+        state = get_or_init_state(context)
 
-    # Snapshot state before clearing — used to restore on error so "Повторить" still works
-    _saved_animation_source_urls = list(state.animation_source_urls or [])
-    _saved_motion_prompt = state.motion_prompt
+        # Snapshot state before clearing — used to restore on error so "Повторить" still works
+        _saved_animation_source_urls = list(state.animation_source_urls or [])
+        _saved_motion_prompt = state.motion_prompt
 
-    state.motion_session_active = False
+        state.motion_session_active = False
 
-    if not SEEDANCE_ENABLED:
-        await reply_target.reply_text(motion_unavailable_text(), reply_markup=main_menu_kb())
-        return
-
-    # Caller (video_start / seedance_retry) already added us to processing_user_ids before
-    # create_task to close the race window.  If we were called directly (future callers or
-    # tests) we still do the check + add here as a safety net.
-    if user.id not in processing_user_ids:
-        if user.id in queued_user_ids:
-            await reply_target.reply_text(
-                "Сейчас уже выполняется другая твоя задача. Дождись результата и запусти снова."
-            )
+        if not SEEDANCE_ENABLED:
+            await reply_target.reply_text(motion_unavailable_text(), reply_markup=main_menu_kb())
             return
-        processing_user_ids.add(user.id)
 
-    try:  # outer try/finally guarantees processing_user_ids is always cleared
+        # Caller (video_start / seedance_retry) already added us to processing_user_ids before
+        # create_task to close the race window.  If we were called directly (future callers or
+        # tests) we still do the check + add here as a safety net.
+        if user.id not in processing_user_ids:
+            if user.id in queued_user_ids:
+                await reply_target.reply_text(
+                    "Сейчас уже выполняется другая твоя задача. Дождись результата и запусти снова."
+                )
+                return
+            processing_user_ids.add(user.id)
+
         motion_images = get_motion_image_urls(state)
         logger.info(
             "run_seedance: user=%s animation_source_urls=%s motion_prompt=%r",
@@ -6786,6 +6815,9 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
     try:
         if getattr(job, "cost", 0) > 0 and not refunded:
             add_izyminki(job.user_id, job.cost)
+            refunded = True
+        if getattr(job, "was_free", False) and not refunded:
+            restore_free_generation(job.user_id)
             refunded = True
 
         logger.error(f"Generation debug | provider=YESAPI | user_id={user_id} | error={last_error_text}")

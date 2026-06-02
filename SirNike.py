@@ -189,6 +189,9 @@ class _BoundedImageCache:
         self._total_bytes = 0
 
     def __setitem__(self, key: str, value: bytes) -> None:
+        if len(value) > self._max_bytes:
+            logger.warning("Image too large for cache (%d bytes), skipping", len(value))
+            return
         if key in self._data:
             self._total_bytes -= len(self._data[key])
             del self._data[key]

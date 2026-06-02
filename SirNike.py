@@ -230,6 +230,7 @@ last_generation_references: "_collections.OrderedDict" = _collections.OrderedDic
 MEDIA_GROUP_CACHE: "_collections.OrderedDict[Tuple[int, str], List[Dict[str, Any]]]" = _collections.OrderedDict()
 MAX_CACHED_MEDIA_GROUPS = 300
 MAX_MEDIA_GROUP_CHUNK_SIZE = 10
+MAX_AVATAR_PHOTOS = 20
 try:
     MAX_SEEDANCE_IMAGE_REFERENCES = max(
         1,
@@ -755,7 +756,7 @@ def motion_unavailable_text() -> str:
     return "Seedance в разработке 🚧\nСкоро включим эту функцию."
 
 def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    old_task = photo_tasks.get(chat_id)
+    old_task = photo_tasks.pop(chat_id, None)  # pop сразу, чтобы finally старой задачи не удалил новую
     if old_task and not old_task.done():
         old_task.cancel()
 
@@ -1285,8 +1286,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_new_user = create_user_if_not_exists(user.id, user.username, START_BONUS, referrer_id=referrer_id)
 
     if referrer_id and is_new_user and mark_referral_bonus(user.id):
-        add_izyminki(user.id, REFERRAL_BONUS_NEW_USER)
-        add_izyminki(referrer_id, REFERRAL_BONUS_REFERRER)
+        try:
+            add_izyminki(user.id, REFERRAL_BONUS_NEW_USER)
+            add_izyminki(referrer_id, REFERRAL_BONUS_REFERRER)
+        except Exception:
+            logger.exception("Failed to credit referral bonuses for user_id=%s referrer_id=%s", user.id, referrer_id)
         referrer_balance = get_balance(referrer_id)
         try:
             await context.bot.send_message(
@@ -1340,6 +1344,9 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    if update.message.chat.type != "private":
+        await update.message.reply_text("Напиши мне эту команду в личный чат — там покажу ссылку.")
+        return
     bot_username = (await context.bot.get_me()).username
     link = f"https://t.me/{bot_username}?start=ref_{user.id}"
 
@@ -1601,6 +1608,10 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
 
 async def send_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE, count: int, price: int):
     query = update.callback_query
+
+    if not any(p["count"] == count and p["price"] == price for p in BUY_PACKS):
+        await query.answer("Пакет не найден.", show_alert=True)
+        return
 
     _video_10s_cost = calc_seedance_cost(10, SEEDANCE_COST_PER_SECOND)
     photo_count = max(1, count // BASE_GENERATION_COST)
@@ -2153,6 +2164,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if state.generating_avatar:
             if direct_url not in state.avatar_photos:
+                if len(state.avatar_photos) >= MAX_AVATAR_PHOTOS:
+                    await update.message.reply_text(
+                        f"Максимум {MAX_AVATAR_PHOTOS} фото для аватара. Нажми «Готово» или начни заново."
+                    )
+                    return
                 state.avatar_photos.append(direct_url)
             count = len(state.avatar_photos)
             kb = InlineKeyboardMarkup([[

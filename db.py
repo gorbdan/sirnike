@@ -298,13 +298,15 @@ def restore_free_generation(user_id: int):
     """Undo a use_free_generation call — used when generation fails after the slot was consumed."""
     today = date.today().isoformat()
     with get_conn() as conn:
-        conn.execute(
+        cur = conn.execute(
             """UPDATE users
                SET free_used_count = MAX(0, free_used_count - 1)
                WHERE user_id = ? AND free_used_date = ?""",
             (user_id, today),
         )
         conn.commit()
+        if cur.rowcount == 0:
+            logger.warning("restore_free_generation: no row updated for user_id=%s date=%s", user_id, today)
 
 
 def has_referral_bonus(user_id: int) -> bool:

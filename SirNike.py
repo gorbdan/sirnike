@@ -767,7 +767,11 @@ def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int
             if count > 0:
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text=f"Фото успешно загружены: {count} шт.",
+                    text=(
+                        f"Фото добавлены как референс: {count} шт. ✅\n"
+                        "Теперь выбери стиль в «Библиотеке промптов 📚» или напиши описание вручную,\n"
+                        "затем нажми «Запустить генерацию ⚡»"
+                    ),
                     reply_markup=main_menu_kb()
                 )
         except asyncio.CancelledError:
@@ -1313,14 +1317,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_new_user:
         text = (
-            f"Привет от Сырника! 🧀\n\n"
-            f"Тебе начислено {START_BONUS} изюминок в подарок 🎁\n\n"
-            "Как получить первый образ:\n"
-            "1. «Библиотека промптов 📚» — выбери стиль\n"
-            "2. Загрузи фото — аватар сохранится автоматически\n"
-            "3. «Запустить генерацию ⚡» — результат через ~30 сек\n\n"
-            f"Стоимость: {BASE_GENERATION_COST} изюминок за фото · каждый день {FREE_GENERATIONS_PER_DAY} бесплатно 🆓\n"
-            "Друзья: /ref · Пополнить: «Купить изюминки 💰»"
+            f"Привет! Я Сырник 🧀 — бот для создания AI-фото и видео на базе Nano Banana 2.\n\n"
+            f"Тебе начислено {START_BONUS} изюминок в подарок 🎁\n"
+            f"Изюминки — это внутренняя валюта бота. {BASE_GENERATION_COST} изюминки = 1 фото, каждый день {FREE_GENERATIONS_PER_DAY} бесплатно 🆓\n\n"
+            "Как сделать первое фото за 3 шага:\n"
+            "1️⃣ Нажми «Библиотека промптов 📚» — выбери готовый стиль (промпт — это описание того, что нарисует нейросеть)\n"
+            "2️⃣ Загрузи 3–10 своих фото лица с разных ракурсов — чем больше, тем точнее результат\n"
+            "3️⃣ Нажми «Запустить генерацию ⚡» — результат через ~30 сек\n\n"
+            "Пригласи друга и получи изюминки: /ref"
         )
     else:
         text = (
@@ -3846,8 +3850,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.pending_avatar_kind = avatar_kind
 
         await query.message.reply_text(
-            f"Отправь одно фото, которое нужно сохранить как {avatar_kind_label(avatar_kind)} аватар.\n"
-            "После этого его можно будет использовать в генерациях без повторной загрузки.",
+            f"Загрузи фото для аватара ({avatar_kind_label(avatar_kind)}) 📸\n\n"
+            "Советы для лучшего результата:\n"
+            "• Загрузи 3–10 фото лица с разных ракурсов\n"
+            "• Фото должны быть чёткими, лицо хорошо видно\n"
+            "• Разное освещение и выражение лица — плюс\n\n"
+            "После сохранения аватар будет автоматически добавляться в каждую генерацию.",
         )
         return
 
@@ -6121,7 +6129,7 @@ async def send_generation_result_by_url(
 
     await app.bot.send_message(
         chat_id=chat_id,
-        text="Сырник довёл магию до финала — держи результат 🔥"
+        text="Готово! Держи результат 🧀✨"
     )
 
     if _is_img_ref(image_url):
@@ -6167,7 +6175,7 @@ async def send_generation_result_by_url(
         chat_id=chat_id,
         photo=photo_buffer,
         reply_markup=result_actions_kb(user_id=user_id, bot_username=bot_username),
-        caption="Лови своё крутое изображение 🔥\nНажми /start чтобы начать сначала"
+        caption="Сгенерировано: Nano Banana 2 ✨\nПовтори или измени промпт — жми кнопки ниже"
     )
 
     await app.bot.send_document(
@@ -6982,7 +6990,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                                     chat_id=chat_id,
                                     photo=photo_buffer,
                                     reply_markup=result_actions_kb(user_id=user_id, bot_username=yesapi_bot_username),
-                                    caption="Лови своё крутое изображение 🔥\nНажми /start чтобы начать сначала"
+                                    caption="Сгенерировано: Nano Banana 2 ✨\nПовтори или измени промпт — жми кнопки ниже"
                                 )
 
                                 await app.bot.send_document(

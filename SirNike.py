@@ -805,7 +805,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     video_label = "Seedance 2 🎬" if SEEDANCE_ENABLED else "Seedance 2 🚧 (в разработке)"
     rows.append([InlineKeyboardButton(video_label, callback_data="video_control")])
     rows.extend([
-        [InlineKeyboardButton("Действия с аватаром 👤", callback_data="avatar_actions")],
+        [InlineKeyboardButton("Мой AI-аватар 🪄", callback_data="avatar_actions")],
         [InlineKeyboardButton("Сообщить о проблеме 🚨", callback_data="report_problem")],
         [InlineKeyboardButton("Сбросить всё❌", callback_data="reset")],
     ])
@@ -1319,11 +1319,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             f"Привет! Я Сырник 🧀 — бот для создания AI-фото и видео на базе Nano Banana 2.\n\n"
             f"Тебе начислено {START_BONUS} изюминок в подарок 🎁\n"
-            f"Изюминки — это внутренняя валюта бота. {BASE_GENERATION_COST} изюминки = 1 фото, каждый день {FREE_GENERATIONS_PER_DAY} бесплатно 🆓\n\n"
-            "Как сделать первое фото за 3 шага:\n"
-            "1️⃣ Нажми «Библиотека промптов 📚» — выбери готовый стиль (промпт — это описание того, что нарисует нейросеть)\n"
-            "2️⃣ Загрузи 3–10 своих фото лица с разных ракурсов — чем больше, тем точнее результат\n"
-            "3️⃣ Нажми «Запустить генерацию ⚡» — результат через ~30 сек\n\n"
+            f"Изюминки — внутренняя валюта: {BASE_GENERATION_COST} изюминки = 1 фото, каждый день {FREE_GENERATIONS_PER_DAY} бесплатно 🆓\n\n"
+            "🪄 Главная фишка — AI-аватар:\n"
+            "Загрузи свои фото один раз → нейросеть запомнит твою внешность → "
+            "дальше ты появляешься в любом образе на каждой картинке.\n\n"
+            "Как начать:\n"
+            "1️⃣ «Мой AI-аватар 🪄» → загрузи 3–10 фото лица с разных ракурсов\n"
+            "2️⃣ «Библиотека промптов 📚» → выбери стиль (промпт — это описание образа)\n"
+            "3️⃣ «Запустить генерацию ⚡» → результат через ~30 сек\n\n"
             "Пригласи друга и получи изюминки: /ref"
         )
     else:
@@ -3681,7 +3684,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "avatar_actions":
         await query.message.reply_text(
-            "Выбери действие с аватаром:",
+            "🪄 AI-аватар — это ты в любом образе\n\n"
+            "Загрузи 3–10 своих фото, и нейросеть запомнит твою внешность.\n"
+            "После этого в каждой генерации будешь появляться именно ты — "
+            "хоть в образе киберпанк-воина, хоть на обложке журнала.\n\n"
+            "Это то, чего нет у большинства конкурентов 💪",
             reply_markup=avatar_actions_kb(user.id),
         )
         return

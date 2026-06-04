@@ -97,6 +97,8 @@ from config import (
     SEEDANCE_FAST_MODE,
     SEEDANCE_FAST_COST_PER_SECOND,
     DATA_DIR,
+    GITHUB_TOKEN,
+    GITHUB_REPO,
 )
 
 from db import (
@@ -4633,6 +4635,77 @@ async def _queue_worker_supervised(app: Application):
             await asyncio.sleep(3)
 
 
+def _push_log_to_github() -> None:
+    """Пушит текущий лог-файл в GitHub logs/YYYY-MM-DD.log и удаляет файлы старше 7 дней."""
+    if not GITHUB_TOKEN or not LOG_FILE_PATH or not os.path.exists(LOG_FILE_PATH):
+        return
+    import urllib.request as _req
+    import base64 as _b64
+
+    def _gh(method, path, body=None):
+        url = f"https://api.github.com{path}"
+        data = json.dumps(body).encode() if body else None
+        req = _req.Request(url, data=data, method=method)
+        req.add_header("Authorization", f"token {GITHUB_TOKEN}")
+        req.add_header("Accept", "application/vnd.github+json")
+        req.add_header("User-Agent", "SirnikeBot/1.0")
+        if body:
+            req.add_header("Content-Type", "application/json")
+        try:
+            with _req.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read())
+        except Exception as e:
+            logger.warning("GitHub log push error %s %s: %s", method, path, e)
+            return None
+
+    # Читаем последние 500KB лога
+    try:
+        with open(LOG_FILE_PATH, "r", encoding="utf-8", errors="replace") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 500 * 1024))
+            content = f.read()
+    except Exception as e:
+        logger.warning("Failed to read log file: %s", e)
+        return
+
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    filepath = f"/repos/{GITHUB_REPO}/contents/logs/{today}.log"
+
+    # Получаем sha если файл уже есть
+    existing = _gh("GET", filepath)
+    sha = existing.get("sha") if isinstance(existing, dict) else None
+
+    body = {
+        "message": f"logs: {today}",
+        "content": _b64.b64encode(content.encode("utf-8")).decode("ascii"),
+    }
+    if sha:
+        body["sha"] = sha
+    _gh("PUT", filepath, body)
+
+    # Удаляем логи старше 7 дней
+    logs_list = _gh("GET", f"/repos/{GITHUB_REPO}/contents/logs")
+    if isinstance(logs_list, list):
+        cutoff = datetime.utcnow().replace(hour=0, minute=0, second=0)
+        from datetime import timedelta
+        cutoff -= timedelta(days=7)
+        for item in logs_list:
+            name = item.get("name", "")
+            if not name.endswith(".log"):
+                continue
+            try:
+                file_date = datetime.strptime(name.replace(".log", ""), "%Y-%m-%d")
+                if file_date < cutoff:
+                    _gh("DELETE", f"/repos/{GITHUB_REPO}/contents/logs/{name}",
+                        {"message": f"logs: cleanup {name}", "sha": item["sha"]})
+                    logger.info("Deleted old log from GitHub: %s", name)
+            except Exception:
+                pass
+
+    logger.info("Log pushed to GitHub: logs/%s.log", today)
+
+
 def _cleanup_old_outputs(max_age_days: int = 3) -> int:
     """Delete video files in OUTPUTS_DIR older than max_age_days. Returns count deleted."""
     cutoff = time.time() - max_age_days * 86400
@@ -4650,6 +4723,16 @@ def _cleanup_old_outputs(max_age_days: int = 3) -> int:
     return deleted
 
 
+async def _daily_log_push_loop():
+    """Каждые 24 часа пушит лог в GitHub."""
+    while True:
+        await asyncio.sleep(86400)  # 24 часа
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, _push_log_to_github)
+        except Exception:
+            logger.exception("Daily log push failed")
+
+
 async def post_init(app: Application):
     global queue_worker_task, _prompt_library_lock
     _prompt_library_lock = asyncio.Lock()  # created inside running event loop — safe
@@ -4659,6 +4742,7 @@ async def post_init(app: Application):
     refresh_prompt_library()
     queue_worker_task = asyncio.create_task(_queue_worker_supervised(app))
     _cleanup_old_outputs(max_age_days=3)
+    asyncio.create_task(_daily_log_push_loop())
 
 
 async def post_shutdown(app: Application):

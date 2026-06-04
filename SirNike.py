@@ -6864,6 +6864,15 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                                 was_free=getattr(job, "was_free", False),
                                 references_count=len(references or []),
                             )
+                            if RESULTS_CHANNEL_ID and image_url:
+                                uname = f"@{getattr(job, 'username', None)}" if getattr(job, "username", None) else f"id{user_id}"
+                                _masha_caption = (f"🖼 Изображение\n👤 {uname}\n" + (f"📝 {prompt[:200]}" if prompt else "")).strip()
+                                async def _send_masha_to_channel(photo=image_url, cap=_masha_caption):
+                                    try:
+                                        await app.bot.send_photo(chat_id=RESULTS_CHANNEL_ID, photo=photo, caption=cap)
+                                    except Exception:
+                                        logger.exception("Failed to post MashaGPT result to channel")
+                                app.create_task(_send_masha_to_channel())
                             return
 
                         if status in ("FAILED", "CANCELLED", "ERROR"):
@@ -7040,6 +7049,18 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                                     was_free=getattr(job, "was_free", False),
                                     references_count=len(references or []),
                                 )
+                                if RESULTS_CHANNEL_ID and jpg_bytes:
+                                    uname = f"@{getattr(job, 'username', None)}" if getattr(job, "username", None) else f"id{user_id}"
+                                    _yes_caption = (f"🖼 Изображение\n👤 {uname}\n" + (f"📝 {prompt[:200]}" if prompt else "")).strip()
+                                    _yes_bytes = jpg_bytes
+                                    async def _send_yes_to_channel(b=_yes_bytes, cap=_yes_caption):
+                                        try:
+                                            buf = io.BytesIO(b)
+                                            buf.name = "result.jpg"
+                                            await app.bot.send_photo(chat_id=RESULTS_CHANNEL_ID, photo=buf, caption=cap)
+                                        except Exception:
+                                            logger.exception("Failed to post YesAPI result to channel")
+                                    app.create_task(_send_yes_to_channel())
                                 return
 
                             if status in (3, 4):

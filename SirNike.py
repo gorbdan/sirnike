@@ -398,7 +398,7 @@ def _sync_prompt_library_from_remote() -> None:
             PROMPT_LIBRARY_REMOTE_URL,
             headers={"User-Agent": "Mozilla/5.0 (compatible; SirNikeBot/1.0)"},
         )
-        with _req.urlopen(req, timeout=10) as resp:
+        with _req.urlopen(req, timeout=5) as resp:
             raw = resp.read()
         data = json.loads(raw)
         if not isinstance(data, list):
@@ -1344,9 +1344,15 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bal = get_balance(user.id)
     free_date, free_count = get_free_info(user.id)
 
+    from datetime import timedelta
+    reset_time = (datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1))
+    msk_reset = reset_time.hour + 3  # UTC+3
+    if msk_reset >= 24:
+        msk_reset -= 24
     await update.message.reply_text(
         f"У тебя {bal} изюминок 🧀\n"
-        f"Сегодня бесплатных генераций: {free_count}/{FREE_GENERATIONS_PER_DAY}"
+        f"Бесплатных генераций сегодня: {free_count}/{FREE_GENERATIONS_PER_DAY}\n"
+        f"Сброс бесплатных в 0:00 МСК (через ~{23 - datetime.utcnow().hour}ч)"
     )
 
 async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1357,11 +1363,19 @@ async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_username = (await context.bot.get_me()).username
     link = f"https://t.me/{bot_username}?start=ref_{user.id}"
 
+    import urllib.parse
+    share_url = f"https://t.me/share/url?url={urllib.parse.quote(link)}&text={urllib.parse.quote('Попробуй этот AI-бот для фото!')}"
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📤 Поделиться с другом", url=share_url)],
+    ])
     await update.message.reply_text(
-        f"Твоя реферальная ссылка:\n{link}\n\n"
-        f"Ты получишь {REFERRAL_BONUS_REFERRER} изюминок за приглашённого друга.\n"
-        f"Друг получит {REFERRAL_BONUS_NEW_USER} изюминок."
-    )    
+        f"Приглашай друзей и получай изюминки 🎁\n\n"
+        f"Твоя ссылка:\n`{link}`\n\n"
+        f"Ты получишь +{REFERRAL_BONUS_REFERRER} изюминок за каждого друга.\n"
+        f"Друг получит +{REFERRAL_BONUS_NEW_USER} изюминок в подарок.",
+        parse_mode="Markdown",
+        reply_markup=kb,
+    )
 
 
 async def hide_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3030,12 +3044,24 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         try:
             generation_queue.put_nowait(job)
+            # Алерт если очередь заполнена >80%
+            if generation_queue.maxsize and generation_queue.qsize() / generation_queue.maxsize > 0.8:
+                logger.critical("Queue near full: %d/%d", generation_queue.qsize(), generation_queue.maxsize)
+                for admin_id in ADMIN_IDS:
+                    try:
+                        await update.get_bot().send_message(
+                            chat_id=admin_id,
+                            text=f"⚠️ Очередь генерации {generation_queue.qsize()}/{generation_queue.maxsize} — близко к лимиту!"
+                        )
+                    except Exception:
+                        pass
         except asyncio.QueueFull:
             queued_user_ids.discard(user.id)
             if paid:
                 add_izyminki(user.id, cost)
             elif use_free:
                 restore_free_generation(user.id)
+            logger.critical("Queue full: %d/%d", generation_queue.qsize(), generation_queue.maxsize)
             await reply_target.reply_text(
                 "Сырник сейчас очень занят — очередь переполнена 😔 Попробуй через минуту."
             )

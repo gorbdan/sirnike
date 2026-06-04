@@ -436,19 +436,6 @@ def purge_stale_avatar_refs() -> int:
     return count
 
 
-# DEPRECATED: payment_exists and save_payment are dead code.
-# Always use save_payment_once which is atomic (INSERT OR IGNORE + rowcount check).
-# Using payment_exists + save_payment separately breaks atomicity and risks double-crediting.
-def payment_exists(payment_id: str) -> bool:
-    raise NotImplementedError(
-        "payment_exists is deprecated — use save_payment_once which is atomic"
-    )
-
-
-def save_payment(user_id: int, payment_id: str, amount: int) -> None:
-    raise NotImplementedError(
-        "save_payment is deprecated — use save_payment_once which is atomic"
-    )
 
 
 def save_payment_once(user_id: int, payment_id: str, amount: int) -> bool:
@@ -478,11 +465,19 @@ def save_payment_once(user_id: int, payment_id: str, amount: int) -> bool:
             return False
 
 
-def get_all_user_ids():
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT user_id FROM users")
-        return [row[0] for row in cur.fetchall()]
+def get_all_user_ids(retries: int = 3) -> list:
+    import time as _time
+    for attempt in range(retries):
+        try:
+            with get_conn() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT user_id FROM users")
+                return [row[0] for row in cur.fetchall()]
+        except sqlite3.OperationalError as e:
+            if attempt == retries - 1:
+                logger.error("Failed to fetch user IDs after %d retries: %s", retries, e)
+                raise
+            _time.sleep(0.5 * (attempt + 1))
 
 
 def create_promo_broadcast(

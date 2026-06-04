@@ -277,6 +277,7 @@ class GenerationJob:
     was_free: bool = False
     save_as_avatar: bool = False
     avatar_kind: str = "female"
+    username: Optional[str] = None
 
 generation_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
 queued_user_ids = set()
@@ -3041,6 +3042,7 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             references=references,
             cost=cost if paid else 0,
             was_free=use_free,
+            username=user.username,
         )
         try:
             generation_queue.put_nowait(job)
@@ -6605,21 +6607,32 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 username=getattr(job, "username", None),
             )
             if RESULTS_CHANNEL_ID and image_url:
-                uname = f"@{getattr(job, 'username', None)}" if getattr(job, "username", None) else f"id{user_id}"
+                uname = f"@{job.username}" if job.username else f"id{user_id}"
                 channel_caption = (
                     f"🖼 Изображение\n"
                     f"👤 {uname}\n"
                     + (f"📝 {prompt[:200]}" if prompt else "")
                 ).strip()
-                _ch_bytes = _resolve_image_bytes(image_url) if _is_img_ref(image_url) else None
-                async def _send_img_to_channel(photo=_ch_bytes or image_url, cap=channel_caption):
-                    logger.info("_send_img_to_channel: posting image to channel %s", RESULTS_CHANNEL_ID)
-                    try:
-                        await app.bot.send_photo(chat_id=RESULTS_CHANNEL_ID, photo=photo, caption=cap)
-                        logger.info("_send_img_to_channel: success channel=%s", RESULTS_CHANNEL_ID)
-                    except Exception:
-                        logger.exception("Failed to post image result to channel %s", RESULTS_CHANNEL_ID)
-                app.create_task(_send_img_to_channel())
+                # Скачиваем байты сразу — URL Zveno может истечь к моменту выполнения task
+                try:
+                    if _is_img_ref(image_url):
+                        _ch_bytes = _resolve_image_bytes(image_url)
+                    else:
+                        async with aiohttp.ClientSession() as _ch_sess:
+                            async with _ch_sess.get(image_url, timeout=aiohttp.ClientTimeout(total=30)) as _ch_resp:
+                                _ch_bytes = await _ch_resp.read() if _ch_resp.status == 200 else None
+                except Exception:
+                    _ch_bytes = None
+                if _ch_bytes:
+                    async def _send_img_to_channel(b=_ch_bytes, cap=channel_caption):
+                        try:
+                            buf = io.BytesIO(b)
+                            buf.name = "result.jpg"
+                            await app.bot.send_photo(chat_id=RESULTS_CHANNEL_ID, photo=buf, caption=cap)
+                            logger.info("Posted image to channel %s", RESULTS_CHANNEL_ID)
+                        except Exception:
+                            logger.exception("Failed to post image to channel %s", RESULTS_CHANNEL_ID)
+                    app.create_task(_send_img_to_channel())
             return
         except Exception as e:
             last_error_text = str(e) or repr(e)

@@ -519,7 +519,7 @@ def refresh_prompt_library() -> None:
 async def _locked_save_and_refresh(data: list) -> None:
     """Thread-safe save + reload of the prompt library. Use in async admin handlers."""
     async with _get_prompt_library_lock():
-        save_prompt_library(data)
+        await asyncio.to_thread(save_prompt_library, data)
         refresh_prompt_library()
 
 
@@ -779,6 +779,8 @@ def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int
                 )
         except asyncio.CancelledError:
             pass
+        except Exception:
+            logger.exception("send_done_later failed for chat_id=%s", chat_id)
         finally:
             photo_tasks.pop(chat_id, None)
 
@@ -1871,9 +1873,16 @@ async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.sleep(0.05)
             except RetryAfter as e:
                 await asyncio.sleep(e.retry_after + 1)
-                # skip this user after flood wait — counted as failed to avoid double-send
-                failed += 1
-                logger.warning(f"FloodWait при рассылке пользователю {target_user_id}, пропускаем")
+                try:
+                    await context.bot.send_message(
+                        chat_id=target_user_id,
+                        text=text,
+                        reply_markup=library_kb,
+                    )
+                    sent += 1
+                except Exception:
+                    failed += 1
+                    logger.warning("Повторная отправка не удалась для %s", target_user_id)
             except (Forbidden, BadRequest):
                 failed += 1
             except Exception:
@@ -2654,6 +2663,19 @@ async def upload_image_url_to_imgbb(image_url: str) -> Optional[str]:
     return await upload_image_bytes_to_imgbb(image_bytes, filename="image.jpg")
 
 
+async def _fetch_image_for_sheet(session: aiohttp.ClientSession, url: str) -> Optional[Image.Image]:
+    try:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=60), allow_redirects=True) as resp:
+            if resp.status != 200:
+                logger.warning("Seedance sheet source fetch failed: %s, url=%s", resp.status, url[:80])
+                return None
+            image_bytes = await resp.read()
+        return Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    except Exception:
+        logger.warning("Seedance sheet source fetch/decode failed for url=%s", url[:80])
+        return None
+
+
 async def build_seedance_reference_sheet_url(image_urls: List[str]) -> Optional[str]:
     clean_urls: List[str] = []
     for item in image_urls:
@@ -2667,22 +2689,9 @@ async def build_seedance_reference_sheet_url(image_urls: List[str]) -> Optional[
     loaded_images: List[Image.Image] = []
     try:
         async with aiohttp.ClientSession() as session:
-            for url in clean_urls[:MAX_SEEDANCE_IMAGE_REFERENCES]:
-                async with session.get(
-                    url,
-                    timeout=aiohttp.ClientTimeout(total=60),
-                    allow_redirects=True,
-                ) as resp:
-                    if resp.status != 200:
-                        logger.warning(f"Seedance sheet source fetch failed: {resp.status}, url={url}")
-                        continue
-                    image_bytes = await resp.read()
-                try:
-                    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-                    loaded_images.append(image)
-                except Exception:
-                    logger.warning("Seedance sheet source decode failed")
-                    continue
+            tasks = [_fetch_image_for_sheet(session, url) for url in clean_urls[:MAX_SEEDANCE_IMAGE_REFERENCES]]
+            results = await asyncio.gather(*tasks)
+            loaded_images = [img for img in results if img is not None]
 
         if len(loaded_images) < 2:
             return None
@@ -2850,41 +2859,40 @@ def _apply_grid_overlay(
     return out.getvalue()
 
 
-async def apply_grid_overlay_to_refs(image_urls: List[str]) -> List[str]:
-    processed: List[str] = []
-    async with aiohttp.ClientSession() as session:
-        for url in image_urls:
+async def _process_single_grid_ref(session: aiohttp.ClientSession, url: str) -> str:
+    try:
+        if _is_img_ref(url) or url.startswith("data:"):
+            image_bytes = _resolve_image_bytes(url)
+            if image_bytes is None:
+                logger.warning("Grid overlay: image ref not found in cache: %s", url)
+                return url
+        else:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=60), allow_redirects=True) as resp:
+                if resp.status != 200:
+                    logger.warning("Grid overlay: download failed status=%s url=%s", resp.status, url[:80])
+                    return url
+                image_bytes = await resp.read()
+
+        if FAPIHUB_API_KEY or PHOTOROOM_API_KEY or REMOVE_BG_API_KEY:
             try:
-                # Support __img__ cache refs, data: URLs, and http: URLs
-                if _is_img_ref(url) or url.startswith("data:"):
-                    image_bytes = _resolve_image_bytes(url)
-                    if image_bytes is None:
-                        logger.warning("Grid overlay: image ref not found in cache: %s", url)
-                        processed.append(url)
-                        continue
-                else:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=60), allow_redirects=True) as resp:
-                        if resp.status != 200:
-                            logger.warning("Grid overlay: download failed status=%s url=%s", resp.status, url[:80])
-                            processed.append(url)
-                            continue
-                        image_bytes = await resp.read()
-
-                if FAPIHUB_API_KEY or PHOTOROOM_API_KEY or REMOVE_BG_API_KEY:
-                    try:
-                        image_bytes = await _remove_background_api(image_bytes)
-                        logger.info("Background removed for ref: %s", url[:60])
-                    except Exception:
-                        logger.exception("Background removal failed for url=%s, skipping", url[:60])
-
-                grid_bytes = _apply_grid_overlay(image_bytes)
-                grid_ref = _cache_image(grid_bytes)
-                logger.info("Grid overlay applied: %s", url[:60])
-                processed.append(grid_ref)
+                image_bytes = await _remove_background_api(image_bytes)
+                logger.info("Background removed for ref: %s", url[:60])
             except Exception:
-                logger.exception("Grid overlay failed for url=%s, using original", url[:60])
-                processed.append(url)
-    return processed
+                logger.exception("Background removal failed for url=%s, skipping", url[:60])
+
+        grid_bytes = _apply_grid_overlay(image_bytes)
+        grid_ref = _cache_image(grid_bytes)
+        logger.info("Grid overlay applied: %s", url[:60])
+        return grid_ref
+    except Exception:
+        logger.exception("Grid overlay failed for url=%s, using original", url[:60])
+        return url
+
+
+async def apply_grid_overlay_to_refs(image_urls: List[str]) -> List[str]:
+    async with aiohttp.ClientSession() as session:
+        tasks = [_process_single_grid_ref(session, url) for url in image_urls]
+        return list(await asyncio.gather(*tasks))
 
 
 # ----------------------------

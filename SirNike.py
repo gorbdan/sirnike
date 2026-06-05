@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import base64
 import collections as _collections
 import io
@@ -1296,6 +1296,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             add_izyminki(user.id, REFERRAL_BONUS_NEW_USER)
             add_izyminki(referrer_id, REFERRAL_BONUS_REFERRER)
+            logger.info("Referral bonus credited: new_user=%s referrer=%s bonus_new=%s bonus_ref=%s",
+                        user.id, referrer_id, REFERRAL_BONUS_NEW_USER, REFERRAL_BONUS_REFERRER)
         except Exception:
             logger.exception("Failed to credit referral bonuses for user_id=%s referrer_id=%s", user.id, referrer_id)
         referrer_balance = get_balance(referrer_id)
@@ -1348,14 +1350,12 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     free_date, free_count = get_free_info(user.id)
 
     from datetime import timedelta
-    reset_time = (datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1))
-    msk_reset = reset_time.hour + 3  # UTC+3
-    if msk_reset >= 24:
-        msk_reset -= 24
+    _now_msk = datetime.utcnow() + timedelta(hours=3)
+    _hours_left = 23 - _now_msk.hour
     await update.message.reply_text(
         f"У тебя {bal} изюминок 🧀\n"
         f"Бесплатных генераций сегодня: {free_count}/{FREE_GENERATIONS_PER_DAY}\n"
-        f"Сброс бесплатных в 0:00 МСК (через ~{23 - datetime.utcnow().hour}ч)"
+        f"Сброс бесплатных в 0:00 МСК (через ~{_hours_left}ч)"
     )
 
 async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1554,8 +1554,8 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         video_count = pack["count"] // _video_10s_cost
         photos_label = ru_plural(photo_count, "фото", "фото", "фото")
         if video_count > 0:
-            videos_label = ru_plural(video_count, "видео (10 с)", "видео (10 с)", "видео (10 с)")
-            hint = f"≈ {photo_count} {photos_label} / {video_count} {videos_label}"
+            videos_label = ru_plural(video_count, "видео", "видео", "видео")
+            hint = f"≈ {photo_count} {photos_label} / {video_count}+ {videos_label} (5–20 с)"
         else:
             hint = f"≈ {photo_count} {photos_label}"
         keyboard.append([
@@ -3013,8 +3013,10 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await reply_target.reply_text(
                 f"Не хватает изюминок.\n"
                 f"Нужно: {cost}\n"
-                f"У тебя: {bal}\n\n"
-                f"Напиши /buy."
+                f"У тебя: {bal}",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("💳 Купить изюминки", callback_data="show_buy")
+                ]])
             )
             return
 
@@ -3759,7 +3761,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if bal < avatar_cost:
                 await query.message.reply_text(
                     f"Не хватает изюминок для генерации аватара.\n"
-                    f"Нужно: {avatar_cost}\nУ тебя: {bal}\n\nНапиши /buy."
+                    f"Нужно: {avatar_cost}\nУ тебя: {bal}",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("💳 Купить изюминки", callback_data="show_buy")
+                    ]])
                 )
                 return
             if not spend_izyminki(user.id, avatar_cost):
@@ -3851,6 +3856,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "или нажми «Запустить генерацию⚡».",
             reply_markup=main_menu_kb()
         )
+        return
+
+    if query.data == "show_buy":
+        await query.answer()
+        await buy(update, context)
         return
 
     if query.data.startswith("buy_"):
@@ -5988,7 +5998,10 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bal = get_balance(user.id)
         if bal < selected_cost:
             await reply_target.reply_text(
-                f"Не хватает изюминок.\nНужно: {selected_cost}\nУ тебя: {bal}\n\nНапиши /buy."
+                f"Не хватает изюминок.\nНужно: {selected_cost}\nУ тебя: {bal}",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("💳 Купить изюминки", callback_data="show_buy")
+                ]])
             )
             return
 

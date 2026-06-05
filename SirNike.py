@@ -1326,7 +1326,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_new_user:
         text = (
-            f"Привет! Я Сырник 🧀 — генератор AI-фото и видео.\n\n"
+            f"Привет! Я Сырник 🧀 — бот для создания AI-фото и видео на базе Nano Banana 2.\n\n"
             f"🎁 Тебе начислено {START_BONUS} изюминок в подарок\n"
             f"Изюминки — внутренняя валюта бота:\n"
             f"• 1 фото = {BASE_GENERATION_COST} изюминок\n"

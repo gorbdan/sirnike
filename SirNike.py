@@ -739,10 +739,10 @@ def get_or_init_state(context: ContextTypes.DEFAULT_TYPE) -> UserState:
 
 
 def generation_failure_user_text(refunded: bool) -> str:
-    refund_text = "\n\nСписанные изюминки возвращены на баланс." if refunded else ""
+    refund_text = "\n\nИзюминки возвращены на баланс — можешь попробовать снова." if refunded else ""
     return (
-        "Наблюдаются сбои, мы работаем над этим❤️\n"
-        "Попробуй, пожалуйста, еще раз через пару минут."
+        "Что-то пошло не так при генерации 😔\n"
+        "Попробуй, пожалуйста, ещё раз через пару минут."
         f"{refund_text}"
     )
 
@@ -771,9 +771,11 @@ def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=(
-                        f"Фото добавлены как референс: {count} шт. ✅\n"
-                        "Теперь выбери стиль в «Библиотеке промптов 📚» или напиши описание вручную,\n"
-                        "затем нажми «Запустить генерацию ⚡»"
+                        f"Фото добавлены как референс: {count} шт. ✅\n\n"
+                        "Что дальше:\n"
+                        "1️⃣ Выбери стиль → «Библиотека промптов 📚»\n"
+                        "   (или просто напиши мне описание текстом)\n"
+                        "2️⃣ Нажми «Запустить генерацию ⚡»"
                     ),
                     reply_markup=main_menu_kb()
                 )
@@ -1324,15 +1326,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_new_user:
         text = (
-            f"Привет! Я Сырник 🧀 — бот для создания AI-фото и видео на базе Nano Banana 2.\n\n"
-            f"Тебе начислено {START_BONUS} изюминок в подарок 🎁\n"
-            f"Изюминки — внутренняя валюта: {BASE_GENERATION_COST} изюминки = 1 фото, каждый день {FREE_GENERATIONS_PER_DAY} бесплатно 🆓\n\n"
+            f"Привет! Я Сырник 🧀 — генератор AI-фото и видео.\n\n"
+            f"🎁 Тебе начислено {START_BONUS} изюминок в подарок\n"
+            f"Изюминки — внутренняя валюта бота:\n"
+            f"• 1 фото = {BASE_GENERATION_COST} изюминок\n"
+            f"• Каждый день {FREE_GENERATIONS_PER_DAY} бесплатных генерации 🆓\n"
+            f"• Закончились — пополни через /buy\n\n"
             "🪄 Главная фишка — AI-аватар:\n"
-            "Загрузи свои фото один раз → нейросеть запомнит твою внешность → "
-            "дальше ты появляешься в любом образе на каждой картинке.\n\n"
+            "Загрузи свои фото один раз → бот запомнит твою внешность → "
+            "будешь появляться в любом образе на каждой картинке.\n\n"
             "Как начать:\n"
             "1️⃣ «Мой AI-аватар 🪄» → загрузи 3–10 фото лица с разных ракурсов\n"
-            "2️⃣ «Библиотека промптов 📚» → выбери стиль (промпт — это описание образа)\n"
+            "2️⃣ «Библиотека промптов 📚» → выбери стиль\n"
             "3️⃣ «Запустить генерацию ⚡» → результат через ~30 сек\n\n"
             "Пригласи друга и получи изюминки: /ref"
         )
@@ -1627,7 +1632,8 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
     await update.message.reply_text(
         f"Оплата прошла успешно ✅\n"
         f"Начислено {count} изюминок 🧀\n"
-        f"Твой баланс: {new_balance} изюминок",
+        f"Твой баланс: {new_balance} изюминок\n\n"
+        f"Можешь запускать генерацию!",
         reply_markup=main_menu_kb(),
     )
 
@@ -2910,8 +2916,9 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if user.id in queued_user_ids or user.id in processing_user_ids:
         await reply_target.reply_text(
-            "Сырник уже занят твоей предыдущей магией 🧀\n"
-            "Дождись результата, а потом запустим следующую."
+            "Сырник уже работает над твоим запросом 🧀\n"
+            "Подожди немного — результат придёт сюда автоматически.\n"
+            "После этого можешь запускать следующую генерацию."
         )
         return
 
@@ -2922,7 +2929,15 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not state.prompt:
         queued_user_ids.discard(user.id)
-        await reply_target.reply_text("Сначала отправь текст промпта.")
+        await reply_target.reply_text(
+            "Сначала выбери стиль или напиши описание образа.\n\n"
+            "1️⃣ Нажми «Библиотека промптов 📚» → выбери готовый стиль\n"
+            "2️⃣ Или просто напиши мне текст (например: «портрет в стиле кино»)\n\n"
+            "После этого нажми «Запустить генерацию ⚡»",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("Библиотека промптов 📚", callback_data="pl_open_webapp")
+            ]])
+        )
         return
 
     references = list(state.references)

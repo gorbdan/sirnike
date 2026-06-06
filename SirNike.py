@@ -235,6 +235,7 @@ last_generated_prompt: "_collections.OrderedDict" = _collections.OrderedDict()
 last_generation_references: "_collections.OrderedDict" = _collections.OrderedDict()
 MEDIA_GROUP_CACHE: "_collections.OrderedDict[Tuple[int, str], List[Dict[str, Any]]]" = _collections.OrderedDict()
 MAX_CACHED_MEDIA_GROUPS = 300
+_MEDIA_GROUP_LAST_TTL_CHECK: float = 0.0
 MAX_MEDIA_GROUP_CHUNK_SIZE = 10
 MAX_AVATAR_PHOTOS = 20
 try:
@@ -828,7 +829,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 def promo_try_kb(promo_id: str) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton("Попробовать", callback_data=f"promo_try_{promo_id}")]]
+    rows = [[InlineKeyboardButton("🚀 Сгенерировать", callback_data=f"promo_try_{promo_id}")]]
     if PROMPT_WEBAPP_URL:
         rows.append([InlineKeyboardButton("Библиотека промтов 📚", callback_data="pl_open_webapp")])
     else:
@@ -1219,21 +1220,21 @@ def cache_media_group_message(message) -> None:
         return  # bucket full — ignore extra items (prevents DoS)
 
     bucket.append(media_item)
-    bucket.sort(key=lambda item: int(item.get("message_id", 0)))
 
-    # TTL eviction: drop entries whose oldest item is more than 10 minutes old
-    _media_group_ttl = 600  # seconds
+    # TTL eviction — не чаще раз в 60 сек, чтобы не делать O(n) на каждый media item
+    global _MEDIA_GROUP_LAST_TTL_CHECK
     _now = time.time()
-    stale_keys = [
-        k for k, v in MEDIA_GROUP_CACHE.items()
-        if v and (_now - float(v[0].get("added_at", _now))) > _media_group_ttl
-    ]
-    for k in stale_keys:
-        MEDIA_GROUP_CACHE.pop(k, None)
-
-    # Hard cap: O(1) eviction of oldest entry when still over the limit
-    while len(MEDIA_GROUP_CACHE) > MAX_CACHED_MEDIA_GROUPS:
-        MEDIA_GROUP_CACHE.popitem(last=False)
+    if _now - _MEDIA_GROUP_LAST_TTL_CHECK > 60:
+        _MEDIA_GROUP_LAST_TTL_CHECK = _now
+        _media_group_ttl = 600  # seconds
+        stale_keys = [
+            k for k, v in MEDIA_GROUP_CACHE.items()
+            if v and (_now - float(v[0].get("added_at", _now))) > _media_group_ttl
+        ]
+        for k in stale_keys:
+            MEDIA_GROUP_CACHE.pop(k, None)
+        while len(MEDIA_GROUP_CACHE) > MAX_CACHED_MEDIA_GROUPS:
+            MEDIA_GROUP_CACHE.popitem(last=False)
 
 
 def get_cached_media_group(chat_id: int, media_group_id: Optional[str]) -> List[Dict[str, Any]]:
@@ -1424,7 +1425,7 @@ async def hide_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not message:
         return
     await message.reply_text(
-        "Старую нижнюю кнопку убрала. Открывай библиотеку через кнопку в меню.",
+        "Готово 👍",
         reply_markup=ReplyKeyboardRemove(),
     )
 
@@ -2741,7 +2742,11 @@ async def build_seedance_reference_sheet_url(image_urls: List[str]) -> Optional[
     try:
         async with aiohttp.ClientSession() as session:
             tasks = [_fetch_image_for_sheet(session, url) for url in clean_urls[:MAX_SEEDANCE_IMAGE_REFERENCES]]
-            results = await asyncio.gather(*tasks)
+            try:
+                results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=45)
+            except asyncio.TimeoutError:
+                logger.warning("build_seedance_reference_sheet_url: timeout after 45s")
+                return None
             loaded_images = [img for img in results if img is not None]
 
         if len(loaded_images) < 2:
@@ -3024,12 +3029,13 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 to_validate.append((i, ref_url))
 
-        # Validate HTTP refs concurrently instead of sequentially (was up to 96 s for 8 refs)
+        # Validate HTTP refs concurrently — shared session to avoid 8 separate handshakes
         if to_validate:
-            results = await asyncio.gather(
-                *(validate_image_url(ref_url) for _, ref_url in to_validate),
-                return_exceptions=True,
-            )
+            async with aiohttp.ClientSession() as _val_session:
+                results = await asyncio.gather(
+                    *(validate_image_url(ref_url, _val_session) for _, ref_url in to_validate),
+                    return_exceptions=True,
+                )
             for (i, ref_url), result in zip(to_validate, results):
                 if isinstance(result, Exception):
                     ok_ref, reason_ref = False, str(result)
@@ -3147,7 +3153,8 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await reply_target.reply_text(
             "Сырник всё понял 🧀\n"
-            "Скоро покажу, что получилось."
+            "⏱️ Обработка займёт ~30 сек.\n"
+            "Результат придёт сюда — не закрывай чат."
         )
 
         context.user_data["state"] = UserState()
@@ -5898,22 +5905,27 @@ async def poll_seedance_task(
     raise Exception("Превышено время ожидания генерации видео Seedance")
 
 
-async def validate_image_url(image_url: str) -> tuple[bool, str]:
+async def validate_image_url(image_url: str, session: Optional[aiohttp.ClientSession] = None) -> tuple[bool, str]:
+    _own_session = session is None
+    if _own_session:
+        session = aiohttp.ClientSession()
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                image_url,
-                timeout=aiohttp.ClientTimeout(total=12),
-                allow_redirects=True,
-            ) as resp:
-                content_type = resp.headers.get("Content-Type", "")
-                if resp.status != 200:
-                    return False, f"HTTP {resp.status}"
-                if not content_type.startswith("image/"):
-                    return False, f"Content-Type is not image: {content_type}"
-                return True, "ok"
+        async with session.get(
+            image_url,
+            timeout=aiohttp.ClientTimeout(total=12),
+            allow_redirects=True,
+        ) as resp:
+            content_type = resp.headers.get("Content-Type", "")
+            if resp.status != 200:
+                return False, f"HTTP {resp.status}"
+            if not content_type.startswith("image/"):
+                return False, f"Content-Type is not image: {content_type}"
+            return True, "ok"
     except Exception as e:
-        return False, str(e)        
+        return False, str(e)
+    finally:
+        if _own_session:
+            await session.close()        
 
 
 def _cache_image(image_bytes: bytes) -> str:
@@ -6342,6 +6354,7 @@ async def send_generation_result_by_url(
     chat_id: int,
     user_id: int,
     image_url: str,
+    job=None,
 ) -> None:
     if image_url:
         _bounded_set(last_generated_image_url, user_id, image_url)
@@ -6390,11 +6403,27 @@ async def send_generation_result_by_url(
         bot_username = bot_me.username or ""
     except Exception:
         bot_username = ""
+    _caption_parts = ["✨ Готово!"]
+    if job and getattr(job, "prompt", None):
+        _short_prompt = job.prompt[:80] + ("…" if len(job.prompt) > 80 else "")
+        _caption_parts.append(f"📝 {_short_prompt}")
+    if job:
+        _cost = getattr(job, "cost", 0)
+        _was_free = getattr(job, "was_free", False)
+        if _was_free:
+            _caption_parts.append("🆓 Бесплатная генерация")
+        elif _cost:
+            _caption_parts.append(f"💰 Потрачено: {_cost} изюминок")
+    try:
+        _bal = get_balance(user_id)
+        _caption_parts.append(f"Баланс: {_bal} изюминок")
+    except Exception:
+        pass
     await app.bot.send_photo(
         chat_id=chat_id,
         photo=photo_buffer,
         reply_markup=result_actions_kb(user_id=user_id, bot_username=bot_username),
-        caption="Сгенерировано: Nano Banana 2 ✨\nПовтори или измени промпт — жми кнопки ниже"
+        caption="\n".join(_caption_parts),
     )
 
     await app.bot.send_document(
@@ -6770,7 +6799,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
             if _is_img_ref(_hist_url):
                 _hist_url = await _persist_image_ref(_hist_url) or _hist_url
             add_generation_history(user_id=user_id, prompt=prompt, image_url=_hist_url)
-            await send_generation_result_by_url(app, chat_id, user_id, image_url)
+            await send_generation_result_by_url(app, chat_id, user_id, image_url, job=job)
             if getattr(job, "save_as_avatar", False):
                 persistent_avatar_url = await _persist_image_ref(image_url)
                 if persistent_avatar_url:
@@ -7044,7 +7073,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                             if _is_img_ref(_hist_url):
                                 _hist_url = await _persist_image_ref(_hist_url) or _hist_url
                             add_generation_history(user_id=user_id, prompt=prompt, image_url=_hist_url)
-                            await send_generation_result_by_url(app, chat_id, user_id, image_url)
+                            await send_generation_result_by_url(app, chat_id, user_id, image_url, job=job)
                             if getattr(job, "save_as_avatar", False):
                                 persistent_avatar_url = await _persist_image_ref(image_url)
                                 if persistent_avatar_url:

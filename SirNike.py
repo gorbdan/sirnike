@@ -182,33 +182,37 @@ _IMAGE_CACHE_MAX_BYTES = 500 * 1024 * 1024  # 500 MB
 
 
 class _BoundedImageCache:
-    """LRU image cache capped by entry count and total bytes."""
+    """LRU image cache capped by entry count and total bytes. Thread-safe for asyncio.to_thread use."""
 
     def __init__(self, max_entries: int, max_bytes: int) -> None:
         self._max_entries = max_entries
         self._max_bytes = max_bytes
         self._data: "_collections.OrderedDict[str, bytes]" = _collections.OrderedDict()
         self._total_bytes = 0
+        self._lock = __import__("threading").Lock()
 
     def __setitem__(self, key: str, value: bytes) -> None:
-        if len(value) > self._max_bytes:
-            logger.warning("Image too large for cache (%d bytes), skipping", len(value))
-            return
-        if key in self._data:
-            self._total_bytes -= len(self._data[key])
-            del self._data[key]
-        self._data[key] = value
-        self._total_bytes += len(value)
-        self._evict()
+        with self._lock:
+            if len(value) > self._max_bytes:
+                logger.warning("Image too large for cache (%d bytes), skipping", len(value))
+                return
+            if key in self._data:
+                self._total_bytes -= len(self._data[key])
+                del self._data[key]
+            self._data[key] = value
+            self._total_bytes += len(value)
+            self._evict()
 
     def __getitem__(self, key: str) -> bytes:
-        self._data.move_to_end(key)
-        return self._data[key]
+        with self._lock:
+            self._data.move_to_end(key)
+            return self._data[key]
 
     def get(self, key: str, default: Optional[bytes] = None) -> Optional[bytes]:
-        if key not in self._data:
-            return default
-        return self[key]
+        with self._lock:
+            if key not in self._data:
+                return default
+            return self._data[key]
 
     def _evict(self) -> None:
         while (len(self._data) > self._max_entries or self._total_bytes > self._max_bytes) and self._data:
@@ -401,7 +405,7 @@ def _sync_prompt_library_from_remote() -> None:
             PROMPT_LIBRARY_REMOTE_URL,
             headers={"User-Agent": "Mozilla/5.0 (compatible; SirNikeBot/1.0)"},
         )
-        with _req.urlopen(req, timeout=5) as resp:
+        with _req.urlopen(req, timeout=3) as resp:
             raw = resp.read()
         data = json.loads(raw)
         if not isinstance(data, list):
@@ -1299,7 +1303,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if referrer_id and is_new_user and mark_referral_bonus(user.id):
         try:
             add_izyminki(user.id, REFERRAL_BONUS_NEW_USER)
-            add_izyminki(referrer_id, REFERRAL_BONUS_REFERRER)
+            try:
+                add_izyminki(referrer_id, REFERRAL_BONUS_REFERRER)
+            except Exception:
+                # Откатываем бонус новому пользователю, если реферреру не начислилось
+                add_izyminki(user.id, -REFERRAL_BONUS_NEW_USER)
+                raise
             logger.info("Referral bonus credited: new_user=%s referrer=%s bonus_new=%s bonus_ref=%s",
                         user.id, referrer_id, REFERRAL_BONUS_NEW_USER, REFERRAL_BONUS_REFERRER)
         except Exception:
@@ -1358,7 +1367,8 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     from datetime import timedelta
     _now_msk = datetime.utcnow() + timedelta(hours=3)
-    _hours_left = 23 - _now_msk.hour
+    _next_reset = _now_msk.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    _hours_left = int((_next_reset - _now_msk).total_seconds() / 3600)
     await update.message.reply_text(
         f"У тебя {bal} изюминок 🧀\n"
         f"Бесплатных генераций сегодня: {free_count}/{FREE_GENERATIONS_PER_DAY}\n"
@@ -1620,6 +1630,12 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
     except Exception as e:
         logger.error("Invalid payment payload %r from user %s: %s", payload, user.id, e)
         await update.message.reply_text("Ошибка обработки платежа. Обратись в поддержку.")
+        return
+
+    if payment.total_amount != valid_pack["price"] * 100:
+        logger.error("Payment amount mismatch: expected %d kopecks, got %d, user=%s",
+                     valid_pack["price"] * 100, payment.total_amount, user.id)
+        await update.message.reply_text("Ошибка: сумма платежа не совпадает. Обратись в поддержку.")
         return
 
     if not save_payment_once(user.id, payment_id, count):
@@ -2834,12 +2850,15 @@ async def _remove_background_api(image_bytes: bytes) -> bytes:
     if png_bytes is None:
         raise Exception(last_error)
 
-    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-    bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
-    bg.paste(img, mask=img.split()[3])
-    out = io.BytesIO()
-    bg.convert("RGB").save(out, format="JPEG", quality=95)
-    return out.getvalue()
+    def _sync_png_to_jpg(data: bytes) -> bytes:
+        img = Image.open(io.BytesIO(data)).convert("RGBA")
+        bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
+        bg.paste(img, mask=img.split()[3])
+        out = io.BytesIO()
+        bg.convert("RGB").save(out, format="JPEG", quality=95)
+        return out.getvalue()
+
+    return await asyncio.to_thread(_sync_png_to_jpg, png_bytes)
 
 
 def _apply_grid_overlay(
@@ -2886,8 +2905,9 @@ async def _process_single_grid_ref(session: aiohttp.ClientSession, url: str) -> 
             except Exception:
                 logger.exception("Background removal failed for url=%s, skipping", url[:60])
 
-        grid_bytes = _apply_grid_overlay(image_bytes)
-        grid_ref = _cache_image(grid_bytes)
+        grid_ref = await asyncio.to_thread(
+            lambda ib: _cache_image(_apply_grid_overlay(ib)), image_bytes
+        )
         logger.info("Grid overlay applied: %s", url[:60])
         return grid_ref
     except Exception:
@@ -3890,6 +3910,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, count_str, price_str = query.data.split("_")
         count = int(count_str)
         price = int(price_str)
+
+        if not any(p["count"] == count and p["price"] == price for p in BUY_PACKS):
+            await query.answer("Этот пакет больше не доступен.", show_alert=True)
+            return
 
         # Debounce: prevent double-tap from sending two invoices
         buy_key = f"last_buy_invoice_{count}_{price}"

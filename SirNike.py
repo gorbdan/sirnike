@@ -809,17 +809,22 @@ def main_menu_kb() -> InlineKeyboardMarkup:
             callback_data="pl_open",
         )
 
+    video_label = "Seedance 2 🎬" if SEEDANCE_ENABLED else "Seedance 2 🚧"
     rows = [
-        [InlineKeyboardButton("Запустить генерацию⚡", callback_data="generate")],
+        # Главные действия
+        [InlineKeyboardButton("⚡ Запустить генерацию", callback_data="generate")],
         [prompt_library_button],
+        # Дополнительные инструменты в одну строку
+        [
+            InlineKeyboardButton(video_label, callback_data="video_control"),
+            InlineKeyboardButton("🪄 Мой аватар", callback_data="avatar_actions"),
+        ],
+        # Служебные — вместе, не пугают
+        [
+            InlineKeyboardButton("🚨 Проблема", callback_data="report_problem"),
+            InlineKeyboardButton("❌ Сбросить", callback_data="reset"),
+        ],
     ]
-    video_label = "Seedance 2 🎬" if SEEDANCE_ENABLED else "Seedance 2 🚧 (в разработке)"
-    rows.append([InlineKeyboardButton(video_label, callback_data="video_control")])
-    rows.extend([
-        [InlineKeyboardButton("Мой AI-аватар 🪄", callback_data="avatar_actions")],
-        [InlineKeyboardButton("Сообщить о проблеме 🚨", callback_data="report_problem")],
-        [InlineKeyboardButton("Сбросить всё❌", callback_data="reset")],
-    ])
     return InlineKeyboardMarkup(rows)
 
 def promo_try_kb(promo_id: str) -> InlineKeyboardMarkup:
@@ -1047,25 +1052,29 @@ def video_control_kb(state: UserState) -> InlineKeyboardMarkup:
         )
 
     rows = [
-        [InlineKeyboardButton("Промпт ✍️", callback_data="video_set_prompt")],
-        [InlineKeyboardButton("Изображение 🌄", callback_data="video_set_image")],
-        [InlineKeyboardButton("Очистить фото-референсы 🧹", callback_data="video_clear_images")],
-        model_buttons,
+        # Основные параметры
+        [InlineKeyboardButton("1️⃣ Промпт ✍️", callback_data="video_set_prompt")],
+        [InlineKeyboardButton("2️⃣ Изображение 🌄", callback_data="video_set_image")],
     ]
+    # Загруженные фото — одна кнопка с количеством вместо кучи кнопок удаления
     if motion_images:
-        delete_buttons = []
-        for idx, _ in enumerate(motion_images, start=1):
-            delete_buttons.append(
-                InlineKeyboardButton(
-                    f"Удалить #{idx}",
-                    callback_data=f"video_delimg_{idx}",
-                )
+        rows.append([
+            InlineKeyboardButton(
+                f"📸 Фото: {len(motion_images)} шт. · Очистить 🧹",
+                callback_data="video_clear_images",
             )
+        ])
+        # Кнопки удаления по одной — максимум 3 штуки чтобы не перегружать
+        delete_buttons = [
+            InlineKeyboardButton(f"✕ #{idx}", callback_data=f"video_delimg_{idx}")
+            for idx, _ in enumerate(motion_images, start=1)
+        ]
         rows.append(delete_buttons[:3])
         if len(delete_buttons) > 3:
             rows.append(delete_buttons[3:6])
-        if len(delete_buttons) > 6:
-            rows.append(delete_buttons[6:9])
+    # Модель
+    rows.append(model_buttons)
+    # Режим качества
     if selected_model == "seedance2":
         mode_buttons = []
         for mode in get_seedance_mode_options(selected_model):
@@ -1078,11 +1087,13 @@ def video_control_kb(state: UserState) -> InlineKeyboardMarkup:
             )
         if mode_buttons:
             rows.append(mode_buttons)
+    # Длительность
     if duration_buttons:
         rows.append(duration_buttons[:3])
     if len(duration_buttons) > 3:
         rows.append(duration_buttons[3:])
-    rows.append([InlineKeyboardButton("Запустить ⚡", callback_data="video_start")])
+    # Запуск
+    rows.append([InlineKeyboardButton("⚡ Запустить видео", callback_data="video_start")])
     return InlineKeyboardMarkup(rows)
 
 

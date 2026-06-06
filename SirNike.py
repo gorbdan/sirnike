@@ -884,6 +884,8 @@ def avatar_actions_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     else:
         # Fallback: show all delete buttons if user_id not provided
         existing = {"female": True, "male": True, "child": True}
+    if not any(existing.values()):
+        rows.append([InlineKeyboardButton("❓ Что такое аватар?", callback_data="avatar_help")])
     del_row = []
     if existing.get("female"):
         del_row.append(InlineKeyboardButton("Удалить женский 🗑", callback_data="delete_avatar_female"))
@@ -1336,19 +1338,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_new_user:
         text = (
             f"Привет! Я Сырник 🧀 — бот для создания AI-фото и видео на базе Nano Banana 2.\n\n"
-            f"🎁 Тебе начислено {START_BONUS} изюминок в подарок\n"
-            f"Изюминки — внутренняя валюта бота:\n"
-            f"• 1 фото = {BASE_GENERATION_COST} изюминок\n"
-            f"• Каждый день {FREE_GENERATIONS_PER_DAY} бесплатных генерации 🆓\n"
-            f"• Закончились — пополни через /buy\n\n"
-            "🪄 Главная фишка — AI-аватар:\n"
-            "Загрузи свои фото один раз → бот запомнит твою внешность → "
-            "будешь появляться в любом образе на каждой картинке.\n\n"
-            "Как начать:\n"
-            "1️⃣ «Мой AI-аватар 🪄» → загрузи 3–10 фото лица с разных ракурсов\n"
-            "2️⃣ «Библиотека промптов 📚» → выбери стиль\n"
-            "3️⃣ «Запустить генерацию ⚡» → результат через ~30 сек\n\n"
-            "Пригласи друга и получи изюминки: /ref"
+            f"✨ Главная фишка: загрузи свои фото → бот запомнит твою внешность → "
+            f"ты будешь в любом образе на каждой картинке.\n\n"
+            f"🎁 В подарок: {START_BONUS} изюминок (примерно {START_BONUS // BASE_GENERATION_COST} фото)\n\n"
+            f"⚡ Быстрый старт (аватар можно пропустить):\n"
+            f"1. Напиши описание: «портрет в стиле кино» или выбери из библиотеки 📚\n"
+            f"2. Нажми «Запустить генерацию ⚡»\n"
+            f"3. Получи фото — готово! ✅\n\n"
+            f"💡 Если загрузишь свои фото (раздел 🪄), будешь появляться именно как ты.\n\n"
+            f"🆓 Каждый день {FREE_GENERATIONS_PER_DAY} бесплатных генерации. "
+            f"Потом — небольшой платёж.\n"
+            f"Пригласи друга → оба получите подарок: /ref"
         )
     else:
         text = (
@@ -1369,10 +1369,20 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _now_msk = datetime.utcnow() + timedelta(hours=3)
     _next_reset = _now_msk.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
     _hours_left = int((_next_reset - _now_msk).total_seconds() / 3600)
+    free_status = (
+        f"✅ осталось {free_count}/{FREE_GENERATIONS_PER_DAY}"
+        if free_count > 0
+        else f"❌ исчерпаны (сброс через ~{_hours_left}ч)"
+    )
     await update.message.reply_text(
-        f"У тебя {bal} изюминок 🧀\n"
-        f"Бесплатных генераций сегодня: {free_count}/{FREE_GENERATIONS_PER_DAY}\n"
-        f"Сброс бесплатных в 0:00 МСК (через ~{_hours_left}ч)"
+        f"💰 Твой баланс\n\n"
+        f"Изюминок: {bal} 🧀  (1 фото = {BASE_GENERATION_COST} изюминок)\n"
+        f"Бесплатных генераций: {free_status}\n"
+        f"Следующий сброс: завтра в 0:00 МСК",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💳 Купить изюминки", callback_data="show_buy")],
+            [InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open_webapp")],
+        ])
     )
 
 async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1414,9 +1424,15 @@ async def report_problem_command(update: Update, context: ContextTypes.DEFAULT_T
     state = get_or_init_state(context)
     state.waiting_for_problem_report = True
     await update.message.reply_text(
-        "Опиши проблему одним сообщением.\n"
-        "Я передам это в поддержку прямо сейчас.\n\n"
-        "Если передумала, отправь: отмена"
+        "📝 Опиши что не работает\n\n"
+        "Примеры:\n"
+        "• Генерация долго загружается\n"
+        "• Фото выходит размытым\n"
+        "• Не могу загрузить аватар\n\n"
+        "Можешь добавить скриншот вторым сообщением.",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ Отмена", callback_data="reset")
+        ]])
     )
 
 
@@ -1583,9 +1599,11 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
 
     await update.message.reply_text(
-        f"Выбери пакет изюминок:\n"
-        f"• 1 фото = {BASE_GENERATION_COST} изюминок\n"
-        f"• 1 видео 10 сек = {_video_10s_cost} изюминок",
+        f"💰 Пополнить баланс\n\n"
+        f"• 1 фото = {BASE_GENERATION_COST} изюминок 🧀\n"
+        f"• 1 видео 10 сек = {_video_10s_cost} изюминок 🎬\n"
+        f"  (длиннее видео — дороже, короче — дешевле)\n\n"
+        f"Выбери пакет:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -3851,6 +3869,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             f"Запускаю генерацию аватара по {len(photos)} фото… ✨",
             reply_markup=main_menu_kb(),
+        )
+        return
+
+    if query.data == "avatar_help":
+        await query.answer()
+        await query.message.reply_text(
+            "🪄 AI-аватар — это твоя внешность в боте.\n\n"
+            "Загрузи 3–10 своих фото лица с разных ракурсов → "
+            "бот запомнит как ты выглядишь → "
+            "дальше ты будешь появляться в любом образе на каждой картинке.\n\n"
+            "Аватар необязателен — без него тоже можно генерировать."
         )
         return
 

@@ -212,6 +212,7 @@ class _BoundedImageCache:
         with self._lock:
             if key not in self._data:
                 return default
+            self._data.move_to_end(key)
             return self._data[key]
 
     def _evict(self) -> None:

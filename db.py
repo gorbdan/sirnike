@@ -164,8 +164,8 @@ def create_user_if_not_exists(
             """,
             (user_id, username, start_bonus, referrer_id, datetime.utcnow().isoformat())
         )
-        conn.commit()
         is_new = cur.rowcount > 0
+        conn.commit()
 
         if not is_new and username is not None:
             # Update username if it has changed

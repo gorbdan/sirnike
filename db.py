@@ -711,14 +711,18 @@ def get_audience_overview(days: int = 30):
 
 def add_generation_history(user_id: int, prompt: str, image_url: str):
     with get_conn() as conn:
-        conn.execute(
-            """
-            INSERT INTO generation_history (user_id, prompt, image_url, created_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            (user_id, prompt or "", image_url, datetime.utcnow().isoformat()),
-        )
-        conn.commit()
+        try:
+            conn.execute(
+                """
+                INSERT INTO generation_history (user_id, prompt, image_url, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, prompt or "", image_url, datetime.utcnow().isoformat()),
+            )
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            logger.warning("Failed to save generation history: %s", e)
+            conn.rollback()
 
 
 def get_generation_history(user_id: int, limit: int = 10, offset: int = 0):

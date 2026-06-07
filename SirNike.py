@@ -269,7 +269,6 @@ class UserState:
     motion_duration: Optional[int] = None
     motion_mode: Optional[str] = None
     motion_model: str = "seedance2_fast"
-    motion_aspect_ratio: str = "16:9"
     motion_session_active: bool = False
     waiting_for_motion_prompt: bool = False
     waiting_for_motion_image: bool = False
@@ -287,7 +286,6 @@ class GenerationJob:
     save_as_avatar: bool = False
     avatar_kind: str = "female"
     username: Optional[str] = None
-    aspect_ratio: str = "16:9"
 
 generation_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
 queued_user_ids = set()
@@ -528,7 +526,7 @@ async def _locked_save_and_refresh(data: list) -> None:
     """Thread-safe save + reload of the prompt library. Use in async admin handlers."""
     async with _get_prompt_library_lock():
         await asyncio.to_thread(save_prompt_library, data)
-        refresh_prompt_library()
+        await asyncio.to_thread(refresh_prompt_library)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1091,16 +1089,6 @@ def video_control_kb(state: UserState) -> InlineKeyboardMarkup:
             )
         if mode_buttons:
             rows.append(mode_buttons)
-    # Формат (aspect ratio)
-    selected_aspect = getattr(state, "motion_aspect_ratio", "16:9")
-    aspect_buttons = [
-        InlineKeyboardButton(
-            ("● " if ar == selected_aspect else "") + label,
-            callback_data=f"video_aspect_{ar.replace(':', 'x')}",
-        )
-        for ar, label in [("16:9", "📺 16:9"), ("9:16", "📱 9:16"), ("1:1", "⬛ 1:1")]
-    ]
-    rows.append(aspect_buttons)
     # Длительность
     if duration_buttons:
         rows.append(duration_buttons[:3])
@@ -1246,8 +1234,8 @@ def cache_media_group_message(message) -> None:
         ]
         for k in stale_keys:
             MEDIA_GROUP_CACHE.pop(k, None)
-        while len(MEDIA_GROUP_CACHE) > MAX_CACHED_MEDIA_GROUPS:
-            MEDIA_GROUP_CACHE.popitem(last=False)
+    while len(MEDIA_GROUP_CACHE) > MAX_CACHED_MEDIA_GROUPS:
+        MEDIA_GROUP_CACHE.popitem(last=False)
 
 
 def get_cached_media_group(chat_id: int, media_group_id: Optional[str]) -> List[Dict[str, Any]]:
@@ -1717,7 +1705,7 @@ async def send_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE, count
 
     prices = [LabeledPrice(label=f"{count} изюминок", amount=price * 100)]
 
-    await context.bot.send_invoice(
+    _invoice_kwargs = dict(
         chat_id=query.message.chat_id,
         title="Покупка изюминок 🧀",
         description=description,
@@ -1727,6 +1715,14 @@ async def send_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE, count
         prices=prices,
         start_parameter="buy-izuminki"
     )
+    try:
+        await context.bot.send_invoice(**_invoice_kwargs)
+    except RetryAfter as e:
+        await asyncio.sleep(e.retry_after + 1)
+        await context.bot.send_invoice(**_invoice_kwargs)
+    except Exception:
+        logger.exception("Failed to send invoice")
+        await query.answer("Не удалось отправить счёт. Попробуй через минуту.", show_alert=True)
 
 # ══════════════════════════════════════════════════════════════
 # АДМИН: рассылки, статистика, управление
@@ -2754,10 +2750,12 @@ async def build_seedance_reference_sheet_url(image_urls: List[str]) -> Optional[
     loaded_images: List[Image.Image] = []
     try:
         async with aiohttp.ClientSession() as session:
-            tasks = [_fetch_image_for_sheet(session, url) for url in clean_urls[:MAX_SEEDANCE_IMAGE_REFERENCES]]
+            tasks = [asyncio.ensure_future(_fetch_image_for_sheet(session, url)) for url in clean_urls[:MAX_SEEDANCE_IMAGE_REFERENCES]]
             try:
                 results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=45)
             except asyncio.TimeoutError:
+                for task in tasks:
+                    task.cancel()
                 logger.warning("build_seedance_reference_sheet_url: timeout after 45s")
                 return None
             loaded_images = [img for img in results if img is not None]
@@ -3575,7 +3573,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         or video_cb.startswith("video_model_")
         or video_cb.startswith("video_mode_")
         or video_cb.startswith("video_delimg_")
-        or video_cb.startswith("video_aspect_")
     )
 
     if is_video_callback and not SEEDANCE_ENABLED:
@@ -3666,18 +3663,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             "Фото-референсы очищены ✅\n\n" + motion_control_status_text(state),
             reply_markup=motion_control_kb(state),
-        )
-        return
-
-    if video_cb.startswith("video_aspect_"):
-        state = get_or_init_state(context)
-        state.motion_session_active = True
-        picked_ar = video_cb.replace("video_aspect_", "", 1).replace("x", ":")
-        if picked_ar in {"16:9", "9:16", "1:1"}:
-            state.motion_aspect_ratio = picked_ar
-        await query.message.reply_text(
-            video_control_status_text(state),
-            reply_markup=video_control_kb(state),
         )
         return
 
@@ -5287,7 +5272,6 @@ async def start_seedance_task(
     model_slug: Optional[str] = None,
     image_urls: Optional[List[str]] = None,
     model_code: Optional[str] = None,
-    aspect_ratio: str = "16:9",
 ) -> str:
     if not ZVENO_API_KEY:
         raise Exception("ZVENO_API_KEY is empty")
@@ -5381,7 +5365,6 @@ async def start_seedance_task(
             "prompt": prompt_text,
             "duration": duration,
             "resolution": mode_value,
-            "aspect_ratio": aspect_ratio,
         }
     payload_variants = []
     if combined_image_urls:
@@ -6181,7 +6164,6 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     mode=selected_mode,
                     model_slug=selected_model_slug,
                     model_code=selected_model,
-                    aspect_ratio=getattr(state, "motion_aspect_ratio", "16:9"),
                 )
     
                 try:

@@ -269,6 +269,7 @@ class UserState:
     motion_duration: Optional[int] = None
     motion_mode: Optional[str] = None
     motion_model: str = "seedance2_fast"
+    motion_aspect_ratio: str = "16:9"
     motion_session_active: bool = False
     waiting_for_motion_prompt: bool = False
     waiting_for_motion_image: bool = False
@@ -286,6 +287,7 @@ class GenerationJob:
     save_as_avatar: bool = False
     avatar_kind: str = "female"
     username: Optional[str] = None
+    aspect_ratio: str = "16:9"
 
 generation_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
 queued_user_ids = set()
@@ -1089,6 +1091,16 @@ def video_control_kb(state: UserState) -> InlineKeyboardMarkup:
             )
         if mode_buttons:
             rows.append(mode_buttons)
+    # Формат (aspect ratio)
+    selected_aspect = getattr(state, "motion_aspect_ratio", "16:9")
+    aspect_buttons = [
+        InlineKeyboardButton(
+            ("● " if ar == selected_aspect else "") + label,
+            callback_data=f"video_aspect_{ar.replace(':', 'x')}",
+        )
+        for ar, label in [("16:9", "📺 16:9"), ("9:16", "📱 9:16"), ("1:1", "⬛ 1:1")]
+    ]
+    rows.append(aspect_buttons)
     # Длительность
     if duration_buttons:
         rows.append(duration_buttons[:3])
@@ -3563,6 +3575,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         or video_cb.startswith("video_model_")
         or video_cb.startswith("video_mode_")
         or video_cb.startswith("video_delimg_")
+        or video_cb.startswith("video_aspect_")
     )
 
     if is_video_callback and not SEEDANCE_ENABLED:
@@ -3653,6 +3666,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             "Фото-референсы очищены ✅\n\n" + motion_control_status_text(state),
             reply_markup=motion_control_kb(state),
+        )
+        return
+
+    if video_cb.startswith("video_aspect_"):
+        state = get_or_init_state(context)
+        state.motion_session_active = True
+        picked_ar = video_cb.replace("video_aspect_", "", 1).replace("x", ":")
+        if picked_ar in {"16:9", "9:16", "1:1"}:
+            state.motion_aspect_ratio = picked_ar
+        await query.message.reply_text(
+            video_control_status_text(state),
+            reply_markup=video_control_kb(state),
         )
         return
 
@@ -5262,6 +5287,7 @@ async def start_seedance_task(
     model_slug: Optional[str] = None,
     image_urls: Optional[List[str]] = None,
     model_code: Optional[str] = None,
+    aspect_ratio: str = "16:9",
 ) -> str:
     if not ZVENO_API_KEY:
         raise Exception("ZVENO_API_KEY is empty")
@@ -5355,6 +5381,7 @@ async def start_seedance_task(
             "prompt": prompt_text,
             "duration": duration,
             "resolution": mode_value,
+            "aspect_ratio": aspect_ratio,
         }
     payload_variants = []
     if combined_image_urls:
@@ -6154,6 +6181,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     mode=selected_mode,
                     model_slug=selected_model_slug,
                     model_code=selected_model,
+                    aspect_ratio=getattr(state, "motion_aspect_ratio", "16:9"),
                 )
     
                 try:

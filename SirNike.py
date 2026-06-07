@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import base64
 import collections as _collections
 import io
@@ -182,33 +182,38 @@ _IMAGE_CACHE_MAX_BYTES = 500 * 1024 * 1024  # 500 MB
 
 
 class _BoundedImageCache:
-    """LRU image cache capped by entry count and total bytes."""
+    """LRU image cache capped by entry count and total bytes. Thread-safe for asyncio.to_thread use."""
 
     def __init__(self, max_entries: int, max_bytes: int) -> None:
         self._max_entries = max_entries
         self._max_bytes = max_bytes
         self._data: "_collections.OrderedDict[str, bytes]" = _collections.OrderedDict()
         self._total_bytes = 0
+        self._lock = __import__("threading").Lock()
 
     def __setitem__(self, key: str, value: bytes) -> None:
-        if len(value) > self._max_bytes:
-            logger.warning("Image too large for cache (%d bytes), skipping", len(value))
-            return
-        if key in self._data:
-            self._total_bytes -= len(self._data[key])
-            del self._data[key]
-        self._data[key] = value
-        self._total_bytes += len(value)
-        self._evict()
+        with self._lock:
+            if len(value) > self._max_bytes:
+                logger.warning("Image too large for cache (%d bytes), skipping", len(value))
+                return
+            if key in self._data:
+                self._total_bytes -= len(self._data[key])
+                del self._data[key]
+            self._data[key] = value
+            self._total_bytes += len(value)
+            self._evict()
 
     def __getitem__(self, key: str) -> bytes:
-        self._data.move_to_end(key)
-        return self._data[key]
+        with self._lock:
+            self._data.move_to_end(key)
+            return self._data[key]
 
     def get(self, key: str, default: Optional[bytes] = None) -> Optional[bytes]:
-        if key not in self._data:
-            return default
-        return self[key]
+        with self._lock:
+            if key not in self._data:
+                return default
+            self._data.move_to_end(key)
+            return self._data[key]
 
     def _evict(self) -> None:
         while (len(self._data) > self._max_entries or self._total_bytes > self._max_bytes) and self._data:
@@ -231,6 +236,7 @@ last_generated_prompt: "_collections.OrderedDict" = _collections.OrderedDict()
 last_generation_references: "_collections.OrderedDict" = _collections.OrderedDict()
 MEDIA_GROUP_CACHE: "_collections.OrderedDict[Tuple[int, str], List[Dict[str, Any]]]" = _collections.OrderedDict()
 MAX_CACHED_MEDIA_GROUPS = 300
+_MEDIA_GROUP_LAST_TTL_CHECK: float = 0.0
 MAX_MEDIA_GROUP_CHUNK_SIZE = 10
 MAX_AVATAR_PHOTOS = 20
 try:
@@ -263,7 +269,6 @@ class UserState:
     motion_duration: Optional[int] = None
     motion_mode: Optional[str] = None
     motion_model: str = "seedance2_fast"
-    motion_aspect_ratio: str = "16:9"
     motion_session_active: bool = False
     waiting_for_motion_prompt: bool = False
     waiting_for_motion_image: bool = False
@@ -281,7 +286,6 @@ class GenerationJob:
     save_as_avatar: bool = False
     avatar_kind: str = "female"
     username: Optional[str] = None
-    aspect_ratio: str = "16:9"
 
 generation_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
 queued_user_ids = set()
@@ -403,7 +407,7 @@ def _sync_prompt_library_from_remote() -> None:
             PROMPT_LIBRARY_REMOTE_URL,
             headers={"User-Agent": "Mozilla/5.0 (compatible; SirNikeBot/1.0)"},
         )
-        with _req.urlopen(req, timeout=5) as resp:
+        with _req.urlopen(req, timeout=3) as resp:
             raw = resp.read()
         data = json.loads(raw)
         if not isinstance(data, list):
@@ -521,7 +525,7 @@ def refresh_prompt_library() -> None:
 async def _locked_save_and_refresh(data: list) -> None:
     """Thread-safe save + reload of the prompt library. Use in async admin handlers."""
     async with _get_prompt_library_lock():
-        save_prompt_library(data)
+        await asyncio.to_thread(save_prompt_library, data)
         refresh_prompt_library()
 
 
@@ -741,10 +745,10 @@ def get_or_init_state(context: ContextTypes.DEFAULT_TYPE) -> UserState:
 
 
 def generation_failure_user_text(refunded: bool) -> str:
-    refund_text = "\n\nСписанные изюминки возвращены на баланс." if refunded else ""
+    refund_text = "\n\nИзюминки возвращены на баланс — можешь попробовать снова." if refunded else ""
     return (
-        "Наблюдаются сбои, мы работаем над этим❤️\n"
-        "Попробуй, пожалуйста, еще раз через пару минут."
+        "Что-то пошло не так при генерации 😔\n"
+        "Попробуй, пожалуйста, ещё раз через пару минут."
         f"{refund_text}"
     )
 
@@ -773,14 +777,18 @@ def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=(
-                        f"Фото добавлены как референс: {count} шт. ✅\n"
-                        "Теперь выбери стиль в «Библиотеке промптов 📚» или напиши описание вручную,\n"
-                        "затем нажми «Запустить генерацию ⚡»"
+                        f"Фото добавлены как референс: {count} шт. ✅\n\n"
+                        "Что дальше:\n"
+                        "1️⃣ Выбери стиль → «Библиотека промптов 📚»\n"
+                        "   (или просто напиши мне описание текстом)\n"
+                        "2️⃣ Нажми «Запустить генерацию ⚡»"
                     ),
                     reply_markup=main_menu_kb()
                 )
         except asyncio.CancelledError:
             pass
+        except Exception:
+            logger.exception("send_done_later failed for chat_id=%s", chat_id)
         finally:
             photo_tasks.pop(chat_id, None)
 
@@ -803,21 +811,26 @@ def main_menu_kb() -> InlineKeyboardMarkup:
             callback_data="pl_open",
         )
 
+    video_label = "Seedance 2 🎬" if SEEDANCE_ENABLED else "Seedance 2 🚧"
     rows = [
-        [InlineKeyboardButton("Запустить генерацию⚡", callback_data="generate")],
+        # Главные действия
+        [InlineKeyboardButton("⚡ Запустить генерацию", callback_data="generate")],
         [prompt_library_button],
+        # Дополнительные инструменты в одну строку
+        [
+            InlineKeyboardButton(video_label, callback_data="video_control"),
+            InlineKeyboardButton("🪄 Мой аватар", callback_data="avatar_actions"),
+        ],
+        # Служебные — вместе, не пугают
+        [
+            InlineKeyboardButton("🚨 Проблема", callback_data="report_problem"),
+            InlineKeyboardButton("❌ Сбросить", callback_data="reset"),
+        ],
     ]
-    video_label = "Seedance 2 🎬" if SEEDANCE_ENABLED else "Seedance 2 🚧 (в разработке)"
-    rows.append([InlineKeyboardButton(video_label, callback_data="video_control")])
-    rows.extend([
-        [InlineKeyboardButton("Мой AI-аватар 🪄", callback_data="avatar_actions")],
-        [InlineKeyboardButton("Сообщить о проблеме 🚨", callback_data="report_problem")],
-        [InlineKeyboardButton("Сбросить всё❌", callback_data="reset")],
-    ])
     return InlineKeyboardMarkup(rows)
 
 def promo_try_kb(promo_id: str) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton("Попробовать", callback_data=f"promo_try_{promo_id}")]]
+    rows = [[InlineKeyboardButton("🚀 Сгенерировать", callback_data=f"promo_try_{promo_id}")]]
     if PROMPT_WEBAPP_URL:
         rows.append([InlineKeyboardButton("Библиотека промтов 📚", callback_data="pl_open_webapp")])
     else:
@@ -878,6 +891,8 @@ def avatar_actions_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     else:
         # Fallback: show all delete buttons if user_id not provided
         existing = {"female": True, "male": True, "child": True}
+    if not any(existing.values()):
+        rows.append([InlineKeyboardButton("❓ Что такое аватар?", callback_data="avatar_help")])
     del_row = []
     if existing.get("female"):
         del_row.append(InlineKeyboardButton("Удалить женский 🗑", callback_data="delete_avatar_female"))
@@ -1039,25 +1054,29 @@ def video_control_kb(state: UserState) -> InlineKeyboardMarkup:
         )
 
     rows = [
-        [InlineKeyboardButton("Промпт ✍️", callback_data="video_set_prompt")],
-        [InlineKeyboardButton("Изображение 🌄", callback_data="video_set_image")],
-        [InlineKeyboardButton("Очистить фото-референсы 🧹", callback_data="video_clear_images")],
-        model_buttons,
+        # Основные параметры
+        [InlineKeyboardButton("1️⃣ Промпт ✍️", callback_data="video_set_prompt")],
+        [InlineKeyboardButton("2️⃣ Изображение 🌄", callback_data="video_set_image")],
     ]
+    # Загруженные фото — одна кнопка с количеством вместо кучи кнопок удаления
     if motion_images:
-        delete_buttons = []
-        for idx, _ in enumerate(motion_images, start=1):
-            delete_buttons.append(
-                InlineKeyboardButton(
-                    f"Удалить #{idx}",
-                    callback_data=f"video_delimg_{idx}",
-                )
+        rows.append([
+            InlineKeyboardButton(
+                f"📸 Фото: {len(motion_images)} шт. · Очистить 🧹",
+                callback_data="video_clear_images",
             )
+        ])
+        # Кнопки удаления по одной — максимум 3 штуки чтобы не перегружать
+        delete_buttons = [
+            InlineKeyboardButton(f"✕ #{idx}", callback_data=f"video_delimg_{idx}")
+            for idx, _ in enumerate(motion_images, start=1)
+        ]
         rows.append(delete_buttons[:3])
         if len(delete_buttons) > 3:
             rows.append(delete_buttons[3:6])
-        if len(delete_buttons) > 6:
-            rows.append(delete_buttons[6:9])
+    # Модель
+    rows.append(model_buttons)
+    # Режим качества
     if selected_model == "seedance2":
         mode_buttons = []
         for mode in get_seedance_mode_options(selected_model):
@@ -1070,22 +1089,13 @@ def video_control_kb(state: UserState) -> InlineKeyboardMarkup:
             )
         if mode_buttons:
             rows.append(mode_buttons)
-    # Формат видео
-    selected_aspect = getattr(state, "motion_aspect_ratio", "16:9")
-    aspect_options = [("16:9", "📺 16:9"), ("9:16", "📱 9:16"), ("1:1", "⬛ 1:1")]
-    aspect_buttons = [
-        InlineKeyboardButton(
-            ("● " if ar == selected_aspect else "") + label,
-            callback_data=f"video_aspect_{ar.replace(':', 'x')}",
-        )
-        for ar, label in aspect_options
-    ]
-    rows.append(aspect_buttons)
+    # Длительность
     if duration_buttons:
         rows.append(duration_buttons[:3])
     if len(duration_buttons) > 3:
         rows.append(duration_buttons[3:])
-    rows.append([InlineKeyboardButton("Запустить ⚡", callback_data="video_start")])
+    # Запуск
+    rows.append([InlineKeyboardButton("⚡ Запустить видео", callback_data="video_start")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -1211,21 +1221,21 @@ def cache_media_group_message(message) -> None:
         return  # bucket full — ignore extra items (prevents DoS)
 
     bucket.append(media_item)
-    bucket.sort(key=lambda item: int(item.get("message_id", 0)))
 
-    # TTL eviction: drop entries whose oldest item is more than 10 minutes old
-    _media_group_ttl = 600  # seconds
+    # TTL eviction — не чаще раз в 60 сек, чтобы не делать O(n) на каждый media item
+    global _MEDIA_GROUP_LAST_TTL_CHECK
     _now = time.time()
-    stale_keys = [
-        k for k, v in MEDIA_GROUP_CACHE.items()
-        if v and (_now - float(v[0].get("added_at", _now))) > _media_group_ttl
-    ]
-    for k in stale_keys:
-        MEDIA_GROUP_CACHE.pop(k, None)
-
-    # Hard cap: O(1) eviction of oldest entry when still over the limit
-    while len(MEDIA_GROUP_CACHE) > MAX_CACHED_MEDIA_GROUPS:
-        MEDIA_GROUP_CACHE.popitem(last=False)
+    if _now - _MEDIA_GROUP_LAST_TTL_CHECK > 60:
+        _MEDIA_GROUP_LAST_TTL_CHECK = _now
+        _media_group_ttl = 600  # seconds
+        stale_keys = [
+            k for k, v in MEDIA_GROUP_CACHE.items()
+            if v and (_now - float(v[0].get("added_at", _now))) > _media_group_ttl
+        ]
+        for k in stale_keys:
+            MEDIA_GROUP_CACHE.pop(k, None)
+        while len(MEDIA_GROUP_CACHE) > MAX_CACHED_MEDIA_GROUPS:
+            MEDIA_GROUP_CACHE.popitem(last=False)
 
 
 def get_cached_media_group(chat_id: int, media_group_id: Optional[str]) -> List[Dict[str, Any]]:
@@ -1308,7 +1318,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if referrer_id and is_new_user and mark_referral_bonus(user.id):
         try:
             add_izyminki(user.id, REFERRAL_BONUS_NEW_USER)
-            add_izyminki(referrer_id, REFERRAL_BONUS_REFERRER)
+            try:
+                add_izyminki(referrer_id, REFERRAL_BONUS_REFERRER)
+            except Exception:
+                # Откатываем бонус новому пользователю, если реферреру не начислилось
+                add_izyminki(user.id, -REFERRAL_BONUS_NEW_USER)
+                raise
+            logger.info("Referral bonus credited: new_user=%s referrer=%s bonus_new=%s bonus_ref=%s",
+                        user.id, referrer_id, REFERRAL_BONUS_NEW_USER, REFERRAL_BONUS_REFERRER)
         except Exception:
             logger.exception("Failed to credit referral bonuses for user_id=%s referrer_id=%s", user.id, referrer_id)
         referrer_balance = get_balance(referrer_id)
@@ -1334,16 +1351,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_new_user:
         text = (
             f"Привет! Я Сырник 🧀 — бот для создания AI-фото и видео на базе Nano Banana 2.\n\n"
-            f"Тебе начислено {START_BONUS} изюминок в подарок 🎁\n"
-            f"Изюминки — внутренняя валюта: {BASE_GENERATION_COST} изюминки = 1 фото, каждый день {FREE_GENERATIONS_PER_DAY} бесплатно 🆓\n\n"
-            "🪄 Главная фишка — AI-аватар:\n"
-            "Загрузи свои фото один раз → нейросеть запомнит твою внешность → "
-            "дальше ты появляешься в любом образе на каждой картинке.\n\n"
-            "Как начать:\n"
-            "1️⃣ «Мой AI-аватар 🪄» → загрузи 3–10 фото лица с разных ракурсов\n"
-            "2️⃣ «Библиотека промптов 📚» → выбери стиль (промпт — это описание образа)\n"
-            "3️⃣ «Запустить генерацию ⚡» → результат через ~30 сек\n\n"
-            "Пригласи друга и получи изюминки: /ref"
+            f"✨ Главная фишка: загрузи свои фото → бот запомнит твою внешность → "
+            f"ты будешь в любом образе на каждой картинке.\n\n"
+            f"🎁 В подарок: {START_BONUS} изюминок (примерно {START_BONUS // BASE_GENERATION_COST} фото)\n\n"
+            f"⚡ Быстрый старт (аватар можно пропустить):\n"
+            f"1. Напиши описание: «портрет в стиле кино» или выбери из библиотеки 📚\n"
+            f"2. Нажми «Запустить генерацию ⚡»\n"
+            f"3. Получи фото — готово! ✅\n\n"
+            f"💡 Если загрузишь свои фото (раздел 🪄), будешь появляться именно как ты.\n\n"
+            f"🆓 Каждый день {FREE_GENERATIONS_PER_DAY} бесплатных генерации. "
+            f"Потом — небольшой платёж.\n"
+            f"Пригласи друга → оба получите подарок: /ref"
         )
     else:
         text = (
@@ -1361,14 +1379,23 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     free_date, free_count = get_free_info(user.id)
 
     from datetime import timedelta
-    reset_time = (datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1))
-    msk_reset = reset_time.hour + 3  # UTC+3
-    if msk_reset >= 24:
-        msk_reset -= 24
+    _now_msk = datetime.utcnow() + timedelta(hours=3)
+    _next_reset = _now_msk.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    _hours_left = int((_next_reset - _now_msk).total_seconds() / 3600)
+    free_status = (
+        f"✅ осталось {free_count}/{FREE_GENERATIONS_PER_DAY}"
+        if free_count > 0
+        else f"❌ исчерпаны (сброс через ~{_hours_left}ч)"
+    )
     await update.message.reply_text(
-        f"У тебя {bal} изюминок 🧀\n"
-        f"Бесплатных генераций сегодня: {free_count}/{FREE_GENERATIONS_PER_DAY}\n"
-        f"Сброс бесплатных в 0:00 МСК (через ~{23 - datetime.utcnow().hour}ч)"
+        f"💰 Твой баланс\n\n"
+        f"Изюминок: {bal} 🧀  (1 фото = {BASE_GENERATION_COST} изюминок)\n"
+        f"Бесплатных генераций: {free_status}\n"
+        f"Следующий сброс: завтра в 0:00 МСК",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💳 Купить изюминки", callback_data="show_buy")],
+            [InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open_webapp")],
+        ])
     )
 
 async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1399,7 +1426,7 @@ async def hide_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not message:
         return
     await message.reply_text(
-        "Старую нижнюю кнопку убрала. Открывай библиотеку через кнопку в меню.",
+        "Готово 👍",
         reply_markup=ReplyKeyboardRemove(),
     )
 
@@ -1410,9 +1437,15 @@ async def report_problem_command(update: Update, context: ContextTypes.DEFAULT_T
     state = get_or_init_state(context)
     state.waiting_for_problem_report = True
     await update.message.reply_text(
-        "Опиши проблему одним сообщением.\n"
-        "Я передам это в поддержку прямо сейчас.\n\n"
-        "Если передумала, отправь: отмена"
+        "📝 Опиши что не работает\n\n"
+        "Примеры:\n"
+        "• Генерация долго загружается\n"
+        "• Фото выходит размытым\n"
+        "• Не могу загрузить аватар\n\n"
+        "Можешь добавить скриншот вторым сообщением.",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ Отмена", callback_data="reset")
+        ]])
     )
 
 
@@ -1567,8 +1600,8 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         video_count = pack["count"] // _video_10s_cost
         photos_label = ru_plural(photo_count, "фото", "фото", "фото")
         if video_count > 0:
-            videos_label = ru_plural(video_count, "видео (10 с)", "видео (10 с)", "видео (10 с)")
-            hint = f"≈ {photo_count} {photos_label} / {video_count} {videos_label}"
+            videos_label = ru_plural(video_count, "видео", "видео", "видео")
+            hint = f"≈ {photo_count} {photos_label} / {video_count}+ {videos_label} (5–20 с)"
         else:
             hint = f"≈ {photo_count} {photos_label}"
         keyboard.append([
@@ -1579,9 +1612,11 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
 
     await update.message.reply_text(
-        f"Выбери пакет изюминок:\n"
-        f"• 1 фото = {BASE_GENERATION_COST} изюминок\n"
-        f"• 1 видео 10 сек = {_video_10s_cost} изюминок",
+        f"💰 Пополнить баланс\n\n"
+        f"• 1 фото = {BASE_GENERATION_COST} изюминок 🧀\n"
+        f"• 1 видео 10 сек = {_video_10s_cost} изюминок 🎬\n"
+        f"  (длиннее видео — дороже, короче — дешевле)\n\n"
+        f"Выбери пакет:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -1628,6 +1663,12 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
         await update.message.reply_text("Ошибка обработки платежа. Обратись в поддержку.")
         return
 
+    if payment.total_amount != valid_pack["price"] * 100:
+        logger.error("Payment amount mismatch: expected %d kopecks, got %d, user=%s",
+                     valid_pack["price"] * 100, payment.total_amount, user.id)
+        await update.message.reply_text("Ошибка: сумма платежа не совпадает. Обратись в поддержку.")
+        return
+
     if not save_payment_once(user.id, payment_id, count):
         await update.message.reply_text("Платёж уже обработан.")
         return
@@ -1638,7 +1679,8 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
     await update.message.reply_text(
         f"Оплата прошла успешно ✅\n"
         f"Начислено {count} изюминок 🧀\n"
-        f"Твой баланс: {new_balance} изюминок",
+        f"Твой баланс: {new_balance} изюминок\n\n"
+        f"Можешь запускать генерацию!",
         reply_markup=main_menu_kb(),
     )
 
@@ -1884,9 +1926,16 @@ async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.sleep(0.05)
             except RetryAfter as e:
                 await asyncio.sleep(e.retry_after + 1)
-                # skip this user after flood wait — counted as failed to avoid double-send
-                failed += 1
-                logger.warning(f"FloodWait при рассылке пользователю {target_user_id}, пропускаем")
+                try:
+                    await context.bot.send_message(
+                        chat_id=target_user_id,
+                        text=text,
+                        reply_markup=library_kb,
+                    )
+                    sent += 1
+                except Exception:
+                    failed += 1
+                    logger.warning("Повторная отправка не удалась для %s", target_user_id)
             except (Forbidden, BadRequest):
                 failed += 1
             except Exception:
@@ -2667,6 +2716,19 @@ async def upload_image_url_to_imgbb(image_url: str) -> Optional[str]:
     return await upload_image_bytes_to_imgbb(image_bytes, filename="image.jpg")
 
 
+async def _fetch_image_for_sheet(session: aiohttp.ClientSession, url: str) -> Optional[Image.Image]:
+    try:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=60), allow_redirects=True) as resp:
+            if resp.status != 200:
+                logger.warning("Seedance sheet source fetch failed: %s, url=%s", resp.status, url[:80])
+                return None
+            image_bytes = await resp.read()
+        return Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    except Exception:
+        logger.warning("Seedance sheet source fetch/decode failed for url=%s", url[:80])
+        return None
+
+
 async def build_seedance_reference_sheet_url(image_urls: List[str]) -> Optional[str]:
     clean_urls: List[str] = []
     for item in image_urls:
@@ -2680,22 +2742,13 @@ async def build_seedance_reference_sheet_url(image_urls: List[str]) -> Optional[
     loaded_images: List[Image.Image] = []
     try:
         async with aiohttp.ClientSession() as session:
-            for url in clean_urls[:MAX_SEEDANCE_IMAGE_REFERENCES]:
-                async with session.get(
-                    url,
-                    timeout=aiohttp.ClientTimeout(total=60),
-                    allow_redirects=True,
-                ) as resp:
-                    if resp.status != 200:
-                        logger.warning(f"Seedance sheet source fetch failed: {resp.status}, url={url}")
-                        continue
-                    image_bytes = await resp.read()
-                try:
-                    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-                    loaded_images.append(image)
-                except Exception:
-                    logger.warning("Seedance sheet source decode failed")
-                    continue
+            tasks = [_fetch_image_for_sheet(session, url) for url in clean_urls[:MAX_SEEDANCE_IMAGE_REFERENCES]]
+            try:
+                results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=45)
+            except asyncio.TimeoutError:
+                logger.warning("build_seedance_reference_sheet_url: timeout after 45s")
+                return None
+            loaded_images = [img for img in results if img is not None]
 
         if len(loaded_images) < 2:
             return None
@@ -2832,12 +2885,15 @@ async def _remove_background_api(image_bytes: bytes) -> bytes:
     if png_bytes is None:
         raise Exception(last_error)
 
-    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-    bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
-    bg.paste(img, mask=img.split()[3])
-    out = io.BytesIO()
-    bg.convert("RGB").save(out, format="JPEG", quality=95)
-    return out.getvalue()
+    def _sync_png_to_jpg(data: bytes) -> bytes:
+        img = Image.open(io.BytesIO(data)).convert("RGBA")
+        bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
+        bg.paste(img, mask=img.split()[3])
+        out = io.BytesIO()
+        bg.convert("RGB").save(out, format="JPEG", quality=95)
+        return out.getvalue()
+
+    return await asyncio.to_thread(_sync_png_to_jpg, png_bytes)
 
 
 def _apply_grid_overlay(
@@ -2863,41 +2919,41 @@ def _apply_grid_overlay(
     return out.getvalue()
 
 
-async def apply_grid_overlay_to_refs(image_urls: List[str]) -> List[str]:
-    processed: List[str] = []
-    async with aiohttp.ClientSession() as session:
-        for url in image_urls:
+async def _process_single_grid_ref(session: aiohttp.ClientSession, url: str) -> str:
+    try:
+        if _is_img_ref(url) or url.startswith("data:"):
+            image_bytes = _resolve_image_bytes(url)
+            if image_bytes is None:
+                logger.warning("Grid overlay: image ref not found in cache: %s", url)
+                return url
+        else:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=60), allow_redirects=True) as resp:
+                if resp.status != 200:
+                    logger.warning("Grid overlay: download failed status=%s url=%s", resp.status, url[:80])
+                    return url
+                image_bytes = await resp.read()
+
+        if FAPIHUB_API_KEY or PHOTOROOM_API_KEY or REMOVE_BG_API_KEY:
             try:
-                # Support __img__ cache refs, data: URLs, and http: URLs
-                if _is_img_ref(url) or url.startswith("data:"):
-                    image_bytes = _resolve_image_bytes(url)
-                    if image_bytes is None:
-                        logger.warning("Grid overlay: image ref not found in cache: %s", url)
-                        processed.append(url)
-                        continue
-                else:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=60), allow_redirects=True) as resp:
-                        if resp.status != 200:
-                            logger.warning("Grid overlay: download failed status=%s url=%s", resp.status, url[:80])
-                            processed.append(url)
-                            continue
-                        image_bytes = await resp.read()
-
-                if FAPIHUB_API_KEY or PHOTOROOM_API_KEY or REMOVE_BG_API_KEY:
-                    try:
-                        image_bytes = await _remove_background_api(image_bytes)
-                        logger.info("Background removed for ref: %s", url[:60])
-                    except Exception:
-                        logger.exception("Background removal failed for url=%s, skipping", url[:60])
-
-                grid_bytes = _apply_grid_overlay(image_bytes)
-                grid_ref = _cache_image(grid_bytes)
-                logger.info("Grid overlay applied: %s", url[:60])
-                processed.append(grid_ref)
+                image_bytes = await _remove_background_api(image_bytes)
+                logger.info("Background removed for ref: %s", url[:60])
             except Exception:
-                logger.exception("Grid overlay failed for url=%s, using original", url[:60])
-                processed.append(url)
-    return processed
+                logger.exception("Background removal failed for url=%s, skipping", url[:60])
+
+        grid_ref = await asyncio.to_thread(
+            lambda ib: _cache_image(_apply_grid_overlay(ib)), image_bytes
+        )
+        logger.info("Grid overlay applied: %s", url[:60])
+        return grid_ref
+    except Exception:
+        logger.exception("Grid overlay failed for url=%s, using original", url[:60])
+        return url
+
+
+async def apply_grid_overlay_to_refs(image_urls: List[str]) -> List[str]:
+    async with aiohttp.ClientSession() as session:
+        tasks = [_process_single_grid_ref(session, url) for url in image_urls]
+        return list(await asyncio.gather(*tasks))
 
 
 # ----------------------------
@@ -2915,8 +2971,9 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if user.id in queued_user_ids or user.id in processing_user_ids:
         await reply_target.reply_text(
-            "Сырник уже занят твоей предыдущей магией 🧀\n"
-            "Дождись результата, а потом запустим следующую."
+            "Сырник уже работает над твоим запросом 🧀\n"
+            "Подожди немного — результат придёт сюда автоматически.\n"
+            "После этого можешь запускать следующую генерацию."
         )
         return
 
@@ -2927,7 +2984,15 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not state.prompt:
         queued_user_ids.discard(user.id)
-        await reply_target.reply_text("Сначала отправь текст промпта.")
+        await reply_target.reply_text(
+            "Сначала выбери стиль или напиши описание образа.\n\n"
+            "1️⃣ Нажми «Библиотека промптов 📚» → выбери готовый стиль\n"
+            "2️⃣ Или просто напиши мне текст (например: «портрет в стиле кино»)\n\n"
+            "После этого нажми «Запустить генерацию ⚡»",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("Библиотека промптов 📚", callback_data="pl_open_webapp")
+            ]])
+        )
         return
 
     references = list(state.references)
@@ -2965,12 +3030,13 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 to_validate.append((i, ref_url))
 
-        # Validate HTTP refs concurrently instead of sequentially (was up to 96 s for 8 refs)
+        # Validate HTTP refs concurrently — shared session to avoid 8 separate handshakes
         if to_validate:
-            results = await asyncio.gather(
-                *(validate_image_url(ref_url) for _, ref_url in to_validate),
-                return_exceptions=True,
-            )
+            async with aiohttp.ClientSession() as _val_session:
+                results = await asyncio.gather(
+                    *(validate_image_url(ref_url, _val_session) for _, ref_url in to_validate),
+                    return_exceptions=True,
+                )
             for (i, ref_url), result in zip(to_validate, results):
                 if isinstance(result, Exception):
                     ok_ref, reason_ref = False, str(result)
@@ -3026,8 +3092,10 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await reply_target.reply_text(
                 f"Не хватает изюминок.\n"
                 f"Нужно: {cost}\n"
-                f"У тебя: {bal}\n\n"
-                f"Напиши /buy."
+                f"У тебя: {bal}",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("💳 Купить изюминки", callback_data="show_buy")
+                ]])
             )
             return
 
@@ -3086,7 +3154,8 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await reply_target.reply_text(
             "Сырник всё понял 🧀\n"
-            "Скоро покажу, что получилось."
+            "⏱️ Обработка займёт ~30 сек.\n"
+            "Результат придёт сюда — не закрывай чат."
         )
 
         context.user_data["state"] = UserState()
@@ -3494,7 +3563,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         or video_cb.startswith("video_model_")
         or video_cb.startswith("video_mode_")
         or video_cb.startswith("video_delimg_")
-        or video_cb.startswith("video_aspect_")
     )
 
     if is_video_callback and not SEEDANCE_ENABLED:
@@ -3659,19 +3727,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if video_cb.startswith("video_aspect_"):
-        state = get_or_init_state(context)
-        state.motion_session_active = True
-        picked_ar = video_cb.replace("video_aspect_", "", 1).replace("x", ":")
-        valid_aspects = {"16:9", "9:16", "1:1"}
-        if picked_ar in valid_aspects:
-            state.motion_aspect_ratio = picked_ar
-        await query.message.reply_text(
-            video_control_status_text(state),
-            reply_markup=video_control_kb(state),
-        )
-        return
-
     if video_cb.startswith("video_duration_"):
         state = get_or_init_state(context)
         state.motion_session_active = True
@@ -3786,7 +3841,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if bal < avatar_cost:
                 await query.message.reply_text(
                     f"Не хватает изюминок для генерации аватара.\n"
-                    f"Нужно: {avatar_cost}\nУ тебя: {bal}\n\nНапиши /buy."
+                    f"Нужно: {avatar_cost}\nУ тебя: {bal}",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("💳 Купить изюминки", callback_data="show_buy")
+                    ]])
                 )
                 return
             if not spend_izyminki(user.id, avatar_cost):
@@ -3830,6 +3888,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             f"Запускаю генерацию аватара по {len(photos)} фото… ✨",
             reply_markup=main_menu_kb(),
+        )
+        return
+
+    if query.data == "avatar_help":
+        await query.answer()
+        await query.message.reply_text(
+            "🪄 AI-аватар — это твоя внешность в боте.\n\n"
+            "Загрузи 3–10 своих фото лица с разных ракурсов → "
+            "бот запомнит как ты выглядишь → "
+            "дальше ты будешь появляться в любом образе на каждой картинке.\n\n"
+            "Аватар необязателен — без него тоже можно генерировать."
         )
         return
 
@@ -3880,10 +3949,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if query.data == "show_buy":
+        await query.answer()
+        await buy(update, context)
+        return
+
     if query.data.startswith("buy_"):
         _, count_str, price_str = query.data.split("_")
         count = int(count_str)
         price = int(price_str)
+
+        if not any(p["count"] == count and p["price"] == price for p in BUY_PACKS):
+            await query.answer("Этот пакет больше не доступен.", show_alert=True)
+            return
 
         # Debounce: prevent double-tap from sending two invoices
         buy_key = f"last_buy_invoice_{count}_{price}"
@@ -5184,7 +5262,6 @@ async def start_seedance_task(
     model_slug: Optional[str] = None,
     image_urls: Optional[List[str]] = None,
     model_code: Optional[str] = None,
-    aspect_ratio: str = "16:9",
 ) -> str:
     if not ZVENO_API_KEY:
         raise Exception("ZVENO_API_KEY is empty")
@@ -5278,7 +5355,6 @@ async def start_seedance_task(
             "prompt": prompt_text,
             "duration": duration,
             "resolution": mode_value,
-            "aspect_ratio": aspect_ratio,
         }
     payload_variants = []
     if combined_image_urls:
@@ -5830,22 +5906,27 @@ async def poll_seedance_task(
     raise Exception("Превышено время ожидания генерации видео Seedance")
 
 
-async def validate_image_url(image_url: str) -> tuple[bool, str]:
+async def validate_image_url(image_url: str, session: Optional[aiohttp.ClientSession] = None) -> tuple[bool, str]:
+    _own_session = session is None
+    if _own_session:
+        session = aiohttp.ClientSession()
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                image_url,
-                timeout=aiohttp.ClientTimeout(total=12),
-                allow_redirects=True,
-            ) as resp:
-                content_type = resp.headers.get("Content-Type", "")
-                if resp.status != 200:
-                    return False, f"HTTP {resp.status}"
-                if not content_type.startswith("image/"):
-                    return False, f"Content-Type is not image: {content_type}"
-                return True, "ok"
+        async with session.get(
+            image_url,
+            timeout=aiohttp.ClientTimeout(total=12),
+            allow_redirects=True,
+        ) as resp:
+            content_type = resp.headers.get("Content-Type", "")
+            if resp.status != 200:
+                return False, f"HTTP {resp.status}"
+            if not content_type.startswith("image/"):
+                return False, f"Content-Type is not image: {content_type}"
+            return True, "ok"
     except Exception as e:
-        return False, str(e)        
+        return False, str(e)
+    finally:
+        if _own_session:
+            await session.close()        
 
 
 def _cache_image(image_bytes: bytes) -> str:
@@ -6017,7 +6098,10 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bal = get_balance(user.id)
         if bal < selected_cost:
             await reply_target.reply_text(
-                f"Не хватает изюминок.\nНужно: {selected_cost}\nУ тебя: {bal}\n\nНапиши /buy."
+                f"Не хватает изюминок.\nНужно: {selected_cost}\nУ тебя: {bal}",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("💳 Купить изюминки", callback_data="show_buy")
+                ]])
             )
             return
 
@@ -6070,7 +6154,6 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     mode=selected_mode,
                     model_slug=selected_model_slug,
                     model_code=selected_model,
-                    aspect_ratio=getattr(state, "motion_aspect_ratio", "16:9"),
                 )
     
                 try:
@@ -6272,6 +6355,7 @@ async def send_generation_result_by_url(
     chat_id: int,
     user_id: int,
     image_url: str,
+    job=None,
 ) -> None:
     if image_url:
         _bounded_set(last_generated_image_url, user_id, image_url)
@@ -6320,11 +6404,27 @@ async def send_generation_result_by_url(
         bot_username = bot_me.username or ""
     except Exception:
         bot_username = ""
+    _caption_parts = ["✨ Готово!"]
+    if job and getattr(job, "prompt", None):
+        _short_prompt = job.prompt[:80] + ("…" if len(job.prompt) > 80 else "")
+        _caption_parts.append(f"📝 {_short_prompt}")
+    if job:
+        _cost = getattr(job, "cost", 0)
+        _was_free = getattr(job, "was_free", False)
+        if _was_free:
+            _caption_parts.append("🆓 Бесплатная генерация")
+        elif _cost:
+            _caption_parts.append(f"💰 Потрачено: {_cost} изюминок")
+    try:
+        _bal = get_balance(user_id)
+        _caption_parts.append(f"Баланс: {_bal} изюминок")
+    except Exception:
+        pass
     await app.bot.send_photo(
         chat_id=chat_id,
         photo=photo_buffer,
         reply_markup=result_actions_kb(user_id=user_id, bot_username=bot_username),
-        caption="Сгенерировано: Nano Banana 2 ✨\nПовтори или измени промпт — жми кнопки ниже"
+        caption="\n".join(_caption_parts),
     )
 
     await app.bot.send_document(
@@ -6700,7 +6800,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
             if _is_img_ref(_hist_url):
                 _hist_url = await _persist_image_ref(_hist_url) or _hist_url
             add_generation_history(user_id=user_id, prompt=prompt, image_url=_hist_url)
-            await send_generation_result_by_url(app, chat_id, user_id, image_url)
+            await send_generation_result_by_url(app, chat_id, user_id, image_url, job=job)
             if getattr(job, "save_as_avatar", False):
                 persistent_avatar_url = await _persist_image_ref(image_url)
                 if persistent_avatar_url:
@@ -6974,7 +7074,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                             if _is_img_ref(_hist_url):
                                 _hist_url = await _persist_image_ref(_hist_url) or _hist_url
                             add_generation_history(user_id=user_id, prompt=prompt, image_url=_hist_url)
-                            await send_generation_result_by_url(app, chat_id, user_id, image_url)
+                            await send_generation_result_by_url(app, chat_id, user_id, image_url, job=job)
                             if getattr(job, "save_as_avatar", False):
                                 persistent_avatar_url = await _persist_image_ref(image_url)
                                 if persistent_avatar_url:

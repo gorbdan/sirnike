@@ -1,0 +1,1434 @@
+# Полный аудит Сырника
+
+## Технический аналитик Python/asyncio
+
+
+_Найдено: 4 | Подтверждено: 2 | Отклонено: 2 | GitHub Issues: 2_
+
+
+### ✅ Подтверждённые находки
+
+
+## 🔴 [SirNike.py:3081] Потеря изюминок при краше между spend и put_nowait
+
+**Код:**
+```python
+if not spend_izyminki(user.id, cost):
+    # ...
+    return
+paid = True
+
+try:
+    # ... 20 строк кода ...
+    generation_queue.put_nowait(job)
+except asyncio.QueueFull:
+    queued_user_ids.discard(user.id)
+    if paid:
+        add_izyminki(user.id, cost)
+```
+
+**Проблема:**  
+Между `spend_izyminki()` (строка ~3081) и `generation_queue.put_nowait(job)` (строка ~3100) находится ~20 строк кода с логированием, кешированием, проверками. Если произойдёт необработанное исключение (например, в `_bounded_set()`, в логировании или в самой очереди), изюминки будут потеряны — возмещение происходит только в блоке `except asyncio.QueueFull`, который не ловит прочие исключения.
+
+**Воспроизведение:**  
+1. Пользователь запускает генерацию, изюминки списываются
+2. В цикле `for` валидации refs происходит исключение (например, сетевая ошибка в `asyncio.gather`)
+3. Исключение падает сквозь try-except (он ловит только `QueueFull`)
+4. Job не попадает в очередь, но изюминки уже списаны → потеря средств
+
+**Фикс:**  
+```python
+if not spend_izyminki(user.id, cost):
+    # ... return
+paid = True
+
+try:
+    # ... весь код ...
+    generation_queue.put_nowait(job)
+except Exception as e:  # Catch ALL, не только QueueFull
+    queued_user_ids.discard(user.id)
+    if paid:
+        add_izyminki(user.id, cost)
+    elif use_free:
+        restore_free_generation(user.id)
+    if not isinstance(e, asyncio.QueueFull):
+        logger.exception("Unexpected error during job enqueue")
+    raise
+```
+
+---
+
+## 🔴 [SirNike.py:3053-3066] Race condition при валидации refs с `asyncio.gather`
+
+**Код:**
+```python
+if to_validate:
+    async with aiohttp.ClientSession() as _val_session:
+        results = await asyncio.gather(
+            *(validate_image_url(ref_url, _val_session) for _, ref_url in to_validate),
+            return_exceptions=True,
+        )
+    for (i, ref_url), result in zip(to_validate, results):
+        if isinstance(result, Exception):
+            ok_ref, reason_ref = False, str(result)
+        else:
+            ok_ref, reason_ref = result
+```
+
+**Проблема:**  
+Если в `validate_image_url()` происходит исключение, которое не является подклассом `Exception` (теоретически невозможно, но код так это обрабатывает), или если `result` это не кортеж с двумя элементами, произойдёт `ValueError` при распаковке: `ok_ref, reason_ref = result`. Этот краш не поймается блоком `except asyncio.QueueFull` (строка ~3103) и приведёт к потере изюминок.
+
+**Воспроизведение:**  
+1. `validate_image_url()` возвращает некорректный объект (не кортеж)
+2. Распаковка `ok_ref, reason_ref = result` падает
+3. Exception не ловится, изюминки теряются
+
+**Фикс:**  
+```python
+for (i, ref_url), result in zip(to_validate, results):
+    try:
+        if isinstance(result, Exception):
+            ok_ref, reason_ref = False, str(result)
+        else:
+            ok_ref, reason_ref = result  # Protect unpacking
+            if not isinstance(ok_ref, bool) or not isinstance(reason_ref, str):
+                raise ValueError(f"Invalid validate_image_url response: {result}")
+    except (TypeError, ValueError) as parse_err:
+        logger.error("Failed to parse validation result for %s: %s", ref_url[:60], parse_err)
+        dropped_count += 1
+        continue
+    # ... rest of logic
+```
+
+---
+
+## 🟡 [SirNike.py:2990-3010] Некорректная обработка исключений в валидации refs при ZVENO
+
+**Код:**
+```python
+if to_validate:
+    async with aiohttp.ClientSession() as _val_session:
+        results = await asyncio.gather(
+            *(validate_image_url(ref_url, _val_session) for _, ref_url in to_validate),
+            return_exceptions=True,
+        )
+```
+
+**Проблема:**  
+`return_exceptions=True` означает, что исключения оборачиваются в результаты, но если `asyncio.gather()` сам упадёт (например, из-за отмены задачи или другого сценария), исключение не будет обработано. Кроме того, код предполагает, что `validate_image_url()` всегда возвращает `(bool, str)`, но это не гарантируется типами.
+
+**Воспроизведение:**  
+1. Очень большой список `to_validate` (много refs)
+2. `asyncio.gather()` выбросит исключение из-за лимита файловых дескрипторов или таймаута
+3. Исключение не будет ловиться `except asyncio.QueueFull`
+
+**Фикс:**  
+```python
+if to_validate:
+    try:
+        async with aiohttp.ClientSession() as _val_session:
+            results = await asyncio.gather(
+                *(validate_image_url(ref_url, _val_session) for _, ref_url in to_validate),
+                return_exceptions=True,
+            )
+    except Exception as gather_err:
+        logger.warning("Image URL validation gather failed: %s, treating all as invalid", gather_err)
+        dropped_count += len(to_validate)
+        valid_refs = [url for _, url in instant_refs]
+        if valid_refs == [] and original_refs_count > 0:
+            references = valid_refs
+            state.references = []
+            # Warn user and continue
+```
+
+---
+
+## 🟡 [SirNike.py:3095-3110] Неполная обработка исключений в блоке enqueue
+
+**Код:**
+```python
+except asyncio.QueueFull:
+    queued_user_ids.discard(user.id)
+    if paid:
+        add_izyminki(user.id, cost)
+    elif use_free:
+        restore_free_generation(user.id)
+    logger.critical("Queue full: %d/%d", generation_queue.qsize(), generation_queue.maxsize)
+    await reply_target.reply_text(...)
+    return
+
+except BaseException as _enqueue_exc:
+    queued_user_ids.discard(user.id)
+    if paid:
+        add_izyminki(user.id, cost)
+    elif use_free:
+        restore_free_generation(user.id)
+```
+
+**Проблема:**  
+Блок `except BaseException` ловит исключения, но находится **после** первого try-except на `asyncio.QueueFull`. Если `add_izyminki()` или `restore_free_generation()` внутри первого except-блока упадут, они не будут ловиться, и деньги не возместятся второй раз. Кроме того, `BaseException` ловит и `KeyboardInterrupt`, `SystemExit` — это может скрыть проблемы при shutdown.
+
+**Воспроизведение:**  
+1. `generation_queue.put_nowait(job)` падает с `QueueFull`
+2. `add_izyminki()` в except-блоке падает (например, БД заблокирована)
+3. Исключение выходит, изюминки не возместились
+4. Второй except не поймает это, так как it's already handled
+
+**Фикс:**  
+```python
+except asyncio.QueueFull:
+    queued_user_ids.discard(user.id)
+    try:
+        if paid:
+            add_izyminki(user.id, cost)
+        elif use_free:
+            restore_free_generation(user.id)
+    except Exception as refund_err:
+        logger.critical("Failed to refund after QueueFull: %s", refund_err)
+        # Notify admin, но не молчи
+    logger.critical("Queue full: %d/%d", generation_queue.qsize(), generation_queue.maxsize)
+    await reply_target.reply_text(...)
+    return
+
+except Exception as _enqueue_exc:  # Not BaseException!
+    queued_user_ids.discard(user.id)
+    try:
+        if paid:
+            add_izyminki(user.id, cost)
+        elif use_free:
+            restore_free_generation(user.id)
+    except Exception as refund_err:
+        logger.critical("Failed to refund after exception: %s", refund_err)
+    if not isinstance(_enqueue_exc, asyncio.CancelledError):
+        logger.exception("Failed to enqueue generation job")
+    raise
+```
+
+---
+
+## 🟡 [SirNike.py:1726-1796] `_broadcast_running` флаг не защищен от race condition между проверкой и установкой
+
+**Код:**
+```python
+global _broadcast_running
+# ... code ...
+if _broadcast_running:
+    await update.message.reply_text("⚠️ Рассылка уже запущена...")
+    return
+_broadcast_running = True
+try:
+    # ... broadcast logic
+finally:
+    _broadcast_running = False
+```
+
+**Проблема:**  
+Между проверкой `if _broadcast_running` (строка ~1748) и установкой `_broadcast_running = True` (строка ~1751) нет await, поэтому в asyncio это атомарно **в рамках одного handler'а**. **НО**: если два разных handler'а (например, `/broadcast_promo` и `/broadcast_text`) вызываются почти одновременно из разных корутин, они оба могут пройти проверку и оба установить флаг в True. Глобальный флаг в asyncio не атомарен против параллельных корутин без await между ними.
+
+**Воспроизведение:**  
+1. Админ вызывает `/broadcast_promo` в чате А
+2. Одновременно админ вызывает `/broadcast_text` в чате Б
+3. Обе корутины проверяют `if _broadcast_running:` одновременно, оба видят False
+4. Обе начинают рассылать параллельно
+
+**Фикс:**  
+```python
+_broadcast_lock = asyncio.Lock()
+
+async def broadcast_promo(update, context):
+    async with _broadcast_lock:
+        if _broadcast_running:
+            await update.message.reply_text("⚠️ Рассылка уже запущена...")
+            return
+        global _broadcast_running
+        _broadcast_running = True
+    try:
+        # ... broadcast logic
+    finally:
+        async with _broadcast_lock:
+            _broadcast_running = False
+```
+
+---
+
+🔗 **Issue:** https://github.com/gorbdan/sirnike/issues/16
+
+---
+
+## 🟢 [SirNike.py:474] Потенциальная ошибка при использовании `_prompt_library_lock` до инициализации
+
+**Код:**
+```python
+def _get_prompt_library_lock() -> asyncio.Lock:
+    if _prompt_library_lock is None:
+        raise RuntimeError("_prompt_library_lock used before post_init — call post_init first")
+    return _prompt_library_lock
+```
+
+**Проблема:**  
+Функция корректно проверяет инициализацию, но если `post_init()` не вызвана (что может случиться при неправильном старте бота), то любой вызов `_locked_save_and_refresh()` упадёт с RuntimeError, который может повалить handler без graceful fallback.
+
+**Воспроизведение:**  
+1. Бот стартует, но `post_init()` не вызывается (баг в main)
+2. Админ пытается отредактировать библиотеку промптов
+3. `_locked_save_and_refresh()` вызывает `_get_prompt_library_lock()`
+4. Получает RuntimeError, handler падает
+
+**Фикс:**  
+```python
+async def _locked_save_and_refresh(data: list) -> None:
+    """Thread-safe save + reload of the prompt library. Use in async admin handlers."""
+    try:
+        lock = _get_prompt_library_lock()
+    except RuntimeError as init_err:
+        logger.critical("Prompt library lock not initialized: %s", init_err)
+        raise ValueError("Библиотека промптов не инициализирована. Перезагрузи бота.") from init_err
+    
+    async with lock:
+        await asyncio.to_thread(save_prompt_library, data)
+        refresh_prompt_library()
+```
+
+---
+
+## 🟢 [SirNike.py:2232-2243] Потенциальная потеря изображения при краше `_cache_image()`
+
+**Код:**
+```python
+image_bytes = bio.read()
+direct_url = _cache_image(image_bytes)
+
+if state.generating_avatar:
+    if direct_url not in state.avatar_photos:
+```
+
+**Проблема:**  
+Если `_cache_image()` упадёт с исключением, то `direct_url` не будет определена, и код не дойдёт до обработки аватара. Исключение будет ловиться только в финальном `except Exception` (строка ~2338), но это означает, что пользователь потеряет загруженное фото без сообщения об ошибке (кроме лога).
+
+**Воспроизведение:**  
+1. Пользователь загружает фото аватара
+2. `_cache_image()` падает (например, дискс заполнен, или ошибка в хостинг-провайдере)
+3. Пользователь не получает обратную связь о проблеме
+
+**Фикс:**  
+```python
+try:
+    image_bytes = bio.read()
+    direct_url = _cache_image(image_bytes)
+except Exception as cache_err:
+    logger.exception("Failed to cache uploaded image")
+    await update.message.reply_text("Не удалось сохранить фото. Попробуй ещё раз или выбери меньший файл.")
+    return
+
+if state.generating_avatar:
+    # ... rest
+```
+
+---
+
+**Итог:** найдено **8 проблем**: 3 критичных (потери средств), 4 важных (проблемы очереди и рассылок), 1 незначительная (инициализация).
+
+🔗 **Issue:** https://github.com/gorbdan/sirnike/issues/17
+
+---
+
+
+### ❌ Отклонено верификатором
+
+
+- **Утечка памяти в `_image_cache` при частых загрузках** (SirNike.py:2950) — _`_evict()` вызывается в цикле while и корректно удаляет элементы до выполнения условия; проверка `self._total_bytes > self._max_bytes` гарантирует остановку_
+
+- **Необработанное исключение в `broadcast_text` при отправке медиа-группы** (SirNike.py:1815) — _`_broadcast_running` флаг между проверкой и установкой True защищен: в asyncio между двумя строками кода без await выполнение атомарно; две корутины не пересекутся в этом окне_
+
+---
+
+## UX-аналитик Telegram-ботов с фокусом на новичков
+
+# 🔴 UX-анализ бота "Сырник" для новичков
+
+Анализирую глазами человека, который открыл бота в первый раз и ничего не знает.
+
+---
+
+## 🔴 [SirNike.py:1302] /start не объясняет что такое "изюминки"
+
+**Сценарий:** Новый пользователь открывает бота и видит сообщение `/start`.
+
+**Что сейчас видит юзер:**
+```
+Привет! Я Сырник 🧀 — бот для создания AI-фото и видео на базе Nano Banana 2.
+
+✨ Главная фишка: загрузи свои фото → бот запомнит твою внешность → ты будешь в любом образе на каждой картинке.
+
+🎁 В подарок: 50 изюминок (примерно 16 фото)
+...
+```
+
+**Проблема:** Слово "изюминки" используется как валюта БЕЗ объяснения что это такое. Новичок видит "50 изюминок" и не понимает — это много или мало? Почему именно "изюминки"? Это реальные деньги или игровая валюта?
+
+**Предложение:** Добавить одну строку с объяснением в `/start`:
+```python
+if is_new_user:
+    text = (
+        f"Привет! Я Сырник 🧀 — бот для создания AI-фото и видео на базе Nano Banana 2.\n\n"
+        f"✨ Главная фишка: загрузи свои фото → бот запомнит твою внешность → "
+        f"ты будешь в любом образе на каждой картинке.\n\n"
+        f"🎁 В подарок: {START_BONUS} изюминок 🧀 (это виртуальная валюта, "
+        f"примерно {START_BONUS // BASE_GENERATION_COST} фото или можно пополнить реальными деньгами)\n\n"
+        ...
+```
+
+---
+
+## 🔴 [SirNike.py:2967] После /start нет кнопки "Сгенерировать" — новичок не понимает как начать
+
+**Сценарий:** Новый юзер получил приветствие, видит две кнопки в главном меню, но не ясно какую нажать первой.
+
+**Что сейчас видит юзер:**
+```
+Привет! Я Сырник 🧀 ...
+⚡ Запустить генерацию
+Библиотека промптов 📚
+Seedance 2 🎬
+🪄 Мой аватар
+🚨 Проблема
+❌ Сбросить
+```
+
+**Проблема:** 
+1. Новичок видит "Запустить генерацию" и нажимает — но получает ошибку "Сначала выбери стиль или напиши описание"
+2. Ему нужно СНАЧАЛА выбрать стиль, но это не очевидно — текст на кнопке не намекает
+3. 6 кнопок сразу — перегруз информации для новичка
+
+**Предложение:** Изменить текст кнопки и добавить порядок действий в главное меню:
+```python
+def main_menu_kb() -> InlineKeyboardMarkup:
+    rows = [
+        # Главное: номера для порядка
+        [InlineKeyboardButton("1️⃣ Выбери стиль 📚", callback_data="pl_open_webapp")],
+        [InlineKeyboardButton("2️⃣ Запустить генерацию ⚡", callback_data="generate")],
+        # Доп. инструменты (меньше, не в лицо)
+        [
+            InlineKeyboardButton("🎬 Видео", callback_data="video_control"),
+            InlineKeyboardButton("🪄 Аватар", callback_data="avatar_actions"),
+        ],
+        [
+            InlineKeyboardButton("❓ Помощь", callback_data="show_help"),
+            InlineKeyboardButton("⚙️ Меню", callback_data="reset"),
+        ],
+    ]
+    return InlineKeyboardMarkup(rows)
+```
+
+---
+
+## 🟡 [SirNike.py:1302] Новичок не понимает разницу между "загружу фото" и "выберу стиль"
+
+**Сценарий:** Новый пользователь видит "загрузи свои фото" и думает что ЭТО нужно делать в первую очередь, а не стиль.
+
+**Что сейчас видит юзер:**
+```
+✨ Главная фишка: загрузи свои фото → бот запомнит твою внешность → ты будешь в любом образе на каждой картинке.
+
+⚡ Быстрый старт (аватар можно пропустить):
+1. Напиши описание: «портрет в стиле кино» или выбери из библиотеки 📚
+2. Нажми «Запустить генерацию ⚡»
+```
+
+**Проблема:** Первый абзац говорит "ЗАГРУЗИ фото", второй говорит "АВАТАР МОЖНО ПРОПУСТИТЬ". Новичок путается — нужно загружать или нет? Текст противоречивый.
+
+**Предложение:** Переписать для ясности:
+```python
+if is_new_user:
+    text = (
+        f"Привет! Я Сырник 🧀 — AI-бот для фото и видео.\n\n"
+        f"🎁 Подарок: {START_BONUS} изюминок 🧀 (примерно {START_BONUS // BASE_GENERATION_COST} фото)\n\n"
+        f"⚡ Быстрый старт (3 секунды):\n"
+        f"1. Выбери стиль → «Библиотека 📚» (или напиши своё описание)\n"
+        f"2. Нажми «Запустить ⚡»\n"
+        f"3. Получи фото! ✨\n\n"
+        f"💡 Бонус: загрузи свои фото в раздел «Аватар 🪄» → ты будешь появляться во всех генерациях как ты сам.\n"
+        f"   (это опционально, можно пропустить на первый раз)\n\n"
+        f"🆓 Каждый день {FREE_GENERATIONS_PER_DAY} бесплатных генераций. После — небольшой платёж.\n"
+        f"🎁 Пригласи друга → оба получите подарок."
+    )
+```
+
+---
+
+## 🟡 [SirNike.py:2967] Ошибка при запуске без промпта — текст не понятен новичку
+
+**Сценарий:** Новичок нажимает "Запустить генерацию" без промпта.
+
+**Что сейчас видит юзер:**
+```
+Сначала выбери стиль или напиши описание.
+
+1️⃣ Нажми «Библиотека промптов 📚» → выбери готовый стиль
+2️⃣ Или просто напиши мне текст (например: «портрет в стиле кино»)
+
+После этого нажми «Запустить генерацию ⚡»
+```
+
+**Проблема:** 
+1. Текст понятен, но есть скрытая ошибка: если новичок напишет текст и нажмёт "Запустить" — ничего не произойдет, потому что текст не сохраняется до нажатия кнопки.
+2. Кнопка "Библиотека 📚" в этом окне не видна (её только в предыдущем меню)
+
+**Предложение:** Добавить кнопку в сообщение об ошибке и более понятный текст:
+```python
+if not state.prompt:
+    queued_user_ids.discard(user.id)
+    await reply_target.reply_text(
+        "Сначала добавь промпт — описание стиля или образа 📝\n\n"
+        "Два способа:\n"
+        "① Выбери готовый стиль из библиотеки\n"
+        "② Просто напиши текст (пример: «портрет в стиле кино, яркий свет»)\n\n"
+        "После этого нажми «Запустить генерацию ⚡»",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📚 Выбрать стиль", callback_data="pl_open_webapp")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="reset")]
+        ])
+    )
+    return
+```
+
+---
+
+## 🟡 [SirNike.py:874] Раздел "Аватар" — слишком много кнопок и непонятные действия
+
+**Сценарий:** Новичок нажимает на "🪄 Мой аватар" и видит стену кнопок.
+
+**Что сейчас видит юзер:**
+```
+🎨 Сгенерировать аватар
+Загрузить женский 👩 | Загрузить мужской 👨
+Загрузить детский 🧒
+Показать аватары 👀
+❓ Что такое аватар?
+```
+
+**Проблема:**
+1. Кнопки "Загрузить" не ясны — новичок не понимает, это загрузить аватар из интернета или загрузить свои фото?
+2. Где кнопка "Назад в меню"? Новичок может запутаться
+3. Для первого раза слишком много опций
+
+**Предложение:** Переписать для новичка:
+```python
+def avatar_actions_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
+    existing = {}
+    if user_id is not None:
+        try:
+            existing = get_avatar_urls(user_id)
+        except Exception:
+            pass
+    else:
+        existing = {"female": True, "male": True, "child": True}
+    
+    rows = []
+    # Главное — что делать в первый раз
+    if not any(existing.values()):
+        rows.append([InlineKeyboardButton("❓ Что такое аватар?", callback_data="avatar_help")])
+        rows.append([InlineKeyboardButton("📸 Загрузить своё фото", callback_data="set_avatar_female")])
+    else:
+        rows.append([InlineKeyboardButton("🎨 Сгенерировать", callback_data="avatar_gen_refsheet")])
+        rows.append([InlineKeyboardButton("👀 Показать мои аватары", callback_data="show_avatar")])
+        rows.append([InlineKeyboardButton("📸 Загрузить новое фото", callback_data="set_avatar_female")])
+    
+    # Действия только если есть аватары
+    if any(existing.values()):
+        del_row = []
+        if existing.get("female"):
+            del_row.append(InlineKeyboardButton("🗑 Женский", callback_data="delete_avatar_female"))
+        if existing.get("male"):
+            del_row.append(InlineKeyboardButton("🗑 Мужской", callback_data="delete_avatar_male"))
+        if del_row:
+            rows.append(del_row)
+        if existing.get("child"):
+            rows.append([InlineKeyboardButton("🗑 Детский", callback_data="delete_avatar_child")])
+    
+    rows.append([InlineKeyboardButton("← Назад в меню", callback_data="reset")])
+    return InlineKeyboardMarkup(rows)
+```
+
+---
+
+## 🟡 [SirNike.py:1024] Видео-интерфейс (Seedance) — слишком сложно для новичка
+
+**Сценарий:** Новичок видит меню видео и пугается.
+
+**Что сейчас видит юзер:**
+```
+1️⃣ Промпт ✍️
+2️⃣ Изображение 🌄
+📸 Фото: 2 шт. · Очистить 🧹
+✕ #1 | ✕ #2 | ✕ #3
+● Seedance 2
+● Высокое (варианты: Высокое, Среднее)
+● 10с · 50 изюминок | ● 15с · 75 изюминок
+⚡ Запустить видео
+```
+
+**Проблема:**
+1. 15+ кнопок на одном экране — перегруз
+2. Надпись "Seedance 2 🎬" в главном меню намекает что это работает, но на самом деле это ДРУГОЙ режим со своими параметрами
+3. Новичок не понимает: фото для видео это то же самое что фото для картинок?
+4. Цена за видео непредсказуема (зависит от длительности) — новичок может щёлкнуть и потратить 100 изюминок случайно
+
+**Предложение:** Добавить всплывающую помощь и упростить UI для первого раза:
+```python
+# В конце video_control_status_text добавить:
+return (
+    f"{model_label}\n"
+    "🎬 Генерация видео с AI — персонажи двигаются по твоему сценарию.\n\n"
+    "💡 Как это работает:\n"
+    "1. Промпт (опционально) — описание действия: «человек улыбается и машет рукой»\n"
+    "2. Фото — ваши референсы (одно или несколько)\n"
+    "3. Длительность — выбери сколько секунд видео нужно\n"
+    "4. Качество — выше качество = дольше ждать\n\n"
+    f"Текущие параметры:\n"
+    f"Модель: {model_label}\n"
+    f"Промпт: {prompt_state}\n"
+    f"Фото: {image_state}\n"
+    f"Качество: {quality_text}\n"
+    f"Длительность: {selected_duration} сек\n"
+    f"Стоимость: {selected_cost} изюминок\n"
+    f"⏱️ Ожидание: ~{eta_min}–{eta_max} минут"
+)
+```
+
+---
+
+## 🟡 [SirNike.py:1374] Команда `/balance` не объясняет как получить больше изюминок
+
+**Сценарий:** Новичок потратил бесплатные генерации и видит свой баланс.
+
+**Что сейчас видит юзер:**
+```
+💰 Твой баланс
+
+Изюминок: 0 🧀  (1 фото = 50 изюминок)
+Бесплатных генераций: ❌ исчерпаны (сброс через ~18ч)
+Следующий сброс: завтра в 0:00 МСК
+
+[💳 Купить изюминки] [📚 Библиотека стилей]
+```
+
+**Проблема:**
+1. Новичок видит "0 изюминок" и не понимает что делать дальше
+2. Кнопка "Купить изюминки" есть, но текст не говорит "это платно" или "сколько стоит"
+3. Нет намёка на реферальный бонус
+
+**Предложение:** Добавить больше контекста:
+```python
+async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    create_user_if_not_exists(user.id, user.username, START_BONUS)
+
+    bal = get_balance(user.id)
+    free_date, free_count = get_free_info(user.id)
+
+    from datetime import timedelta
+    _now_msk = datetime.utcnow() + timedelta(hours=3)
+    _next_reset = _now_msk.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    _hours_left = int((_next_reset - _now_msk).total_seconds() / 3600)
+    free_status = (
+        f"✅ осталось {free_count}/{FREE_GENERATIONS_PER_DAY}"
+        if free_count > 0
+        else f"❌ исчерпаны (сброс через ~{_hours_left}ч)"
+    )
+    
+    balance_text = (
+        f"💰 Твой баланс\n\n"
+        f"Изюминок: {bal} 🧀  (1 фото = {BASE_GENERATION_COST} изюминок)\n"
+        f"Бесплатных генераций: {free_status}\n"
+        f"Следующий сброс: завтра в 0:00 МСК\n\n"
+    )
+    
+    if bal == 0 and free_count == 0:
+        balance_text += (
+            f"💡 Варианты пополнения:\n"
+            f"• Приглась друга — оба получите +10 изюминок\n"
+            f"• Купи пакет через кнопку ниже\n"
+            f"• Жди до 0:00 МСК — каждый день {FREE_GENERATIONS_PER_DAY} бесплатных генераций"
+        )
+    
+    await update.message.reply_text(
+        balance_text,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💳 Купить изюминки (от 99 ₽)", callback_data="show_buy")],
+            [InlineKeyboardButton("🎁 Пригласить друга", callback_data="referral")],
+            [InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open_webapp")],
+        ])
+    )
+```
+
+---
+
+## 🟢 [SirNike.py:2052] После отправки текста нет подтверждения что промпт сохранился
+
+**Сценарий:** Новичок пишет "портрет в стиле кино" и отправляет — но не видит что это сохранилось.
+
+**Что сейчас видит юзер:**
+```
+Юзер: портрет в стиле кино
+Бот: Промт сохранён.
+      Теперь можешь отправить фото-референсы или нажать «Запустить генерацию⚡».
+
+[⚡ Запустить генерацию] [📚 Библиотека промптов] ...
+```
+
+**Проблема:** Текст правильный, но новичок может не заметить сообщение — оно малозаметно среди кнопок.
+
+**Предложение:** Подтверждение было бы полезнее если бы показывало что именно сохранилось:
+```python
+deactivate_motion_session(state)
+state.prompt = text
+
+await update.message.reply_text(
+    f"✅ Промпт сохранён:\n"
+    f"«{text[:100]}{'...' if len(text) > 100 else ''}\"\n\n"
+    f"Что дальше:\n"
+    f"• Отправь фото-референсы (опционально)\n"
+    f"• Или сразу нажми «Запустить ⚡»",
+    reply_markup=main_menu_kb()
+)
+```
+
+---
+
+## 🟢 [SirNike.py:1498] Команда `/ai` не объясняется для новичка
+
+**Сценарий:** Новичок видит команду `/ai` в справке, но не понимает что это и когда её использовать.
+
+**Что сейчас видит юзер:** 
+```
+Использование:
+/ai <вопрос>
+
+Пример:
+/ai Придумай 5 идей промптов для портрета в стиле fashion.
+```
+
+**Проблема:** Новичок не понимает зачем ему нужна эта команда если у него уже есть "Библиотека промптов". Это альтернатива? Это помощник? Это платно?
+
+**Предложение:** Добавить контекст:
+```python
+async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    create_user_if_not_exists(user.id, user.username, START_BONUS)
+
+    prompt = " ".join(context.args).strip()
+    if not prompt:
+        await update.message.reply_text(
+            "💬 Текстовый помощник Сырника\n\n"
+            "Используй эту команду чтобы:\n"
+            "• Придумать идеи для промптов\n"
+            "• Переформулировать описание\n"
+            "• Получить советы по стилям\n\n"
+            "Использование:\n"
+            "/ai <вопрос>\n\n"
+            "Примеры:\n"
+            "/ai Придумай 5 идей портретов в стиле киберпанк\n"
+            "/ai Как лучше описать портрет в стиле минимализм?\n"
+            "/ai Что можно сгенерировать за 100 изюминок?"
+        )
+        return
+    # ... rest of code
+```
+
+---
+
+## 🟡 [SirNike.py:1594] Команда `/buy` не показывает сколько фото/видео можно сделать за деньги
+
+**Сценарий:** Новичок видит цены и не понимает стоят ли они денег или это условная валюта.
+
+**Что сейчас видит юзер:**
+```
+💰 Пополнить баланс
+
+• 1 фото = 50 изюминок 🧀
+• 1 видео 10 сек = 120 изюминок 🎬
+
+[250 изюминок — 99 ₽ · ≈ 5 фото]
+[500 изюминок — 199 ₽ · ≈ 10 фото]
+```
+
+**Проблема:** Показано что "1 фото = 50 изюминок", но новичок не знает базовую цену (BASE_GENERATION_COST мог быть другим при обновлении). Числа кажутся произвольными.
+
+**Предложение:** Пакеты уже показывают расчёт, это хорошо. Можно улучшить только заголовок:
+```python
+await update.message.reply_text(
+    f"💰 Купить изюминки (виртуальная валюта 🧀)\n\n"
+    f"Цены:\n"
+    f"• 1 изображение = {BASE_GENERATION_COST} изюминок\n"
+    f"• 1 видео (10 сек) = {_video_10s_cost} изюминок\n\n"
+    f"💡 Чем больше пакет, тем выгоднее.\n\n"
+    f"Выбери:",
+    reply_markup=InlineKeyboardMarkup(keyboard)
+)
+```
+
+---
+
+## 🟡 [SirNike.py:767] После загрузки фото нет ясного сообщения что дальше делать
+
+**Сценарий:** Новичок загружает фото и видит сообщение через 2 секунды.
+
+**Что сейчас видит юзер:**
+```
+Юзер: [отправляет фото]
+Бот (через 2 сек): Фото добавлены как референс: 2 шт. ✅
+
+Что дальше:
+1️⃣ Выбери стиль → «Библиотека промптов 📚»
+   (или просто напиши мне описание текстом)
+2️⃣ Нажми «Запустить генерацию ⚡»
+```
+
+**Проблема:**
+1. "Фото добавлены как референс" — новичок может не понимать что это значит
+2. Инструкция правильная, но может потеряться среди других сообщений
+3. Нет кнопок — новичок должен найти их в меню выше
+
+**Предложение:** Улучшить текст и добавить кнопку:
+```python
+async def send_done_later():
+    try:
+        await asyncio.sleep(2.0)
+        count = photo_counts.pop(chat_id, 0)
+        if count > 0:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"✅ Получено {count} фото-референсов\n\n"
+                    f"Теперь выбери стиль и генерируй:\n"
+                    f"1. Выбери готовый стиль (кнопка ниже)\n"
+                    f"   или напиши свой: «портрет в стиле кино»\n"
+                    f"2. Нажми «Запустить ⚡»\n\n"
+                    f"💡 Загруженные фото будут использованы как референсы твоей внешности."
+                ),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📚 Выбрать стиль", callback_data="pl_open_webapp")],
+                    [InlineKeyboardButton("⚡ Запустить", callback_data="generate")],
+                ])
+            )
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.exception("send_done_later failed for chat_id=%s", chat_id)
+    finally:
+        photo_tasks.pop(chat_id, None)
+```
+
+---
+
+## 🟡 [SirNike.py:832] Кнопка "🚨 Проблема" — новичок не понимает что это для жалоб
+
+**Сценарий:** Новичок видит кнопку "🚨 Проблема" в меню.
+
+**Что сейчас видит юзер:**
+```
+[🚨 Проблема] [❌ Сбросить]
+```
+
+**Проблема:** 
+1. Значок 🚨 агрессивный и страшный
+2. Новичок не понимает — это кнопка для техподержки? Для отмены? Это срочно или нет?
+3. Нет подсказки что это для сообщений об ошибках
+
+**Предложение:** Переименовать и добавить помощь:
+```python
+rows = [
+    # Главные действия
+    [InlineKeyboardButton("⚡ Запустить генерацию", callback_data="generate")],
+    [prompt_library_button],
+    # Дополнительные инструменты в одну строку
+    [
+        InlineKeyboardButton(video_label, callback_data="video_control"),
+        InlineKeyboardButton("🪄 Мой аватар", callback_data="avatar_actions"),
+    ],
+    # Служебные
+    [
+        InlineKeyboardButton("❓ Помощь", callback_data="show_help"),
+        InlineKeyboardButton("📞 Техподдержка", callback_data="report_problem"),
+    ],
+]
+```
+
+---
+
+**ИТОГОВАЯ ТАБЛИЦА КРИТИЧНОСТИ:**
+
+| № | Файл | Проблема | Уровень | Влияние |
+|---|------|----------|---------|---------|
+| 1 | :1302 | Нет объяснения "изюминки" | 🔴 | Новичок не понимает валюту |
+| 2 | :2967 | Непонятный порядок действий в меню | 🔴 | Юзер нажимает не туда |
+| 3 | :2967 | Ошибка без предложения выбрать стиль | 🟡 | Юзер запутается |
+| 4 | :874 | Слишком много кнопок в "Аватар" | 🟡 | Новичок пугается |
+| 5 | :1024 | Видео-интерфейс перегружен | 🟡 | Юзер не поймёт как использовать |
+| 6 | :1374 | Баланс не объясняет как пополнить | 🟡 | Юзер может уйти |
+| 7 | :2052 | Нет очевидного подтверждения промпта | 🟢 | Удобство |
+| 8 | :1498 | /ai не объясняется | 🟢 | Юзер не найдёт |
+| 9 | :1594 | Цены непонятны | 🟡 | Юзер сомневается плат
+
+---
+
+## Security-аналитик платёжных систем
+
+# Анализ Сырника: Проблемы по безопасности платежей
+
+## 🔴 [SirNike.py:1623] Недостаточная валидация payload при предоплатной проверке
+
+**Код:**
+```python
+async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.pre_checkout_query
+    payload = query.invoice_payload
+    try:
+        parts = payload.split("_")
+        if len(parts) < 3:
+            raise ValueError("too few parts")
+        count = int(parts[1])
+        price = int(parts[2])
+        if count <= 0:
+            raise ValueError("non-positive count")
+        valid_pack = next((p for p in BUY_PACKS if p["count"] == count and p["price"] == price), None)
+        if valid_pack is None:
+            raise ValueError(f"unknown pack count={count} price={price}")
+    except Exception as e:
+        logger.warning("Invalid precheckout payload %r from user %s: %s", payload, query.from_user.id, e)
+        await query.answer(ok=False, error_message="Ошибка: неверный платёжный пакет.")
+        return
+    await query.answer(ok=True)
+```
+
+**Проблема:** Валидация не проверяет соответствие между `count` и `price` из payload с фактическими ценами в `BUY_PACKS`. Хотя проверка `valid_pack is None` отловит несуществующий пакет, код НЕ валидирует, что `count` и `price` соответствуют ЭТОМУ конкретному пакету (например, не проверяется, что они в правильном порядке). Также `parts[0]` (содержит "buy") не используется.
+
+**Воспроизведение:** Злоумышленник может перехватить и модифицировать payload перед платежом (если somehow получит доступ), например поменять местами `count` и `price`: `buy_100_60` вместо `buy_60_100`. Строка `if valid_pack is None` отловит это, НО логика полагается на то, что пакет существует в правильном порядке.
+
+**Фикс:** Явно проверить, что `parts[0] == "buy"`:
+```python
+if len(parts) < 3 or parts[0] != "buy":
+    raise ValueError("invalid payload format")
+```
+
+---
+
+## 🔴 [SirNike.py:1643] Race condition между проверкой платежа и записью в БД
+
+**Код:**
+```python
+async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    payment = update.message.successful_payment
+    payment_id = payment.telegram_payment_charge_id
+    payload = payment.invoice_payload
+
+    try:
+        parts = payload.split("_")
+        if len(parts) < 3:
+            raise ValueError("too few parts")
+        count = int(parts[1])
+        price = int(parts[2])
+        if count <= 0 or price <= 0:
+            raise ValueError("non-positive count or price")
+        valid_pack = next((p for p in BUY_PACKS if p["count"] == count and p["price"] == price), None)
+        if valid_pack is None:
+            raise ValueError(f"unknown pack count={count} price={price}")
+    except Exception as e:
+        logger.error("Invalid payment payload %r from user %s: %s", payload, user.id, e)
+        await update.message.reply_text("Ошибка обработки платежа. Обратись в поддержку.")
+        return
+
+    if payment.total_amount != valid_pack["price"] * 100:
+        logger.error("Payment amount mismatch: expected %d kopecks, got %d, user=%s",
+                     valid_pack["price"] * 100, payment.total_amount, user.id)
+        await update.message.reply_text("Ошибка: сумма платежа не совпадает. Обратись в поддержку.")
+        return
+
+    if not save_payment_once(user.id, payment_id, count):
+        await update.message.reply_text("Платёж уже обработан.")
+        return
+
+    # add_izyminki is now done atomically inside save_payment_once
+    new_balance = get_balance(user.id)
+```
+
+**Проблема:** После `save_payment_once()` вызывается `get_balance()` БЕЗ гарантии атомарности. Если между `save_payment_once()` (которая добавляет изюминки) и `get_balance()` пользователь потратит часть средств в другом потоке (хотя бот асинхронный, но это всё равно возможно через другие обработчики callback), баланс будет неправильным для отправки.
+
+**Воспроизведение:** 
+1. Пользователь платит за 50 изюминок
+2. `save_payment_once()` добавляет 50
+3. ДО момента `get_balance()` пользователь нажимает кнопку генерации в другом callback
+4. `spend_izyminki()` списывает средства
+5. `get_balance()` вернёт меньшее число, чем должно было быть (100-50=50 вместо 50)
+
+**Фикс:** Выполнить `get_balance()` ДО любых операций со средствами пользователя, или вернуть баланс из самой `save_payment_once()`.
+
+---
+
+## 🟡 [SirNike.py:1688] Отсутствие проверки PROVIDER_TOKEN при отправке инвойса
+
+**Код:**
+```python
+async def send_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE, count: int, price: int):
+    query = update.callback_query
+
+    if not any(p["count"] == count and p["price"] == price for p in BUY_PACKS):
+        await query.answer("Пакет не найден.", show_alert=True)
+        return
+
+    _video_10s_cost = calc_seedance_cost(10, SEEDANCE_COST_PER_SECOND)
+    photo_count = max(1, count // BASE_GENERATION_COST)
+    video_count = count // _video_10s_cost
+    if video_count > 0:
+        description = (
+            f"{count} изюминок — это примерно {photo_count} фото "
+            f"или {video_count} видео по 5 секунд."
+        )
+    else:
+        description = f"{count} изюминок — это примерно {photo_count} фото."
+
+    prices = [LabeledPrice(label=f"{count} изюминок", amount=price * 100)]
+
+    await context.bot.send_invoice(
+        chat_id=query.message.chat_id,
+        title="Покупка изюминок 🧀",
+        description=description,
+        payload=f"buy_{count}_{price}",
+        provider_token=PROVIDER_TOKEN,
+        currency="RUB",
+        prices=prices,
+        start_parameter="buy-izuminki"
+    )
+```
+
+**Проблема:** `PROVIDER_TOKEN` загружается в `config.py` через `_required_env()` и будет вызывать исключение при запуске, если его нет. Однако проверка на валидность токена в самой функции `send_invoice()` отсутствует. Если токен пустой или невалидный, Telegram API вернёт ошибку, но она не будет обработана.
+
+**Воспроизведение:** Если в конфиге случайно окажется пустой/невалидный `PROVIDER_TOKEN`, инвойс не отправится, но пользователь получит непонятную ошибку от Telegram.
+
+**Фикс:** Добавить проверку перед `send_invoice()`:
+```python
+if not PROVIDER_TOKEN or len(PROVIDER_TOKEN) < 10:
+    await query.answer("Платежи временно недоступны.", show_alert=True)
+    return
+```
+
+---
+
+## 🟡 [SirNike.py:3127] Отсутствие обработки исключений при списании изюминок перед внесением в очередь
+
+**Код:**
+```python
+    if not spend_izyminki(user.id, cost):
+        queued_user_ids.discard(user.id)
+        await reply_target.reply_text("Не удалось списать изюминки. Попробуй ещё раз.")
+        return
+
+    try:
+        _bounded_set(last_generated_prompt, user.id, state.prompt)
+        # Store only persistent URLs — __img__ refs evaporate after restart
+        saved_refs = [r for r in references if not _is_img_ref(r)]
+        dropped_img_refs = len(references) - len(saved_refs)
+        _bounded_set(last_generation_references, user.id, saved_refs)
+        if dropped_img_refs > 0:
+            await reply_target.reply_text(...)
+
+        job = GenerationJob(...)
+        try:
+            generation_queue.put_nowait(job)
+            # ...
+        except asyncio.QueueFull:
+            queued_user_ids.discard(user.id)
+            if paid:
+                add_izyminki(user.id, cost)
+            elif use_free:
+                restore_free_generation(user.id)
+```
+
+**Проблема:** После успешного `spend_izyminki()` и ПЕРЕД `generation_queue.put_nowait()` есть несколько `await` операций (`reply_target.reply_text()`). Если одна из них выбросит исключение, средства будут потеряны (не возвращены, но и очередь не будет заполнена).
+
+**Воспроизведение:**
+1. Пользователь успешно платит
+2. `spend_izyminki()` возвращает `True`
+3. `_bounded_set(last_generated_prompt, ...)` выполняется
+4. `await reply_target.reply_text(...)` выбрасывает исключение (например, `BadRequest` если сообщение удалено)
+5. Исключение не ловится, функция прерывается
+6. Очередь НЕ заполняется, но средства уже списаны
+
+**Фикс:** Обернуть весь блок после `spend_izyminki()` в `try/except` с откатом:
+```python
+if not spend_izyminki(user.id, cost):
+    queued_user_ids.discard(user.id)
+    await reply_target.reply_text("Не удалось списать изюминки. Попробуй ещё раз.")
+    return
+
+try:
+    # ... все операции до put_nowait ...
+    generation_queue.put_nowait(job)
+except BaseException:
+    add_izyminki(user.id, cost)  # откат
+    queued_user_ids.discard(user.id)
+    raise
+```
+
+---
+
+## 🟢 [SirNike.py:2504] Потенциальная инъекция в regex при парсе WebApp payload
+
+**Код:**
+```python
+def parse_webapp_payload_loose(raw_data: str) -> Optional[dict]:
+    """
+    Best-effort parser for malformed/oversized WebApp payloads.
+    Helps recover prompt/title when JSON got truncated by WebApp limits.
+    """
+    text = str(raw_data or "").strip()
+    if not text:
+        return None
+
+    action_match = re.search(r'"(?:action|a)"\s*:\s*"([^"]+)"', text, flags=re.IGNORECASE)
+    title_match = re.search(r'"(?:title|t)"\s*:\s*"([^"]*)"', text, flags=re.IGNORECASE)
+    prompt_match = re.search(r'"(?:prompt|p)"\s*:\s*"([\s\S]*)"', text, flags=re.IGNORECASE)
+
+    action = action_match.group(1).strip().lower() if action_match else "set_prompt"
+    title = title_match.group(1) if title_match else "шаблон"
+    prompt_raw = prompt_match.group(1) if prompt_match else ""
+```
+
+**Проблема:** Regex `prompt_match` использует `[\s\S]*` (любые символы) и будет захватывать ВСЁ до конца строки, включая содержимое других полей JSON. Хотя затем идёт попытка обрезать по маркерам (`","example_url"` и т.д.), это неполнота — если поле `prompt` содержит буквально `","` или другой маркер, обрезка сломается.
+
+**Воспроизведение:** Если WebApp отправит промпт вроде:
+```json
+{"action":"set_prompt","prompt":"test","example_url":"https://example.com"}
+```
+Regex захватит `test","example_url":"https://example.com`, а затем попытается обрезать по маркеру `","example_url"`, что даст `test`, но логика хрупкая.
+
+**Фикс:** Использовать более строгий regex или парсер JSON с fallback:
+```python
+prompt_match = re.search(r'"(?:prompt|p)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', text, flags=re.IGNORECASE)
+```
+
+---
+
+Проблем не обнаружено относительно других аспектов (race conditions в asyncio, обработка стейта).
+
+_Структурированных находок не найдено._
+
+---
+
+## Growth-менеджер Telegram-ботов
+
+# Анализ Сырника по специализации Growth
+
+После тщательного анализа кода с фокусом на реферальную систему, пакеты изюминок, бесплатные генерации, конверсию и retention обнаружены следующие проблемы:
+
+---
+
+## 🔴 [SirNike.py:1320] Потеря реферального бонуса при ошибке (race condition в откате)
+
+**Код:**
+```python
+if referrer_id and is_new_user and mark_referral_bonus(user.id):
+    try:
+        add_izyminki(user.id, REFERRAL_BONUS_NEW_USER)
+        try:
+            add_izyminki(referrer_id, REFERRAL_BONUS_REFERRER)
+        except Exception:
+            # Откатываем бонус новому пользователю, если реферреру не начислилось
+            add_izyminki(user.id, -REFERRAL_BONUS_NEW_USER)
+            raise
+```
+
+**Проблема:** Если `add_izyminki(referrer_id, ...)` упадёт, то `add_izyminki(user.id, -REFERRAL_BONUS_NEW_USER)` выполнится. Но если **этот откат** тоже упадёт (например, БД временно недоступна), новый пользователь останется с бонусом, а реферрер — без. Нет гарантии atomicity на уровне DB.
+
+**Воспроизведение:** 
+1. Пользователь регистрируется по реферальной ссылке
+2. Новому юзеру начисляется `REFERRAL_BONUS_NEW_USER`
+3. Реферреру выдаёт ошибку сети/БД при попытке начисления
+4. Откат (`-REFERRAL_BONUS_NEW_USER`) тоже падает
+5. Реферрер не получит бонус, но new user получит → асимметрия, потеря revenue
+
+**Фикс:** Обернуть обе операции в одну DB-транзакцию, либо использовать флаг `mark_referral_bonus()` только если **обе** операции успешны:
+```python
+if referrer_id and is_new_user:
+    try:
+        add_izyminki(user.id, REFERRAL_BONUS_NEW_USER)
+        add_izyminki(referrer_id, REFERRAL_BONUS_REFERRER)
+        mark_referral_bonus(user.id)  # только после обеих операций
+    except Exception:
+        # откатить обе, если вторая упала
+        try:
+            add_izyminki(user.id, -REFERRAL_BONUS_NEW_USER)
+            add_izyminki(referrer_id, -REFERRAL_BONUS_REFERRER)
+        except:
+            pass
+        raise
+```
+
+---
+
+## 🟡 [SirNike.py:1313] Реферрер не уведомляется об ошибке начисления бонуса
+
+**Код:**
+```python
+referrer_balance = get_balance(referrer_id)
+try:
+    await context.bot.send_message(
+        chat_id=referrer_id,
+        text=(
+            f"🎉 По твоей реферальной ссылке зарегистрировался новый пользователь!\n"
+            f"Тебе начислено +{REFERRAL_BONUS_REFERRER} изюминок 🧀\n"
+            f"Твой баланс: {referrer_balance} изюминок"
+        ),
+    )
+except Exception:
+    logger.warning("Failed to notify referrer %s about bonus", referrer_id)
+```
+
+**Проблема:** Если реферрер чего-то блокировал бота, notification упадёт, но баланс уже изменён (или нет — зависит от точки отката выше). Реферрер **не узнает**, что получил бонус. Плохой experience для retention реферальной программы.
+
+**Воспроизведение:** 
+1. Реферрер заблокировал бота или закрыл ДМ
+2. `send_message()` упадёт с `Forbidden`
+3. Реферрер не узнает о бонусе, даже если баланс увеличился
+4. Низкий retention в реферальной программе (думает, что ссылка не работает)
+
+**Фикс:** Логировать в БД факт успешного начисления бонуса реферреру отдельной колонкой, и показывать уведомление в главном меню `/balance` при следующем открытии:
+```python
+mark_referral_bonus_credited(referrer_id)  # добавить флаг в БД
+# В /balance показывать "Ты получил +N за рефералку (не прочитано)" если флаг новый
+```
+
+---
+
+## 🟡 [SirNike.py:3095-3115] Потеря последнего промпта и рефов при краше перед `generation_queue.put_nowait()`
+
+**Код:**
+```python
+try:
+    _bounded_set(last_generated_prompt, user.id, state.prompt)
+    saved_refs = [r for r in references if not _is_img_ref(r)]
+    dropped_img_refs = len(references) - len(saved_refs)
+    _bounded_set(last_generation_references, user.id, saved_refs)
+    if dropped_img_refs > 0:
+        await reply_target.reply_text(...)
+
+    job = GenerationJob(...)
+    try:
+        generation_queue.put_nowait(job)
+```
+
+**Проблема:** Между `_bounded_set(last_generation_references, ...)` и `generation_queue.put_nowait(job)` есть `await reply_target.reply_text()`. Если оно упадёт, промпт и рефы **сохранены**, но задача **не в очереди**. Пользователь нажимает «Повторить» и видит старые значения, но новая генерация пошла на старые рефы из прошлого раза → UX-конфьюз.
+
+**Воспроизведение:**
+1. Пользователь нажимает «Запустить генерацию», вводит новый промпт и рефы
+2. `_bounded_set()` сохраняет промпт в `last_generated_prompt`
+3. `await reply_target.reply_text()` перед енкеью упадёт (сеть потеряется)
+4. Job не добавлен в очередь
+5. Пользователь нажимает "Повторить" → видит новый промпт, но генерируется старая задача (если остаток памяти)
+
+**Фикс:** Сохранять `last_generated_prompt` и `last_generation_references` **только после успешного** `generation_queue.put_nowait()`:
+```python
+job = GenerationJob(...)
+try:
+    generation_queue.put_nowait(job)
+    _bounded_set(last_generated_prompt, user.id, state.prompt)
+    _bounded_set(last_generation_references, user.id, saved_refs)
+except asyncio.QueueFull:
+    ...
+```
+
+---
+
+## 🟡 [SirNike.py:1643-1670] Платёж обработан, но `send_message()` упал → пользователь не знает о зачислении
+
+**Код:**
+```python
+if not save_payment_once(user.id, payment_id, count):
+    await update.message.reply_text("Платёж уже обработан.")
+    return
+
+new_balance = get_balance(user.id)
+
+await update.message.reply_text(
+    f"Оплата прошла успешно ✅\n"
+    f"Начислено {count} изюминок 🧀\n"
+    f"Твой баланс: {new_balance} изюминок\n\n"
+    f"Можешь запускать генерацию!",
+    reply_markup=main_menu_kb(),
+)
+```
+
+**Проблема:** `save_payment_once()` уже добавил изюминки в БД (атомарно). Но если `send_message()` упадёт (сеть, бот заблокирован), пользователь **не узнает**, что изюминки зачислены. Он может подумать, что платёж не прошёл, и повторить платёж → дублирование платежа.
+
+**Воспроизведение:**
+1. Пользователь платит за 500 изюминок
+2. `save_payment_once()` успешно добавляет 500 изюминок в БД
+3. `send_message()` падает (например, бота заблокировали)
+4. Пользователь не видит подтверждения
+5. Пытается платить снова (или пишет в поддержку) → возможен двойной платёж
+
+**Фикс:** Сделать notification опциональной или использовать встроенную Telegram-рассылку платёжа (обычно Telegram сам отправляет системное уведомление). Если очень нужна кастомная рассылка, то логировать попытку отправки и показывать уведомление позже в `/balance`:
+```python
+if not save_payment_once(user.id, payment_id, count):
+    return
+try:
+    await update.message.reply_text("✅ Платёж прошёл, изюминки добавлены.")
+except Exception:
+    logger.warning("Failed to send payment confirmation to user %s, but payment saved", user.id)
+    # Уведомление появится в /balance при следующем открытии
+```
+
+---
+
+## 🟡 [SirNike.py:1374-1397] Не показывается, сколько дней осталось до следующего сброса бесплатных генераций
+
+**Код:**
+```python
+from datetime import timedelta
+_now_msk = datetime.utcnow() + timedelta(hours=3)
+_next_reset = _now_msk.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+_hours_left = int((_next_reset - _now_msk).total_seconds() / 3600)
+free_status = (
+    f"✅ осталось {free_count}/{FREE_GENERATIONS_PER_DAY}"
+    if free_count > 0
+    else f"❌ исчерпаны (сброс через ~{_hours_left}ч)"
+)
+```
+
+**Проблема:** Расчёт assume что сброс всегда в 00:00 МСК. Но если user находится в другом часовом поясе, сообщение может быть запутанным. Кроме того, рассчитывается через часы, но не ясно, в какой день сброс (особенно если < 1 часа осталось, может быть ещё сегодня в 00:00 или завтра).
+
+**Воспроизведение:**
+1. Пользователь в UTC+0 (London)
+2. Бот показывает "сброс через ~3ч"
+3. Пользователь ждёт 3 часа, но сброс произойдёт в 00:00 Moscow Time (UTC+3) = ещё +4 часа для него
+
+**Фикс:** Показать точное время сброса в формате "Завтра в 00:00 МСК":
+```python
+_next_reset_str = _next_reset.strftime("%Y-%m-%d %H:%M МСК")
+free_status = (
+    f"✅ осталось {free_count}/{FREE_GENERATIONS_PER_DAY}"
+    if free_count > 0
+    else f"❌ исчерпаны (сброс: {_next_reset_str})"
+)
+```
+
+---
+
+## 🟢 [SirNike.py:1302-1370] START_BONUS может быть 0, но код не проверяет
+
+**Код:**
+```python
+is_new_user = create_user_if_not_exists(user.id, user.username, START_BONUS, referrer_id=referrer_id)
+
+if is_new_user:
+    text = (
+        f"🎁 В подарок: {START_BONUS} изюминок (примерно {START_BONUS // BASE_GENERATION_COST} фото)\n\n"
+```
+
+**Проблема:** Если `START_BONUS = 0` в конфиге (например, для A/B тестирования без бонуса), код всё ещё покажет "В подарок: 0 изюминок (примерно 0 фото)" — выглядит странно и демотивирует. Также деление на `BASE_GENERATION_COST` может быть неинформативно (0 // 5 = 0).
+
+**Воспроизведение:** Админ устанавливает `START_BONUS=0` для тестирования retention без бонуса. Новый юзер видит "В подарок: 0 изюминок" → чувствует себя обделённым.
+
+**Фикс:** Условно показать сообщение о бонусе только если `START_BONUS > 0`:
+```python
+if START_BONUS > 0:
+    f"🎁 В подарок: {START_BONUS} изюминок (примерно {START_BONUS // BASE_GENERATION_COST} фото)\n\n"
+else:
+    "Ты можешь сразу начать генерировать изображения!\n\n"
+```
+
+---
+
+## 🟢 [SirNike.py:1725-1793] `_broadcast_running` флаг не защищает от параллельных рассылок через разных админов
+
+**Код:**
+```python
+_broadcast_running = False  # guard against parallel broadcasts
+
+async def broadcast_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global _broadcast_running
+    ...
+    if _broadcast_running:
+        await update.message.reply_text("⚠️ Рассылка уже запущена. Дождись её завершения.")
+        return
+    _broadcast_running = True
+```
+
+**Проблема:** Если два админа одновременно нажмут `/broadcast_promo`, обе команды могут пройти проверку `if _broadcast_running` в одном цикле event loop (до `_broadcast_running = True`). Хотя в asyncio это атомарно, но флаг глобальный и не захватывает все потоки рассылки — возможна путаница.
+
+**Воспроизведение:** Не критично для текущей архитектуры (event loop однопоточный), но код выглядит хрупким.
+
+**Фикс:** Использовать `asyncio.Lock()`:
+```python
+_broadcast_lock = asyncio.Lock()
+
+async def broadcast_promo(...):
+    if _broadcast_lock.locked():
+        await update.message.reply_text("⚠️ Рассылка уже запущена.")
+        return
+    async with _broadcast_lock:
+        # рассылка
+```
+
+---
+
+Проблем не обнаружено кроме перечисленных выше.
+
+_Структурированных находок не найдено._
+
+---
+
+## Database-инженер SQLite
+
+# Анализ базы данных Сырника
+
+Проблем не обнаружено.
+
+**Обоснование:**
+
+1. **Транзакции и атомарность** — все критичные операции правильно используют `BEGIN`/`COMMIT`:
+   - `save_payment_once()` (строка ~665) использует явную транзакцию для INSERT платежа + UPDATE баланса
+   - `try_use_free_generation()` (строка ~580) атомарно проверяет и потребляет слот одним UPDATE
+   - `mark_referral_bonus()` (строка ~624) использует UPDATE с условием для идемпотентности
+
+2. **INSERT OR IGNORE** — правильно защищает от дублирования:
+   - `create_user_if_not_exists()` (строка ~479) использует `INSERT OR IGNORE` с проверкой `rowcount` для определения новизны пользователя
+
+3. **Схема БД** — адекватна:
+   - Уникальные ограничения на `payments.telegram_payment_id` и `promo_clicks (promo_id, user_id)` предотвращают дублирование
+   - Индексы созданы для часто используемых фильтров (`referrer_id`, `free_used_date`)
+   - Миграция колонок аватаров (`avatar_female_url`, `avatar_male_url`, `avatar_child_url`) выполнена безопасно
+
+4. **Потеря данных** — исключена:
+   - При ошибке в `save_payment_once()` происходит полный `rollback()` — монеты не добавляются, если INSERT платежа упал
+   - `restore_free_generation()` корректно откатывает использованный слот при падении генерации
+
+5. **Безопасность валидации** — `_avatar_column()` (строка ~643) защищена от SQL-инъекций:
+   - Проверка по белому списку `_AVATAR_COLUMN_SAFE`
+   - Параметризованные запросы везде
+
+6. **Обработка edge-case'ов**:
+   - `get_all_user_ids()` (строка ~699) имеет retry-логику для устойчивости к блокировкам БД
+   - `purge_stale_avatar_refs()` (строка ~686) безопасно очищает временные кэш-ссылки `__img_`
+
+_Структурированных находок не найдено._
+
+---
+
+## Performance-инженер Python
+
+
+_Найдено: 3 | Подтверждено: 0 | Отклонено: 3 | GitHub Issues: 0_
+
+
+
+### ❌ Отклонено верификатором
+
+
+- **Синхронный grid overlay в asyncio без to_thread** (SirNike.py:2922) — _неправильное понимание asyncio.to_thread и lock для многопоточного доступа_
+
+- **Потенциальная утечка памяти в asyncio.gather при исключениях** (SirNike.py:2719) — _loaded_images инициализирована до try блока, утечки нет_
+
+- **Неэффективное использование OrderedDict.move_to_end в жарких путях** (SirNike.py:2228) — _lock contention в OrderedDict незначительна, не баг_

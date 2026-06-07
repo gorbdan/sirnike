@@ -1,4 +1,4 @@
-import sqlite3
+﻿import sqlite3
 import os
 import shutil
 import logging
@@ -141,6 +141,9 @@ def init_db():
             created_at TEXT NOT NULL
         )
         """)
+
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_referrer_id ON users(referrer_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_free_used_date ON users(free_used_date)")
         conn.commit()
 
 
@@ -161,8 +164,8 @@ def create_user_if_not_exists(
             """,
             (user_id, username, start_bonus, referrer_id, datetime.utcnow().isoformat())
         )
-        conn.commit()
         is_new = cur.rowcount > 0
+        conn.commit()
 
         if not is_new and username is not None:
             # Update username if it has changed
@@ -463,6 +466,10 @@ def save_payment_once(user_id: int, payment_id: str, amount: int) -> bool:
         except sqlite3.IntegrityError:
             conn.rollback()
             return False
+        except Exception:
+            conn.rollback()
+            logger.exception("Unexpected error in save_payment_once: user_id=%s payment_id=%s", user_id, payment_id)
+            raise
 
 
 def get_all_user_ids(retries: int = 3) -> list:
@@ -473,7 +480,7 @@ def get_all_user_ids(retries: int = 3) -> list:
                 cur = conn.cursor()
                 cur.execute("SELECT user_id FROM users")
                 return [row[0] for row in cur.fetchall()]
-        except sqlite3.OperationalError as e:
+        except sqlite3.Error as e:
             if attempt == retries - 1:
                 logger.error("Failed to fetch user IDs after %d retries: %s", retries, e)
                 raise
@@ -545,6 +552,9 @@ def register_promo_click(promo_id: str, user_id: int) -> bool:
             conn.commit()
             return True
         except sqlite3.IntegrityError:
+            return False
+        except Exception:
+            logger.exception("Failed to register promo click: promo_id=%s user_id=%s", promo_id, user_id)
             return False
 
 

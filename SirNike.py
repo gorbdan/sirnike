@@ -745,7 +745,7 @@ def get_or_init_state(context: ContextTypes.DEFAULT_TYPE) -> UserState:
 
 
 def generation_failure_user_text(refunded: bool) -> str:
-    refund_text = "\n\nИзюминки возвращены на баланс — можешь попробовать снова." if refunded else ""
+    refund_text = "\n\n✅ Изюминки не списаны (или возвращены) — баланс не пострадал, можешь попробовать снова." if refunded else ""
     return (
         "Что-то пошло не так при генерации 😔\n"
         "Попробуй, пожалуйста, ещё раз через пару минут."
@@ -1366,8 +1366,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         text = (
             f"Привет от Сырника! 🧀\n\n"
-            f"Баланс: {bal} изюминок · бесплатно сегодня: {free_count}/{FREE_GENERATIONS_PER_DAY}\n"
-            f"Аватары: {avatar_status}\n"
+            f"💰 Баланс: {bal} изюминок (1 фото = {BASE_GENERATION_COST} изюминок)\n"
+            f"🆓 Бесплатно сегодня: {free_count}/{FREE_GENERATIONS_PER_DAY}\n"
+            f"🪄 Аватары: {avatar_status}\n\n"
+            f"👉 Жми «Запустить генерацию ⚡» и выбирай стиль из библиотеки 📚"
         )
     await update.message.reply_text(text, reply_markup=main_menu_kb())
 
@@ -1382,16 +1384,17 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _now_msk = datetime.utcnow() + timedelta(hours=3)
     _next_reset = _now_msk.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
     _hours_left = int((_next_reset - _now_msk).total_seconds() / 3600)
+    _mins_left = int(((_next_reset - _now_msk).total_seconds() % 3600) / 60)
     free_status = (
         f"✅ осталось {free_count}/{FREE_GENERATIONS_PER_DAY}"
         if free_count > 0
-        else f"❌ исчерпаны (сброс через ~{_hours_left}ч)"
+        else f"❌ исчерпаны (новые через ~{_hours_left}ч {_mins_left}мин)"
     )
     await update.message.reply_text(
         f"💰 Твой баланс\n\n"
         f"Изюминок: {bal} 🧀  (1 фото = {BASE_GENERATION_COST} изюминок)\n"
         f"Бесплатных генераций: {free_status}\n"
-        f"Следующий сброс: завтра в 0:00 МСК",
+        f"Следующий сброс: завтра в 0:00 по московскому времени",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("💳 Купить изюминки", callback_data="show_buy")],
             [InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open_webapp")],
@@ -1601,7 +1604,7 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photos_label = ru_plural(photo_count, "фото", "фото", "фото")
         if video_count > 0:
             videos_label = ru_plural(video_count, "видео", "видео", "видео")
-            hint = f"≈ {photo_count} {photos_label} / {video_count}+ {videos_label} (5–20 с)"
+            hint = f"≈ {photo_count} {photos_label} / {video_count}+ {videos_label} (зависит от длины видео)"
         else:
             hint = f"≈ {photo_count} {photos_label}"
         keyboard.append([
@@ -2231,8 +2234,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state.prompt = text
 
     await update.message.reply_text(
-        "Промт сохранён.\n"
-        "Теперь можешь отправить фото-референсы или нажать «Запустить генерацию⚡».",
+        "✅ Промпт сохранён!\n\n"
+        "📸 Можешь (необязательно) отправить своё фото — тогда бот будет использовать его как референс\n"
+        "⚡ Или сразу жми «Запустить генерацию», чтобы получить результат",
         reply_markup=main_menu_kb()
     )
 

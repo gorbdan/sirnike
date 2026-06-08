@@ -777,11 +777,10 @@ def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=(
-                        f"Фото добавлены как референс: {count} шт. ✅\n\n"
-                        "Что дальше:\n"
-                        "1️⃣ Выбери стиль → «Библиотека промптов 📚»\n"
-                        "   (или просто напиши мне описание текстом)\n"
-                        "2️⃣ Нажми «Запустить генерацию ⚡»"
+                        f"Фото получены: {count} шт. ✅\n"
+                        "Бот будет использовать их при генерации.\n\n"
+                        "Теперь напиши описание картинки или выбери стиль из библиотеки 📚\n"
+                        "и нажми «Запустить генерацию ⚡»"
                     ),
                     reply_markup=main_menu_kb()
                 )
@@ -802,12 +801,12 @@ def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int
 def main_menu_kb() -> InlineKeyboardMarkup:
     if PROMPT_WEBAPP_URL:
         prompt_library_button = InlineKeyboardButton(
-            "Библиотека промптов 📚",
+            "Библиотека стилей 📚",
             callback_data="pl_open_webapp",
         )
     else:
         prompt_library_button = InlineKeyboardButton(
-            "Библиотека промптов 📚",
+            "Библиотека стилей 📚",
             callback_data="pl_open",
         )
 
@@ -821,20 +820,18 @@ def main_menu_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton(video_label, callback_data="video_control"),
             InlineKeyboardButton("🪄 Мой аватар", callback_data="avatar_actions"),
         ],
-        # Служебные — вместе, не пугают
-        [
-            InlineKeyboardButton("🚨 Проблема", callback_data="report_problem"),
-            InlineKeyboardButton("❌ Сбросить", callback_data="reset"),
-        ],
+        # Служебные — на отдельных строках, понятнее
+        [InlineKeyboardButton("🔄 Начать заново", callback_data="reset")],
+        [InlineKeyboardButton("🚨 Сообщить о проблеме", callback_data="report_problem")],
     ]
     return InlineKeyboardMarkup(rows)
 
 def promo_try_kb(promo_id: str) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton("🚀 Сгенерировать", callback_data=f"promo_try_{promo_id}")]]
     if PROMPT_WEBAPP_URL:
-        rows.append([InlineKeyboardButton("Библиотека промтов 📚", callback_data="pl_open_webapp")])
+        rows.append([InlineKeyboardButton("Библиотека стилей 📚", callback_data="pl_open_webapp")])
     else:
-        rows.append([InlineKeyboardButton("Библиотека промтов 📚", callback_data="pl_open")])
+        rows.append([InlineKeyboardButton("Библиотека стилей 📚", callback_data="pl_open")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -872,16 +869,6 @@ AVATAR_REFSHEET_PROMPT = (
 )
 
 def avatar_actions_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton("🎨 Сгенерировать аватар", callback_data="avatar_gen_refsheet")],
-        [
-            InlineKeyboardButton("Загрузить женский 👩", callback_data="set_avatar_female"),
-            InlineKeyboardButton("Загрузить мужской 👨", callback_data="set_avatar_male"),
-        ],
-        [InlineKeyboardButton("Загрузить детский 🧒", callback_data="set_avatar_child")],
-        [InlineKeyboardButton("Показать аватары 👀", callback_data="show_avatar")],
-    ]
-    # Show delete buttons only for avatars that actually exist
     existing = {}
     if user_id is not None:
         try:
@@ -889,20 +876,28 @@ def avatar_actions_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
         except Exception:
             pass
     else:
-        # Fallback: show all delete buttons if user_id not provided
         existing = {"female": True, "male": True, "child": True}
+
+    rows = []
     if not any(existing.values()):
         rows.append([InlineKeyboardButton("❓ Что такое аватар?", callback_data="avatar_help")])
-    del_row = []
-    if existing.get("female"):
-        del_row.append(InlineKeyboardButton("Удалить женский 🗑", callback_data="delete_avatar_female"))
-    if existing.get("male"):
-        del_row.append(InlineKeyboardButton("Удалить мужской 🗑", callback_data="delete_avatar_male"))
-    if del_row:
-        rows.append(del_row)
-    if existing.get("child"):
-        rows.append([InlineKeyboardButton("Удалить детский 🗑", callback_data="delete_avatar_child")])
+    rows.append([InlineKeyboardButton("🎨 Сгенерировать аватар", callback_data="avatar_gen_refsheet")])
+    rows.append([
+        InlineKeyboardButton("Загрузить женский 👩", callback_data="set_avatar_female"),
+        InlineKeyboardButton("Загрузить мужской 👨", callback_data="set_avatar_male"),
+    ])
+    rows.append([InlineKeyboardButton("Загрузить детский 🧒", callback_data="set_avatar_child")])
     if any(existing.values()):
+        rows.append([InlineKeyboardButton("Показать аватары 👀", callback_data="show_avatar")])
+        del_row = []
+        if existing.get("female"):
+            del_row.append(InlineKeyboardButton("Удалить женский 🗑", callback_data="delete_avatar_female"))
+        if existing.get("male"):
+            del_row.append(InlineKeyboardButton("Удалить мужской 🗑", callback_data="delete_avatar_male"))
+        if del_row:
+            rows.append(del_row)
+        if existing.get("child"):
+            rows.append([InlineKeyboardButton("Удалить детский 🗑", callback_data="delete_avatar_child")])
         rows.append([InlineKeyboardButton("Удалить все аватары 🧹", callback_data="delete_avatar")])
     rows.append([InlineKeyboardButton("Назад в меню ↩️", callback_data="avatar_back_menu")])
     return InlineKeyboardMarkup(rows)
@@ -951,7 +946,7 @@ def get_prompt_item_kind(item: dict) -> str:
 
 
 def prompt_library_item_kb(cat_idx: int, item_idx: int, item_kind: str = "image") -> InlineKeyboardMarkup:
-    use_text = "Использовать в Seedance 2 ✅" if item_kind == "video" else "Использовать промпт ✅"
+    use_text = "Использовать в Seedance 2 ✅" if item_kind == "video" else "Использовать этот стиль ✅"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(use_text, callback_data=f"pl_use_{cat_idx}_{item_idx}")],
         [InlineKeyboardButton("← Назад к категории", callback_data=f"pl_cat_{cat_idx}")],
@@ -984,7 +979,7 @@ def prompt_history_kb(items: list, offset: int, page_size: int = 5) -> InlineKey
         prompt_preview = (item.get("prompt") or "").strip().replace("\n", " ")
         if len(prompt_preview) > 32:
             prompt_preview = prompt_preview[:32] + "..."
-        label = f"{idx + offset}. {prompt_preview or 'Без промпта'}"
+        label = f"{idx + offset}. {prompt_preview or 'Без описания'}"
         rows.append([InlineKeyboardButton(label, callback_data=f"plhist_pick_{item['id']}")])
 
     nav = []
@@ -1055,7 +1050,7 @@ def video_control_kb(state: UserState) -> InlineKeyboardMarkup:
 
     rows = [
         # Основные параметры
-        [InlineKeyboardButton("1️⃣ Промпт ✍️", callback_data="video_set_prompt")],
+        [InlineKeyboardButton("1️⃣ Описание ✍️", callback_data="video_set_prompt")],
         [InlineKeyboardButton("2️⃣ Изображение 🌄", callback_data="video_set_image")],
     ]
     # Загруженные фото — одна кнопка с количеством вместо кучи кнопок удаления
@@ -1136,13 +1131,13 @@ def video_control_status_text(state: UserState) -> str:
         f"{model_label}\n"
         "Генерация видео с помощью нейросети.\n"
         "Можно сразу отправлять текст и фото без дополнительных кнопок.\n"
-        "Референсы фиксируют внешность, стиль и идентичность персонажей в кадре.\n\n"
-        "1. Отправь промпт (необязательно)\n"
-        "2. Отправь фото-референсы\n"
+        "Фото фиксируют внешность персонажей в кадре.\n\n"
+        "1. Напиши описание видео (необязательно)\n"
+        "2. Отправь фото (бот запомнит внешность)\n"
         "3. Выбери длительность и качество\n"
         "4. Нажми «Запустить ⚡»\n\n"
         f"Модель: {model_label}\n"
-        f"Промпт: {prompt_state}\n"
+        f"Описание: {prompt_state}\n"
         f"Изображение: {image_state}\n"
         f"{refs_preview_text}\n"
         f"Качество: {quality_text}\n"
@@ -1175,10 +1170,10 @@ def seedance_retry_kb() -> InlineKeyboardMarkup:
 def broadcast_library_kb() -> InlineKeyboardMarkup:
     if PROMPT_WEBAPP_URL:
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton("Библиотека промтов 📚", callback_data="pl_open_webapp")]
+            [InlineKeyboardButton("Библиотека стилей 📚", callback_data="pl_open_webapp")]
         ])
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Библиотека промтов 📚", callback_data="pl_open")]
+        [InlineKeyboardButton("Библиотека стилей 📚", callback_data="pl_open")]
     ])
 
 
@@ -1350,26 +1345,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_new_user:
         text = (
-            f"Привет! Я Сырник 🧀 — бот для создания AI-фото и видео на базе Nano Banana 2.\n\n"
-            f"✨ Главная фишка: загрузи свои фото → бот запомнит твою внешность → "
-            f"ты будешь в любом образе на каждой картинке.\n\n"
-            f"🎁 В подарок: {START_BONUS} изюминок (примерно {START_BONUS // BASE_GENERATION_COST} фото)\n\n"
-            f"⚡ Быстрый старт (аватар можно пропустить):\n"
-            f"1. Напиши описание: «портрет в стиле кино» или выбери из библиотеки 📚\n"
-            f"2. Нажми «Запустить генерацию ⚡»\n"
-            f"3. Получи фото — готово! ✅\n\n"
-            f"💡 Если загрузишь свои фото (раздел 🪄), будешь появляться именно как ты.\n\n"
-            f"🆓 Каждый день {FREE_GENERATIONS_PER_DAY} бесплатных генерации. "
-            f"Потом — небольшой платёж.\n"
-            f"Пригласи друга → оба получите подарок: /ref"
+            f"Привет! Я Сырник 🧀 — бот для создания AI-фото и видео.\n\n"
+            f"🎁 Тебе подарено {START_BONUS} изюминок — это внутренняя валюта бота "
+            f"(хватит на {START_BONUS // BASE_GENERATION_COST} фото).\n\n"
+            f"⚡ Попробуй прямо сейчас:\n"
+            f"  Нажми «Библиотека стилей 📚» → выбери стиль → «Запустить генерацию ⚡»\n\n"
+            f"🆓 Каждый день {FREE_GENERATIONS_PER_DAY} бесплатная генерация.\n"
+            f"🪄 Хочешь быть на фото? Загрузи свои фото через «Мой аватар».\n"
+            f"❓ Подробнее: /help"
         )
     else:
+        free_left = max(0, FREE_GENERATIONS_PER_DAY - free_count)
         text = (
-            f"Привет от Сырника! 🧀\n\n"
-            f"💰 Баланс: {bal} изюминок (1 фото = {BASE_GENERATION_COST} изюминок)\n"
-            f"🆓 Бесплатно сегодня: {free_count}/{FREE_GENERATIONS_PER_DAY}\n"
+            f"С возвращением! 🧀\n\n"
+            f"💰 Баланс: {bal} изюминок\n"
+            f"🆓 Бесплатных сегодня: {free_left}\n"
             f"🪄 Аватары: {avatar_status}\n\n"
-            f"👉 Жми «Запустить генерацию ⚡» и выбирай стиль из библиотеки 📚"
+            f"Напиши описание картинки или выбери стиль из библиотеки 📚"
         )
     await update.message.reply_text(text, reply_markup=main_menu_kb())
 
@@ -1421,6 +1413,32 @@ async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Друг получит +{REFERRAL_BONUS_NEW_USER} изюминок в подарок.",
         parse_mode="Markdown",
         reply_markup=kb,
+    )
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    create_user_if_not_exists(user.id, user.username, START_BONUS)
+    bal = get_balance(user.id)
+    await update.message.reply_text(
+        "🧀 Сырник — бот для создания AI-фото и видео\n\n"
+        "Как пользоваться:\n"
+        "1. Напиши описание картинки (например: «девушка на фоне заката»)\n"
+        "   или выбери готовый стиль из библиотеки 📚\n"
+        "2. Нажми «Запустить генерацию ⚡»\n"
+        "3. Получи фото — готово!\n\n"
+        "🪄 Аватар — загрузи свои фото, и бот поставит тебя в любой образ\n"
+        "🎬 Видео — режим Seedance 2 (кнопка в меню)\n"
+        f"🆓 {FREE_GENERATIONS_PER_DAY} бесплатная генерация каждый день\n"
+        f"💰 Твой баланс: {bal} изюминок (1 фото = {BASE_GENERATION_COST} изюминок)\n\n"
+        "Команды:\n"
+        "/start — главное меню\n"
+        "/balance — баланс и бесплатные генерации\n"
+        "/buy — купить изюминки\n"
+        "/ref — пригласить друга (+изюминки обоим)\n"
+        "/report — сообщить о проблеме\n"
+        "/help — эта справка",
+        reply_markup=main_menu_kb(),
     )
 
 
@@ -1899,7 +1917,7 @@ async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             await asyncio.sleep(0.02)
                         await context.bot.send_message(
                             chat_id=target_user_id,
-                            text="Библиотека промтов 👇",
+                            text="Библиотека стилей 👇",
                             reply_markup=library_kb,
                         )
                     else:
@@ -1924,7 +1942,7 @@ async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             )
                         await context.bot.send_message(
                             chat_id=target_user_id,
-                            text="Библиотека промтов 👇",
+                            text="Библиотека стилей 👇",
                             reply_markup=library_kb,
                         )
                 else:
@@ -1979,8 +1997,8 @@ async def broadcast_hide_keyboard(update: Update, context: ContextTypes.DEFAULT_
     _broadcast_running = True
     try:
         text = (
-            "Обновили библиотеку промптов 📚\n"
-            "Открывай её через кнопку «Библиотека промптов» в меню бота."
+            "Обновили библиотеку стилей 📚\n"
+            "Открывай через кнопку «Библиотека стилей» в меню бота."
         )
         users = get_all_user_ids()
         sent = 0
@@ -2224,8 +2242,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.waiting_for_motion_prompt = False
         state.motion_session_active = True
         await update.message.reply_text(
-            "Промпт для Seedance сохранён ✅\n"
-            "Теперь можешь отправить фото-референсы, выбрать длительность/качество и нажать запуск.",
+            "Описание для Seedance сохранено ✅\n"
+            "Теперь можешь отправить фото, выбрать длительность/качество и нажать запуск.",
             reply_markup=motion_control_kb(state),
         )
         return
@@ -2234,9 +2252,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state.prompt = text
 
     await update.message.reply_text(
-        "✅ Промпт сохранён!\n\n"
-        "📸 Можешь (необязательно) отправить своё фото — тогда бот будет использовать его как референс\n"
-        "⚡ Или сразу жми «Запустить генерацию», чтобы получить результат",
+        "Описание сохранено ✅\n"
+        "Теперь нажми «Запустить генерацию ⚡» или отправь своё фото, чтобы быть на картинке.",
         reply_markup=main_menu_kb()
     )
 
@@ -2298,7 +2315,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if persistent_url:
                 set_avatar_url(user.id, persistent_url, avatar_kind)
                 state.animation_source_url = persistent_url
-                saved_msg = f"Аватар ({avatar_kind_label(avatar_kind)}) сохранён ✅\nТеперь можешь просто отправлять промпты без повторной загрузки фото."
+                saved_msg = f"Аватар ({avatar_kind_label(avatar_kind)}) сохранён ✅\nТеперь просто пиши описание — бот сам подставит твою внешность."
             else:
                 state.animation_source_url = direct_url  # keep in-memory for this session
                 saved_msg = (
@@ -2328,8 +2345,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f"Фото для Seedance добавлено ✅\n"
                 f"Сейчас загружено: {total_refs}/{MAX_SEEDANCE_IMAGE_REFERENCES}\n"
-                "Использую фото как референсы персонажа.\n"
-                "Можешь отправить еще фото или запускать генерацию.",
+                "Бот запомнит внешность с фото.\n"
+                "Можешь отправить ещё фото или запускать генерацию.",
                 reply_markup=motion_control_kb(state),
             )
             return
@@ -2393,7 +2410,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
     title = str(payload.get("title") or "шаблон")
 
     if not prompt:
-        await update.message.reply_text("В выбранном шаблоне нет промпта.")
+        await update.message.reply_text("В выбранном шаблоне нет описания.")
         return
 
     state = get_or_init_state(context)
@@ -2401,8 +2418,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
     state.prompt = prompt
 
     await update.message.reply_text(
-        f"Готово ✨\nПромпт из шаблона «{title}» сохранён.\n"
-        "Можешь сразу нажимать «Запустить генерацию⚡» или добавить фото-референс.",
+        f"Готово ✨\nСтиль «{title}» применён.\n"
+        "Нажми «Запустить генерацию ⚡» или отправь своё фото.",
         reply_markup=main_menu_kb(),
     )
 
@@ -2418,7 +2435,7 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
     title = str(payload.get("title") or "шаблон").strip() or "шаблон"
     if not prompt:
         if update.effective_message:
-            await update.effective_message.reply_text("В выбранном шаблоне нет промпта.")
+            await update.effective_message.reply_text("В выбранном шаблоне нет описания.")
         return False
 
     state = get_or_init_state(context)
@@ -2433,13 +2450,13 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
     if update.effective_message:
         if action == "set_video_prompt":
             await update.effective_message.reply_text(
-                f"Готово ✨\nВидео-промпт «{title}» применён для Seedance 2 / Seedance 2 Fast.\n"
-                "Теперь добавь фото-референсы и запускай видео.",
+                f"Готово ✨\nСтиль «{title}» применён для Seedance 2.\n"
+                "Теперь отправь фото и запускай видео.",
                 reply_markup=motion_control_kb(state),
             )
         else:
             await update.effective_message.reply_text(
-                f"Готово ✨\nПромпт из шаблона «{title}» сохранён.\nТеперь можно запускать генерацию.",
+                f"Готово ✨\nСтиль «{title}» применён.\nНажми «Запустить генерацию ⚡».",
                 reply_markup=main_menu_kb(),
             )
     return True
@@ -2493,8 +2510,8 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
     if update.effective_message:
         if action in {"set_video_prompt", "set_video_prompt_ref"}:
             await update.effective_message.reply_text(
-                f"Готово ✨\nВидео-промпт «{title}» применён для Seedance 2 / Seedance 2 Fast.\n"
-                "Теперь отправь фото-референсы и запускай видео.",
+                f"Готово ✨\nСтиль «{title}» применён для Seedance 2.\n"
+                "Теперь отправь фото и запускай видео.",
                 reply_markup=ReplyKeyboardRemove(),
             )
             await update.effective_message.reply_text(
@@ -2999,13 +3016,13 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not state.prompt:
         queued_user_ids.discard(user.id)
         await reply_target.reply_text(
-            "Сначала выбери стиль или напиши описание образа.\n\n"
-            "1️⃣ Нажми «Библиотека промптов 📚» → выбери готовый стиль\n"
-            "2️⃣ Или просто напиши мне текст (например: «портрет в стиле кино»)\n\n"
-            "После этого нажми «Запустить генерацию ⚡»",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("Библиотека промптов 📚", callback_data="pl_open_webapp")
-            ]])
+            "Сначала опиши, что хочешь увидеть на картинке 👇\n\n"
+            "Например: «девушка на фоне заката», «кот в космосе», «портрет в стиле кино»\n\n"
+            "Или выбери готовый стиль из библиотеки:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Библиотека стилей 📚", callback_data="pl_open_webapp")],
+                [InlineKeyboardButton("❓ Как пользоваться", callback_data="show_help")],
+            ])
         )
         return
 
@@ -3077,7 +3094,7 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if dropped_avatar_ref:
                 clear_avatar_url(user.id)
             await reply_target.reply_text(
-                f"Часть фото-референсов недоступна и исключена: {dropped_count} шт.\n"
+                f"Часть загруженных фото недоступна и исключена: {dropped_count} шт.\n"
                 f"В работу взято: {len(valid_refs)} шт."
             )
             if dropped_avatar_ref:
@@ -3088,7 +3105,7 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if original_refs_count > 0 and len(valid_refs) == 0:
                 queued_user_ids.discard(user.id)
                 await reply_target.reply_text(
-                    "Все фото-референсы сейчас недоступны (битые или удалённые ссылки).\n"
+                    "Все загруженные фото сейчас недоступны (битые или удалённые ссылки).\n"
                     "Перезагрузи фото и запусти генерацию снова."
                 )
                 return
@@ -3128,8 +3145,8 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _bounded_set(last_generation_references, user.id, saved_refs)
         if dropped_img_refs > 0:
             await reply_target.reply_text(
-                f"ℹ️ {dropped_img_refs} фото-референс(а) загружены через чат и не сохранятся для «Повторить». "
-                "Чтобы сохранить — загрузи аватар через меню Аватар."
+                f"ℹ️ {dropped_img_refs} фото загружены через чат и не сохранятся для «Повторить». "
+                "Чтобы сохранить — загрузи аватар через меню «Мой аватар»."
             )
 
         job = GenerationJob(
@@ -3314,7 +3331,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prompt_text = prompt_text[:600] + "..."
         preview_text = (
             f"Предпросмотр записи #{item_id}\n\n"
-            f"Промпт:\n{prompt_text or 'Без промпта'}\n\n"
+            f"Описание:\n{prompt_text or 'Без описания'}\n\n"
             "Если всё ок, нажми «Сохранить в библиотеку ✅»."
         )
         image_url = item.get("image_url") or ""
@@ -3355,7 +3372,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "pl_open":
         await query.message.reply_text(
-            "Выбери категорию. Я покажу лучшие шаблоны промптов с примерами 👇",
+            "Выбери категорию. Покажу лучшие стили с примерами 👇",
             reply_markup=prompt_library_menu_kb(),
         )
         return
@@ -3460,7 +3477,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             item = PROMPT_LIBRARY[cat_idx]["items"][item_idx]
             item_kind = get_prompt_item_kind(item)
         except Exception:
-            await query.message.reply_text("Не удалось применить промпт. Попробуй еще раз.")
+            await query.message.reply_text("Не удалось применить стиль. Попробуй ещё раз.")
             return
 
         state = get_or_init_state(context)
@@ -3469,16 +3486,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state.motion_session_active = True
             state.waiting_for_motion_image = True
             await query.message.reply_text(
-                f"Готово ✨\nВидео-промпт «{item['title']}» применён для Seedance 2 / Seedance 2 Fast.\n"
-                "Теперь добавь фото-референсы и запускай видео.",
+                f"Готово ✨\nСтиль «{item['title']}» применён для Seedance 2.\n"
+                "Теперь отправь фото и запускай видео.",
                 reply_markup=motion_control_kb(state),
             )
             return
         deactivate_motion_session(state)
         state.prompt = item["prompt"]
         await query.message.reply_text(
-            f"Готово ✨\nПромпт «{item['title']}» сохранён.\n"
-            "Можешь сразу нажимать «Запустить генерацию⚡» или добавить фото-референс.",
+            f"Готово ✨\nСтиль «{item['title']}» применён.\n"
+            "Нажми «Запустить генерацию ⚡» или отправь своё фото.",
             reply_markup=main_menu_kb(),
         )
         return
@@ -3589,7 +3606,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         deactivate_motion_session(state)
         if was_in_motion and not state.prompt:
             await query.message.reply_text(
-                "Режим Seedance закрыт. Теперь отправь текст промпта и нажми «Запустить генерацию⚡» снова."
+                "Режим Seedance закрыт. Напиши описание и нажми «Запустить генерацию ⚡»."
             )
             return
         await run_generation(update, context)
@@ -3602,7 +3619,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saved_prompt = (last_generated_prompt.get(user_id) or "").strip()
         if not saved_prompt:
             await query.message.reply_text(
-                "Не нашла прошлый промпт для повтора. Отправь новый текст и нажми «Запустить генерацию⚡»."
+                "Не нашла прошлое описание. Напиши новый текст и нажми «Запустить генерацию ⚡»."
             )
             return
 
@@ -3615,8 +3632,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             avatar_url_repeat = get_avatar_url(user.id)
             if not avatar_url_repeat:
                 await query.message.reply_text(
-                    "ℹ️ Фото-референсы не сохранились (загружались в этой сессии).\n"
-                    "Генерирую без референсов."
+                    "ℹ️ Фото не сохранились (были загружены временно).\n"
+                    "Генерирую без фото."
                 )
         await run_generation(update, context)
         return
@@ -3630,7 +3647,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.message.reply_text(
             "Режим Seedance включён 🎬\n"
-            "Теперь можно сразу отправлять текст промпта и фото-референсы без дополнительных кнопок.\n"
+            "Можно сразу отправлять текст описания и фото без дополнительных кнопок.\n"
             "Я сохраню всё в буфер Seedance.\n\n"
             "Дальше выбери длительность/качество и нажми «Запустить ⚡».",
         )
@@ -3644,7 +3661,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = get_or_init_state(context)
         state.motion_session_active = True
         state.waiting_for_motion_prompt = True
-        await query.message.reply_text("Напиши промпт для итогового видео одним сообщением.")
+        await query.message.reply_text("Напиши описание для видео одним сообщением.")
         return
 
     if video_cb == "video_set_image":
@@ -3654,7 +3671,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             "Отправляй фото для Seedance (можно несколько подряд).\n"
             f"Лимит: до {MAX_SEEDANCE_IMAGE_REFERENCES} фото.\n"
-            "Фото используются как референсы персонажа.\n"
+            "Бот запомнит внешность с фото и перенесёт в видео.\n"
             "Когда всё загрузишь, нажми «Запустить ⚡»."
         )
         return
@@ -3665,7 +3682,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.waiting_for_motion_image = True
         state.motion_session_active = True
         await query.message.reply_text(
-            "Фото-референсы очищены ✅\n\n" + motion_control_status_text(state),
+            "Фото очищены ✅\n\n" + motion_control_status_text(state),
             reply_markup=motion_control_kb(state),
         )
         return
@@ -3776,7 +3793,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if msg_date and msg_date.replace(tzinfo=None) < BOT_START_TIME:
                 await query.message.reply_text(
                     "Бот перезапускался и сессия сброшена.\n"
-                    "Открой Seedance заново, добавь фото и промпт — и запускай.",
+                    "Открой Seedance заново, добавь фото и описание — и запускай.",
                     reply_markup=main_menu_kb(),
                 )
                 return
@@ -3923,6 +3940,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if query.data == "show_help":
+        user = update.effective_user
+        bal = get_balance(user.id)
+        await query.message.reply_text(
+            "🧀 Как пользоваться Сырником\n\n"
+            "1. Напиши описание картинки (например: «девушка на фоне заката»)\n"
+            "   или выбери готовый стиль из библиотеки 📚\n"
+            "2. Нажми «Запустить генерацию ⚡»\n"
+            "3. Получи фото — готово!\n\n"
+            "🪄 Аватар — загрузи свои фото, и бот поставит тебя в любой образ\n"
+            "🎬 Видео — режим Seedance 2 (кнопка в меню)\n"
+            f"💰 Баланс: {bal} изюминок (1 фото = {BASE_GENERATION_COST} изюминок)\n\n"
+            "Изюминки — внутренняя валюта бота. Их можно купить или получить бесплатно, "
+            "пригласив друга: /ref",
+            reply_markup=main_menu_kb(),
+        )
+        return
+
     if query.data == "report_problem":
         state = get_or_init_state(context)
         state.waiting_for_problem_report = True
@@ -3935,7 +3970,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "reset":
         context.user_data["state"] = UserState()
-        await query.message.reply_text("Всё сброшено. Можно начать заново.")
+        await query.message.reply_text(
+            "Готово — текущее описание и фото очищены.\n"
+            "Баланс и аватары на месте. Можно начинать заново!",
+            reply_markup=main_menu_kb(),
+        )
         return
     
     if query.data.startswith("promo_try_"):
@@ -3944,7 +3983,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not promo:
             await query.message.reply_text(
-                "Этот промт больше недоступен."
+                "Этот стиль больше недоступен."
             )
             return
 
@@ -3956,9 +3995,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.message.reply_text(
             "Готово ✨\n"
-            "Я уже сохранил промт.\n\n"
-            "Теперь отправь свои фото-референсы для генерации "
-            "или нажми «Запустить генерацию⚡».",
+            "Стиль применён ✅\n\n"
+            "Нажми «Запустить генерацию ⚡» или отправь своё фото.",
             reply_markup=main_menu_kb()
         )
         return
@@ -6079,7 +6117,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prompt_text = (state.motion_prompt or "").strip()
         if not motion_images and not prompt_text:
             await reply_target.reply_text(
-                "Для Seedance добавь изображение и/или промпт, затем запусти снова."
+                "Для Seedance нужно фото и/или описание. Добавь и запусти снова."
             )
             return
 
@@ -6266,10 +6304,9 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if is_seedance_privacy_moderation_error(error_text):
                 await reply_target.reply_text(
                     f"Не удалось выполнить {selected_model_label}.\n"
-                    "Seedance отклонил фото-референс модерацией.\n"
-                    "Код: InputImageSensitiveContentDetected.PrivacyInformation.\n"
-                    "Это ограничение модерации Seedance, а не технический сбой бота.\n"
-                    "Попробуй другой референс (менее похожий на фото реального человека).\n\n"
+                    "Seedance отклонил фото модерацией.\n"
+                    "Это ограничение нейросети, а не сбой бота.\n"
+                    "Попробуй другое фото (менее похожее на фото реального человека).\n\n"
                     "Списанные изюминки возвращены на баланс."
                 )
                 await reply_target.reply_text(
@@ -6587,12 +6624,12 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                                 return (
                                     "Запрос отклонён фильтром безопасности модели "
                                     "(IMAGE_PROHIBITED_CONTENT). "
-                                    "Смягчи промпт и/или замени референсы."
+                                    "Измени описание и/или замени фото."
                                 )
                             if "PROHIBITED" in native_code or "SAFETY" in native_code or "BLOCK" in native_code:
                                 return (
                                     "Запрос отклонён фильтром безопасности модели. "
-                                    "Измени формулировку промпта или референсы и попробуй снова."
+                                    "Измени описание или фото и попробуй снова."
                                 )
                         message = choice.get("message")
                         if not isinstance(message, dict):
@@ -7273,7 +7310,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                                     chat_id=chat_id,
                                     photo=photo_buffer,
                                     reply_markup=result_actions_kb(user_id=user_id, bot_username=yesapi_bot_username),
-                                    caption="Сгенерировано: Nano Banana 2 ✨\nПовтори или измени промпт — жми кнопки ниже"
+                                    caption="Сгенерировано: Nano Banana 2 ✨\nПовтори или измени описание — жми кнопки ниже"
                                 )
 
                                 await app.bot.send_document(
@@ -7434,6 +7471,7 @@ def main():
         app.add_handler(TypeHandler(object, _test_mode_guard), group=-999)
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("balance", balance))
     app.add_handler(CommandHandler("buy", buy))
     app.add_handler(CommandHandler("ref", referral))

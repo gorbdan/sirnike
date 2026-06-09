@@ -1,0 +1,35 @@
+# Полный аудит Сырника
+
+## Технический аналитик Python/asyncio
+
+❌ Ошибка: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CbtDKordqZJZ64f9tpjjM'}
+
+---
+
+## UX-аналитик Telegram-ботов с фокусом на новичков
+
+❌ Ошибка: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CbtDQdjaG5xMS5wszCpk4'}
+
+---
+
+## Security-аналитик платёжных систем
+
+❌ Ошибка: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CbtDVStbUNfpwZhD5795w'}
+
+---
+
+## Growth-менеджер Telegram-ботов
+
+❌ Ошибка: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CbtDaG3sdjPEG8q1xmgBV'}
+
+---
+
+## Database-инженер SQLite
+
+❌ Ошибка: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CbtDf56wwfyMvG8JTCoTK'}
+
+---
+
+## Performance-инженер Python
+
+❌ Ошибка: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CbtDjtFiquocMXtcktrXA'}

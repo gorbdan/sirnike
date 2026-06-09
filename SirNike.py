@@ -2995,9 +2995,7 @@ def _apply_grid_overlay(
         y = h * i // rows
         draw.line([(0, y), (w, y)], fill=line_color, width=lw)
 
-    # Aggressive noise dots — compensate for missing remove-bg.
-    # Larger radius (3-6px) and more dots (up to 200) than before.
-    # Random placement = no repeating pattern for video model to reproduce.
+    # --- Layer 2: noise dots spread across the whole image ---
     num_dots = max(100, (w * h) // 5000)
     num_dots = min(num_dots, 200)
     for _ in range(num_dots):
@@ -3005,6 +3003,21 @@ def _apply_grid_overlay(
         cy = _rng.randint(0, h - 1)
         r = _rng.randint(3, 6)
         brightness = _rng.randint(220, 255)
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(brightness, brightness, brightness))
+
+    # --- Layer 3: concentrated noise in the "face zone" (top 40% of image) ---
+    # On full-body photos the face is small and in the upper portion.
+    # The regular grid barely covers it → moderation still detects the face.
+    # Extra dense noise in the top 40% disrupts face features regardless
+    # of whether the photo is a close-up or full-body shot.
+    face_zone_bottom = int(h * 0.4)
+    face_dots = max(80, (w * face_zone_bottom) // 3000)
+    face_dots = min(face_dots, 180)
+    for _ in range(face_dots):
+        cx = _rng.randint(0, w - 1)
+        cy = _rng.randint(0, face_zone_bottom)
+        r = _rng.randint(3, 7)
+        brightness = _rng.randint(210, 255)
         draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(brightness, brightness, brightness))
 
     out = io.BytesIO()

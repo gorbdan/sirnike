@@ -3025,12 +3025,10 @@ async def _process_single_grid_ref(session: aiohttp.ClientSession, url: str) -> 
                     return url
                 image_bytes = await resp.read()
 
-        if FAPIHUB_API_KEY or PHOTOROOM_API_KEY or REMOVE_BG_API_KEY:
-            try:
-                image_bytes = await _remove_background_api(image_bytes)
-                logger.info("Background removed for ref: %s", url[:60])
-            except Exception:
-                logger.exception("Background removal failed for url=%s, skipping", url[:60])
+        # Background removal disabled — all paid APIs at zero credits,
+        # local rembg too heavy for BotHost. Grid + noise dots handle
+        # moderation bypass on their own. Re-enable when credits are topped up
+        # or BotHost confirms enough RAM for rembg.
 
         grid_ref = await asyncio.to_thread(
             lambda ib: _cache_image(_apply_grid_overlay(ib)), image_bytes

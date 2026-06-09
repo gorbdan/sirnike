@@ -396,34 +396,37 @@ def _bootstrap_prompt_library_primary() -> None:
         logger.exception("Failed to create prompt library storage directory")
 
 
-def _sync_prompt_library_from_remote() -> None:
-    """Seed prompt_library.json from Cloudflare ONLY on first boot (local file absent).
-    If the local file already exists it is the authoritative version — do not overwrite it."""
+def _sync_prompt_library_from_remote(force: bool = False) -> bool:
+    """Download prompt_library.json from Cloudflare Pages.
+    By default only on first boot (local file absent).
+    With force=True — always overwrite (for /pl_sync admin command)."""
     if not PROMPT_LIBRARY_REMOTE_URL:
-        return
-    if os.path.exists(PROMPT_LIBRARY_PRIMARY_PATH):
+        return False
+    if not force and os.path.exists(PROMPT_LIBRARY_PRIMARY_PATH):
         logger.info("Prompt library already exists locally — skipping remote sync")
-        return
+        return False
     try:
         import urllib.request as _req
         req = _req.Request(
             PROMPT_LIBRARY_REMOTE_URL,
             headers={"User-Agent": "Mozilla/5.0 (compatible; SirNikeBot/1.0)"},
         )
-        with _req.urlopen(req, timeout=3) as resp:
+        with _req.urlopen(req, timeout=10) as resp:
             raw = resp.read()
         data = json.loads(raw)
         if not isinstance(data, list):
             logger.warning("Remote prompt library is not a list, skipping")
-            return
+            return False
         primary_dir = os.path.dirname(PROMPT_LIBRARY_PRIMARY_PATH)
         if primary_dir:
             os.makedirs(primary_dir, exist_ok=True)
         with open(PROMPT_LIBRARY_PRIMARY_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        logger.info("Prompt library seeded from remote: %s (%d categories)", PROMPT_LIBRARY_REMOTE_URL, len(data))
+        logger.info("Prompt library synced from remote: %s (%d categories)", PROMPT_LIBRARY_REMOTE_URL, len(data))
+        return True
     except Exception as e:
-        logger.warning("Failed to seed prompt library from remote: %s", e)
+        logger.warning("Failed to sync prompt library from remote: %s", e)
+        return False
 
 
 def load_prompt_library() -> list:
@@ -3591,6 +3594,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data[cat_idx].setdefault("items", [])
             item_kind = str(pending.get("item_kind") or "image").strip().lower()
             added_at_iso = datetime.utcnow().isoformat()
+            # Auto-generate short description for webapp cards
+            _desc = (pending.get("description") or "").strip()
+            if not _desc:
+                _raw_prompt = (pending.get("prompt") or "").strip()
+                _desc = _raw_prompt[:120].replace("\n", " ").strip()
+                if len(_raw_prompt) > 120:
+                    _desc += "..."
+            _hint = (pending.get("upload_hint") or "Фото лица").strip()
+
             if item_kind == "video":
                 data[cat_idx]["items"].append(
                     {
@@ -3600,6 +3612,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "video_url": pending["video_url"],
                         "poster_url": pending.get("poster_url") or "",
                         "added_at": added_at_iso,
+                        "description": _desc,
+                        "upload_hint": _hint,
                     }
                 )
             else:
@@ -3626,6 +3640,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "prompt": pending["prompt"],
                         "example_url": stable_example_url,
                         "added_at": added_at_iso,
+                        "description": _desc,
+                        "upload_hint": _hint,
                     }
                 )
 

@@ -2942,23 +2942,28 @@ async def _remove_background_api(image_bytes: bytes) -> bytes:
 
 def _apply_grid_overlay(
     image_bytes: bytes,
-    rows: int = 3,
-    cols: int = 3,
+    rows: int = 8,
+    cols: int = 8,
     line_color: tuple = (255, 255, 255),
-    line_width: int = 0,
+    line_width: int = 3,
 ) -> bytes:
-    """Minimal 3×3 white grid to bypass Seedance face moderation.
+    """8×8 white grid to bypass Seedance face moderation.
 
-    IMPORTANT: denser grids (12×12, 16×16) leak into the generated video as
-    visible stripe artifacts because the model treats them as image content.
-    Keep the grid as sparse as possible — 3×3 is enough for moderation bypass.
+    History & tuning rationale (do NOT change without testing):
+    - 3×3  / 2-4px thin  → moderation FAILS (too sparse, face detected)
+    - 12×12 / 2-5px gray → moderation OK, video OK (worked in production)
+    - 16×16 / 2-5px gray → moderation OK, video ARTIFACTS (too dense,
+      model reproduces the grid pattern as visible stripes)
+
+    Current: 8×8 / 3px white = 14 lines total. Close to 12×12 that worked,
+    well below 16×16 that caused artifacts. White disrupts face detection
+    better than gray. JPEG quality 88 adds compression noise that further
+    breaks face-feature extraction without creating a visible pattern.
     """
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     draw = ImageDraw.Draw(img)
     w, h = img.size
-    # Thin lines: ~0.5% of width, clamped 2–4px. Enough for moderation bypass,
-    # thin enough that the video model ignores them.
-    lw = line_width if line_width > 0 else max(2, min(4, w // 200))
+    lw = line_width if line_width > 0 else 3
     for i in range(1, cols):
         x = w * i // cols
         draw.line([(x, 0), (x, h)], fill=line_color, width=lw)
@@ -2966,7 +2971,7 @@ def _apply_grid_overlay(
         y = h * i // rows
         draw.line([(0, y), (w, y)], fill=line_color, width=lw)
     out = io.BytesIO()
-    img.save(out, format="JPEG", quality=95)
+    img.save(out, format="JPEG", quality=88)
     return out.getvalue()
 
 

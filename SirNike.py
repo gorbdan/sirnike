@@ -5351,10 +5351,11 @@ def build_seedance_prompt_with_refs(prompt_text: str, refs_count: int) -> str:
         )
     else:
         binding = (
-            f"All reference images ({placeholders}) show THE SAME single person "
-            "from different angles/photos. Use them together to build one consistent "
-            "character identity. Preserve face, body, hair, and style. "
-            "There is only ONE person — do NOT create twins, duplicates, or multiple characters."
+            f"Reference images: {placeholders}. "
+            "If they show the same person from different angles, treat them as ONE character — "
+            "do not create twins or duplicates. "
+            "If they show different people, treat them as separate characters. "
+            "Preserve each character's face, body, hair, clothes, and style."
         )
 
     if has_any_placeholder:

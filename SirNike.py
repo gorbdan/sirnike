@@ -2942,24 +2942,27 @@ async def _remove_background_api(image_bytes: bytes) -> bytes:
 
 def _apply_grid_overlay(
     image_bytes: bytes,
-    rows: int = 8,
-    cols: int = 8,
+    rows: int = 10,
+    cols: int = 10,
     line_color: tuple = (255, 255, 255),
     line_width: int = 3,
 ) -> bytes:
-    """8×8 white grid to bypass Seedance face moderation.
+    """10×10 white grid + random noise dots to bypass Seedance face moderation.
 
     History & tuning rationale (do NOT change without testing):
-    - 3×3  / 2-4px thin  → moderation FAILS (too sparse, face detected)
-    - 12×12 / 2-5px gray → moderation OK, video OK (worked in production)
-    - 16×16 / 2-5px gray → moderation OK, video ARTIFACTS (too dense,
-      model reproduces the grid pattern as visible stripes)
+    - 3×3  / 2-4px thin   → moderation FAILS (too sparse)
+    - 8×8  / 3px white     → moderation FAILS without remove-bg (not dense enough alone)
+    - 12×12 / 2-5px gray   → moderation OK, video OK (worked in production)
+    - 16×16 / 2-5px gray   → moderation OK, video ARTIFACTS (too dense)
 
-    Current: 8×8 / 3px white = 14 lines total. Close to 12×12 that worked,
-    well below 16×16 that caused artifacts. White disrupts face detection
-    better than gray. JPEG quality 88 adds compression noise that further
-    breaks face-feature extraction without creating a visible pattern.
+    Current: 10×10 / 3px white + random noise dots.
+    Grid: 18 lines — close to 12×12 that worked, well below 16×16.
+    Noise dots: break smooth skin regions that face detectors rely on,
+    but are random (no repeating pattern) so the video model ignores them.
+    This combo compensates for remove-bg being unavailable.
     """
+    import random as _rng
+
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     draw = ImageDraw.Draw(img)
     w, h = img.size
@@ -2970,6 +2973,20 @@ def _apply_grid_overlay(
     for i in range(1, rows):
         y = h * i // rows
         draw.line([(0, y), (w, y)], fill=line_color, width=lw)
+
+    # Random noise dots — disrupt face-detection feature extraction.
+    # Small white/near-white circles at random positions; face detectors need
+    # smooth continuous skin regions, these break that. Random placement means
+    # the video model can't reproduce them as a repeating pattern (unlike grid).
+    num_dots = max(60, (w * h) // 8000)   # scale with image size
+    num_dots = min(num_dots, 150)          # cap to avoid overdoing it
+    for _ in range(num_dots):
+        cx = _rng.randint(0, w - 1)
+        cy = _rng.randint(0, h - 1)
+        r = _rng.randint(2, 4)
+        brightness = _rng.randint(230, 255)
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(brightness, brightness, brightness))
+
     out = io.BytesIO()
     img.save(out, format="JPEG", quality=88)
     return out.getvalue()

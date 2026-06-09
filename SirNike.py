@@ -2961,48 +2961,37 @@ async def _remove_background_api(image_bytes: bytes) -> bytes:
 
 def _apply_grid_overlay(
     image_bytes: bytes,
-    rows: int = 12,
-    cols: int = 12,
+    rows: int = 6,
+    cols: int = 6,
     line_color: tuple = (255, 255, 255),
-    line_width: int = 4,
+    line_width: int = 2,
 ) -> bytes:
-    """Downscale + blur + grid + noise to bypass Seedance face moderation.
+    """Downscale + light blur + light grid to bypass Seedance face moderation.
 
-    History & tuning rationale (do NOT change without testing):
-    - 12×12 grid + noise dots alone → moderation FAILS (face still detected)
-    - 12×12 + remove-bg → worked, but remove-bg unavailable (zero credits)
+    Strategy: downscale is the main weapon (small face = hard to detect).
+    Blur and grid are light support layers — NOT the heavy overlays from before.
 
-    Current multi-layer approach without remove-bg:
-    1. Downscale to max 768px — face becomes small, detector loses accuracy
-    2. Gaussian blur (radius 2) — destroys fine facial edges (eyes/nose/lips)
-       while preserving overall appearance for the video model
-    3. 12×12 white grid — geometric disruption
-    4. Noise dots + face zone dots — break smooth skin regions
-    5. JPEG quality 75 — compression artifacts add final noise layer
-
-    The video model only needs a rough identity reference (hair color, face
-    shape, body type) — it does NOT need a crisp 4K photo. Lower res + blur
-    is actually fine for character identity extraction.
+    After downscale to 768px the image is small, so grid/dots must be
+    proportionally lighter or they overwhelm the image.
     """
     import random as _rng
 
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
-    # --- Layer 1: downscale to max 768px on longest side ---
-    # Face detectors need minimum resolution; smaller face = harder to detect.
+    # --- Layer 1: downscale to max 768px ---
     max_dim = 768
     w, h = img.size
     if max(w, h) > max_dim:
         scale = max_dim / max(w, h)
         img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
 
-    # --- Layer 2: light gaussian blur — destroy fine facial features ---
-    img = img.filter(ImageFilter.GaussianBlur(radius=2))
+    # --- Layer 2: light blur (radius=1) — soften facial edges ---
+    img = img.filter(ImageFilter.GaussianBlur(radius=1))
 
-    # --- Layer 3: grid lines ---
+    # --- Layer 3: light 6×6 grid ---
     draw = ImageDraw.Draw(img)
     w, h = img.size
-    lw = line_width if line_width > 0 else 4
+    lw = line_width if line_width > 0 else 2
     for i in range(1, cols):
         x = w * i // cols
         draw.line([(x, 0), (x, h)], fill=line_color, width=lw)
@@ -3010,29 +2999,17 @@ def _apply_grid_overlay(
         y = h * i // rows
         draw.line([(0, y), (w, y)], fill=line_color, width=lw)
 
-    # --- Layer 4: noise dots across the whole image ---
-    num_dots = max(80, (w * h) // 5000)
-    num_dots = min(num_dots, 150)
+    # --- Layer 4: sparse noise dots ---
+    num_dots = 40
     for _ in range(num_dots):
         cx = _rng.randint(0, w - 1)
         cy = _rng.randint(0, h - 1)
-        r = _rng.randint(3, 5)
-        brightness = _rng.randint(220, 255)
-        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(brightness, brightness, brightness))
-
-    # --- Layer 5: extra noise in the face zone (top 40%) ---
-    face_zone_bottom = int(h * 0.4)
-    face_dots = max(60, (w * face_zone_bottom) // 3000)
-    face_dots = min(face_dots, 120)
-    for _ in range(face_dots):
-        cx = _rng.randint(0, w - 1)
-        cy = _rng.randint(0, face_zone_bottom)
-        r = _rng.randint(3, 6)
-        brightness = _rng.randint(210, 255)
+        r = _rng.randint(2, 4)
+        brightness = _rng.randint(230, 255)
         draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(brightness, brightness, brightness))
 
     out = io.BytesIO()
-    img.save(out, format="JPEG", quality=75)
+    img.save(out, format="JPEG", quality=80)
     return out.getvalue()
 
 

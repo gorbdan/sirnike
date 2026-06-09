@@ -5351,18 +5351,16 @@ def build_seedance_prompt_with_refs(prompt_text: str, refs_count: int) -> str:
         )
     else:
         binding = (
-            f"Use {placeholders} as explicit references for different subjects. "
-            "Keep each subject identity stable across the full video. "
-            "Do not replace, merge, or drop subjects."
+            f"All reference images ({placeholders}) show THE SAME single person "
+            "from different angles/photos. Use them together to build one consistent "
+            "character identity. Preserve face, body, hair, and style. "
+            "There is only ONE person — do NOT create twins, duplicates, or multiple characters."
         )
 
     if has_any_placeholder:
         return f"{binding}\n{text}"
 
-    usage = "Reference mapping: " + ", ".join(
-        [f"[Image{i}] = subject {i}" for i in range(1, refs_count + 1)]
-    ) + "."
-    return f"{binding}\n{usage}\n{text}"
+    return f"{binding}\n{text}"
 
 
 def is_seedance_privacy_moderation_error(error_text: str) -> bool:

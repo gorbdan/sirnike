@@ -2966,29 +2966,39 @@ def _apply_grid_overlay(
     line_color: tuple = (255, 255, 255),
     line_width: int = 2,
 ) -> bytes:
-    """Downscale + light blur + light grid to bypass Seedance face moderation.
+    """Downscale + posterize + blur + grid to bypass Seedance face moderation.
 
-    Strategy: downscale is the main weapon (small face = hard to detect).
-    Blur and grid are light support layers — NOT the heavy overlays from before.
+    Strategy (ordered by impact):
+    1. Downscale to 512px — face becomes tiny, detector loses accuracy
+    2. Posterize (5 bits) — reduces color depth, makes photo look less
+       "photographic". Face detectors are trained on realistic photos,
+       posterization shifts the image toward illustration territory.
+    3. Light blur (r=1) — softens remaining facial edges
+    4. Light grid + dots — final geometric disruption
 
-    After downscale to 768px the image is small, so grid/dots must be
-    proportionally lighter or they overwhelm the image.
+    The video model extracts identity from shape/color/hair, not pixel
+    detail — 512px posterized is enough for character reference.
     """
     import random as _rng
 
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
-    # --- Layer 1: downscale to max 768px ---
-    max_dim = 768
+    # --- Layer 1: downscale to max 512px ---
+    max_dim = 512
     w, h = img.size
     if max(w, h) > max_dim:
         scale = max_dim / max(w, h)
         img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
 
-    # --- Layer 2: light blur (radius=1) — soften facial edges ---
+    # --- Layer 2: posterize — reduce color depth ---
+    # 5 bits = 32 levels per channel. Subtle but enough to shift away from
+    # "photographic" territory. Face detectors expect smooth gradients on skin.
+    img = ImageOps.posterize(img, 5)
+
+    # --- Layer 3: light blur (radius=1) ---
     img = img.filter(ImageFilter.GaussianBlur(radius=1))
 
-    # --- Layer 3: light 6×6 grid ---
+    # --- Layer 4: light grid ---
     draw = ImageDraw.Draw(img)
     w, h = img.size
     lw = line_width if line_width > 0 else 2
@@ -2999,12 +3009,12 @@ def _apply_grid_overlay(
         y = h * i // rows
         draw.line([(0, y), (w, y)], fill=line_color, width=lw)
 
-    # --- Layer 4: sparse noise dots ---
-    num_dots = 40
+    # --- Layer 5: sparse noise dots ---
+    num_dots = 30
     for _ in range(num_dots):
         cx = _rng.randint(0, w - 1)
         cy = _rng.randint(0, h - 1)
-        r = _rng.randint(2, 4)
+        r = _rng.randint(2, 3)
         brightness = _rng.randint(230, 255)
         draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(brightness, brightness, brightness))
 

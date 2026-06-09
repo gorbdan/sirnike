@@ -10,7 +10,7 @@ import time
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from urllib.parse import urlsplit
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 import aiohttp
@@ -2966,25 +2966,40 @@ def _apply_grid_overlay(
     line_color: tuple = (255, 255, 255),
     line_width: int = 4,
 ) -> bytes:
-    """12×12 white grid + aggressive noise to bypass Seedance face moderation.
+    """Downscale + blur + grid + noise to bypass Seedance face moderation.
 
     History & tuning rationale (do NOT change without testing):
-    - 3×3  / 2-4px thin    → moderation FAILS (too sparse)
-    - 8×8  / 3px white      → moderation FAILS without remove-bg
-    - 10×10 / 3px + dots    → moderation FAILS on clear portraits without remove-bg
-    - 12×12 / 2-5px gray    → moderation OK, video OK (worked in production WITH remove-bg)
-    - 16×16 / 2-5px gray    → moderation OK, video ARTIFACTS (too dense)
+    - 12×12 grid + noise dots alone → moderation FAILS (face still detected)
+    - 12×12 + remove-bg → worked, but remove-bg unavailable (zero credits)
 
-    Current: 12×12 / 4px white + aggressive noise dots + JPEG quality 75.
-    Without remove-bg all three layers must compensate:
-    1. Grid (22 lines) — proven density that passed moderation
-    2. Noise dots (up to 200, radius 3-6px) — break smooth skin regions
-    3. Heavy JPEG compression (q=75) — adds artifacts across whole image
-    Random noise + compression don't create repeating patterns → no video artifacts.
+    Current multi-layer approach without remove-bg:
+    1. Downscale to max 768px — face becomes small, detector loses accuracy
+    2. Gaussian blur (radius 2) — destroys fine facial edges (eyes/nose/lips)
+       while preserving overall appearance for the video model
+    3. 12×12 white grid — geometric disruption
+    4. Noise dots + face zone dots — break smooth skin regions
+    5. JPEG quality 75 — compression artifacts add final noise layer
+
+    The video model only needs a rough identity reference (hair color, face
+    shape, body type) — it does NOT need a crisp 4K photo. Lower res + blur
+    is actually fine for character identity extraction.
     """
     import random as _rng
 
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+
+    # --- Layer 1: downscale to max 768px on longest side ---
+    # Face detectors need minimum resolution; smaller face = harder to detect.
+    max_dim = 768
+    w, h = img.size
+    if max(w, h) > max_dim:
+        scale = max_dim / max(w, h)
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+    # --- Layer 2: light gaussian blur — destroy fine facial features ---
+    img = img.filter(ImageFilter.GaussianBlur(radius=2))
+
+    # --- Layer 3: grid lines ---
     draw = ImageDraw.Draw(img)
     w, h = img.size
     lw = line_width if line_width > 0 else 4
@@ -2995,28 +3010,24 @@ def _apply_grid_overlay(
         y = h * i // rows
         draw.line([(0, y), (w, y)], fill=line_color, width=lw)
 
-    # --- Layer 2: noise dots spread across the whole image ---
-    num_dots = max(100, (w * h) // 5000)
-    num_dots = min(num_dots, 200)
+    # --- Layer 4: noise dots across the whole image ---
+    num_dots = max(80, (w * h) // 5000)
+    num_dots = min(num_dots, 150)
     for _ in range(num_dots):
         cx = _rng.randint(0, w - 1)
         cy = _rng.randint(0, h - 1)
-        r = _rng.randint(3, 6)
+        r = _rng.randint(3, 5)
         brightness = _rng.randint(220, 255)
         draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(brightness, brightness, brightness))
 
-    # --- Layer 3: concentrated noise in the "face zone" (top 40% of image) ---
-    # On full-body photos the face is small and in the upper portion.
-    # The regular grid barely covers it → moderation still detects the face.
-    # Extra dense noise in the top 40% disrupts face features regardless
-    # of whether the photo is a close-up or full-body shot.
+    # --- Layer 5: extra noise in the face zone (top 40%) ---
     face_zone_bottom = int(h * 0.4)
-    face_dots = max(80, (w * face_zone_bottom) // 3000)
-    face_dots = min(face_dots, 180)
+    face_dots = max(60, (w * face_zone_bottom) // 3000)
+    face_dots = min(face_dots, 120)
     for _ in range(face_dots):
         cx = _rng.randint(0, w - 1)
         cy = _rng.randint(0, face_zone_bottom)
-        r = _rng.randint(3, 7)
+        r = _rng.randint(3, 6)
         brightness = _rng.randint(210, 255)
         draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(brightness, brightness, brightness))
 

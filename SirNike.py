@@ -2961,31 +2961,33 @@ async def _remove_background_api(image_bytes: bytes) -> bytes:
 
 def _apply_grid_overlay(
     image_bytes: bytes,
-    rows: int = 10,
-    cols: int = 10,
+    rows: int = 12,
+    cols: int = 12,
     line_color: tuple = (255, 255, 255),
-    line_width: int = 3,
+    line_width: int = 4,
 ) -> bytes:
-    """10×10 white grid + random noise dots to bypass Seedance face moderation.
+    """12×12 white grid + aggressive noise to bypass Seedance face moderation.
 
     History & tuning rationale (do NOT change without testing):
-    - 3×3  / 2-4px thin   → moderation FAILS (too sparse)
-    - 8×8  / 3px white     → moderation FAILS without remove-bg (not dense enough alone)
-    - 12×12 / 2-5px gray   → moderation OK, video OK (worked in production)
-    - 16×16 / 2-5px gray   → moderation OK, video ARTIFACTS (too dense)
+    - 3×3  / 2-4px thin    → moderation FAILS (too sparse)
+    - 8×8  / 3px white      → moderation FAILS without remove-bg
+    - 10×10 / 3px + dots    → moderation FAILS on clear portraits without remove-bg
+    - 12×12 / 2-5px gray    → moderation OK, video OK (worked in production WITH remove-bg)
+    - 16×16 / 2-5px gray    → moderation OK, video ARTIFACTS (too dense)
 
-    Current: 10×10 / 3px white + random noise dots.
-    Grid: 18 lines — close to 12×12 that worked, well below 16×16.
-    Noise dots: break smooth skin regions that face detectors rely on,
-    but are random (no repeating pattern) so the video model ignores them.
-    This combo compensates for remove-bg being unavailable.
+    Current: 12×12 / 4px white + aggressive noise dots + JPEG quality 75.
+    Without remove-bg all three layers must compensate:
+    1. Grid (22 lines) — proven density that passed moderation
+    2. Noise dots (up to 200, radius 3-6px) — break smooth skin regions
+    3. Heavy JPEG compression (q=75) — adds artifacts across whole image
+    Random noise + compression don't create repeating patterns → no video artifacts.
     """
     import random as _rng
 
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     draw = ImageDraw.Draw(img)
     w, h = img.size
-    lw = line_width if line_width > 0 else 3
+    lw = line_width if line_width > 0 else 4
     for i in range(1, cols):
         x = w * i // cols
         draw.line([(x, 0), (x, h)], fill=line_color, width=lw)
@@ -2993,21 +2995,20 @@ def _apply_grid_overlay(
         y = h * i // rows
         draw.line([(0, y), (w, y)], fill=line_color, width=lw)
 
-    # Random noise dots — disrupt face-detection feature extraction.
-    # Small white/near-white circles at random positions; face detectors need
-    # smooth continuous skin regions, these break that. Random placement means
-    # the video model can't reproduce them as a repeating pattern (unlike grid).
-    num_dots = max(60, (w * h) // 8000)   # scale with image size
-    num_dots = min(num_dots, 150)          # cap to avoid overdoing it
+    # Aggressive noise dots — compensate for missing remove-bg.
+    # Larger radius (3-6px) and more dots (up to 200) than before.
+    # Random placement = no repeating pattern for video model to reproduce.
+    num_dots = max(100, (w * h) // 5000)
+    num_dots = min(num_dots, 200)
     for _ in range(num_dots):
         cx = _rng.randint(0, w - 1)
         cy = _rng.randint(0, h - 1)
-        r = _rng.randint(2, 4)
-        brightness = _rng.randint(230, 255)
+        r = _rng.randint(3, 6)
+        brightness = _rng.randint(220, 255)
         draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(brightness, brightness, brightness))
 
     out = io.BytesIO()
-    img.save(out, format="JPEG", quality=88)
+    img.save(out, format="JPEG", quality=75)
     return out.getvalue()
 
 

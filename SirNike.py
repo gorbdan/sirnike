@@ -56,6 +56,7 @@ from config import (
     PHOTOROOM_API_KEY,
     FAPIHUB_API_KEY,
     CLIPDROP_API_KEY,
+    REMBG_LOCAL_ENABLED,
     FAL_API_KEY,
     FAL_API_BASE,
     IMGBB_API_KEY,
@@ -2926,8 +2927,10 @@ async def _remove_background_api(image_bytes: bytes) -> bytes:
             last_error = f"remove.bg exception: {e}"
             logger.warning("remove.bg bg removal exception: %s", e)
 
-    # Local fallback: rembg (free, runs on CPU, no API key needed)
-    if png_bytes is None:
+    # Local fallback: rembg (free, runs on CPU, no API key needed).
+    # Disabled by default — U2Net model needs ~500MB RAM, can OOM-kill the bot.
+    # Enable via REMBG_LOCAL_ENABLED=1 on servers with enough memory.
+    if png_bytes is None and REMBG_LOCAL_ENABLED:
         try:
             from rembg import remove as _rembg_remove
 

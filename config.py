@@ -66,6 +66,9 @@ REMOVE_BG_API_KEY = os.getenv("REMOVE_BG_API_KEY", "").strip()
 PHOTOROOM_API_KEY = os.getenv("PHOTOROOM_API_KEY", "").strip()
 FAPIHUB_API_KEY = os.getenv("FAPIHUB_API_KEY", "").strip()
 CLIPDROP_API_KEY = os.getenv("CLIPDROP_API_KEY", "").strip()
+# Local rembg fallback: disabled by default (needs ~500MB RAM for U2Net model).
+# Set REMBG_LOCAL_ENABLED=1 on servers with enough memory.
+REMBG_LOCAL_ENABLED = os.getenv("REMBG_LOCAL_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 
 FAL_API_KEY = os.getenv("FAL_API_KEY", "").strip()
 FAL_API_BASE = os.getenv("FAL_API_BASE", "https://queue.fal.run").strip()

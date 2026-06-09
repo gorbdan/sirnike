@@ -2926,6 +2926,22 @@ async def _remove_background_api(image_bytes: bytes) -> bytes:
             last_error = f"remove.bg exception: {e}"
             logger.warning("remove.bg bg removal exception: %s", e)
 
+    # Local fallback: rembg (free, runs on CPU, no API key needed)
+    if png_bytes is None:
+        try:
+            from rembg import remove as _rembg_remove
+
+            def _run_rembg(data: bytes) -> bytes:
+                return _rembg_remove(data)
+
+            png_bytes = await asyncio.to_thread(_run_rembg, image_bytes)
+            logger.info("Background removed via rembg (local)")
+        except ImportError:
+            logger.warning("rembg not installed, skipping local bg removal")
+        except Exception as e:
+            last_error = f"rembg local exception: {e}"
+            logger.warning("rembg local bg removal failed: %s", e)
+
     if png_bytes is None:
         raise Exception(last_error)
 

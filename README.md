@@ -67,7 +67,7 @@ SEEDANCE_ENABLED=1              # включить Seedance 2.0
 SEEDANCE_FAST_ENABLED=1         # включить Seedance 2.0 Fast
 SEEDANCE_COST_PER_SECOND=2      # изюминок за секунду видео
 SEEDANCE_DURATION_OPTIONS=5,10,15
-SEEDANCE_FAST_DURATION_OPTIONS=5,10
+SEEDANCE_FAST_DURATION_OPTIONS=5,10,15
 ```
 
 ### Прочее

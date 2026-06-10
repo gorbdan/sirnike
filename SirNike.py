@@ -537,14 +537,29 @@ async def _locked_save_and_refresh(data: list) -> None:
 
 
 def _showcase_item_kind(item: dict) -> str:
-    raw = str(item.get("kind") or item.get("type") or "").strip().lower()
-    return "video" if raw in {"video", "video_prompt"} else "image"
+    # Делегируем общему определителю (он же ловит видео по video_url)
+    return get_prompt_item_kind(item)
 
 
 def _safe_media_url(url: str) -> str:
     # Кириллица в путях (например .../videos/ДР.mp4) ломает выдачу медиа по URL
     from urllib.parse import quote
     return quote(str(url or "").strip(), safe=":/?&=%#")
+
+
+def _showcase_item_label(item: dict) -> str:
+    # У фото-промптов названий нет (намеренно) — берём начало описания
+    title = str(item.get("title") or "").strip()
+    if title:
+        return title
+    desc = str(item.get("description") or "").strip()
+    if desc:
+        short = re.split(r"[:.\n—]", desc, maxsplit=1)[0].strip()
+        if len(short) > 30:
+            short = short[:30].rsplit(" ", 1)[0]
+        if short:
+            return short
+    return "Стиль"
 
 
 def pick_showcase_items(limit_images: int = 2, limit_videos: int = 2) -> list:
@@ -599,8 +614,6 @@ def ru_plural(value: int, one: str, few: str, many: str) -> str:
 
 
 def get_seedance_duration_bounds(model_code: Optional[str] = None) -> tuple[int, int]:
-    if model_code == "seedance2_fast":
-        return 5, 10
     return 5, 15
 
 
@@ -972,7 +985,7 @@ def prompt_library_category_kb(cat_idx: int) -> InlineKeyboardMarkup:
     rows = []
     items = PROMPT_LIBRARY[cat_idx]["items"]
     for item_idx, item in enumerate(items):
-        rows.append([InlineKeyboardButton(item["title"], callback_data=f"pl_view_{cat_idx}_{item_idx}")])
+        rows.append([InlineKeyboardButton(_showcase_item_label(item), callback_data=f"pl_view_{cat_idx}_{item_idx}")])
     rows.append([InlineKeyboardButton("← К категориям", callback_data="pl_open")])
     return InlineKeyboardMarkup(rows)
 
@@ -1447,7 +1460,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 digits = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
                 buttons = [
                     [InlineKeyboardButton(
-                        f"{digits[i]} {str(item.get('title') or 'Стиль').strip()}"
+                        f"{digits[i]} {_showcase_item_label(item)}"
                         + (" 🎬" if _showcase_item_kind(item) == "video" else ""),
                         callback_data=f"shc_{cat_idx}_{item_idx}",
                     )]
@@ -3438,7 +3451,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=main_menu_kb(),
             )
             return
-        title = str(item.get("title") or "стиль").strip() or "стиль"
+        title = _showcase_item_label(item)
         state = get_or_init_state(context)
         if _showcase_item_kind(item) == "video":
             state.motion_prompt = prompt

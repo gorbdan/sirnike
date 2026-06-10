@@ -618,6 +618,16 @@ def log_generation_event(
         conn.commit()
 
 
+def count_success_image_generations(user_id: int) -> int:
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM generation_events WHERE user_id = ? AND kind = 'image' AND status = 'success'",
+            (user_id,),
+        )
+        return cur.fetchone()[0] or 0
+
+
 def get_audience_overview(days: int = 30):
     now = datetime.utcnow()
     since_days = (now - timedelta(days=days)).isoformat()

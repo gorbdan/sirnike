@@ -128,6 +128,7 @@ from db import (
     purge_stale_avatar_refs,
     restore_free_generation,
     log_generation_event,
+    count_success_image_generations,
     get_audience_overview,
     add_generation_history,
     get_generation_history,
@@ -1361,14 +1362,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     avatar_status = ", ".join([avatar_kind_label(k) for k, v in avatar_urls.items() if v]) or "нет"
 
     if is_new_user:
+        bonus_photos = START_BONUS // BASE_GENERATION_COST
+        free_photos_today = bonus_photos + FREE_GENERATIONS_PER_DAY
         text = (
             f"Привет! Я Сырник 🧀 — бот для создания AI-фото и видео.\n\n"
-            f"🎁 Тебе подарено {START_BONUS} изюминок — это внутренняя валюта бота "
-            f"(хватит на {START_BONUS // BASE_GENERATION_COST} фото).\n\n"
+            f"🎁 Тебе доступно {free_photos_today} фото бесплатно уже сегодня:\n"
+            f"  • подарок на старте — {START_BONUS} изюминок ({bonus_photos} фото)\n"
+            f"  • ещё {FREE_GENERATIONS_PER_DAY} бесплатная генерация каждый день\n\n"
             f"⚡ Попробуй прямо сейчас:\n"
             f"  Нажми «Библиотека стилей 📚» → выбери стиль → «Запустить генерацию ⚡»\n\n"
-            f"🆓 Каждый день {FREE_GENERATIONS_PER_DAY} бесплатная генерация.\n"
-            f"🪄 Хочешь быть на фото? Загрузи свои фото через «Мой аватар».\n"
+            f"🪄 Чтобы не загружать своё фото каждый раз — создай «Мой аватар», "
+            f"и бот запомнит твою внешность.\n"
             f"❓ Подробнее: /help"
         )
     else:
@@ -6484,6 +6488,28 @@ async def _post_to_results_channel(
         logger.exception("Failed to post result to channel %s", RESULTS_CHANNEL_ID)
 
 
+async def maybe_send_avatar_nudge(app: Application, chat_id: int, user_id: int) -> None:
+    # Однократная подсказка после первой удачной генерации: вызывается до
+    # log_generation_event, поэтому счётчик успехов ещё равен нулю.
+    try:
+        if any(get_avatar_urls(user_id).values()):
+            return
+        if count_success_image_generations(user_id) > 0:
+            return
+        await app.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "Кстати, можно не загружать своё фото каждый раз 🪄\n"
+                "Нажми «Мой аватар» и загрузи несколько своих фото — бот сгенерирует "
+                "твою модель и запомнит внешность. Дальше будешь появляться "
+                "в любой идее автоматически.\n"
+                f"Стоит как обычная генерация — {BASE_GENERATION_COST} изюминок."
+            ),
+        )
+    except Exception:
+        logger.warning("Failed to send avatar nudge to user %s", user_id)
+
+
 async def send_generation_result_by_url(
     app: Application,
     chat_id: int,
@@ -6566,6 +6592,9 @@ async def send_generation_result_by_url(
         document=doc_buffer,
         caption="Файл изображения в хорошем качестве JPG."
     )
+
+    if not (job and getattr(job, "save_as_avatar", False)):
+        await maybe_send_avatar_nudge(app, chat_id, user_id)
 
 # ══════════════════════════════════════════════════════════════
 # ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ (ВОРКЕР): MashaGPT, Zveno, Nano
@@ -7401,6 +7430,8 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                                     document=doc_buffer,
                                     caption="Файл изображения в хорошем качестве JPG."
                                 )
+                                if not getattr(job, "save_as_avatar", False):
+                                    await maybe_send_avatar_nudge(app, chat_id, user_id)
                                 log_generation_event(
                                     user_id=user_id,
                                     kind="image",

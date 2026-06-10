@@ -3628,7 +3628,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if what_to_upload:
             body += f"\n\n📎 Что загрузить: {what_to_upload}"
         card_text = (
-            f"✨ {item['title']}\n\n"
+            f"✨ {_showcase_item_label(item)}\n\n"
             f"{body}\n\n"
             "Нажми «Использовать», чтобы применить шаблон."
         )
@@ -3701,7 +3701,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state.motion_session_active = True
             state.waiting_for_motion_image = True
             await query.message.reply_text(
-                f"Готово ✨\nСтиль «{item['title']}» применён для Seedance 2.\n"
+                f"Готово ✨\nСтиль «{_showcase_item_label(item)}» применён для Seedance 2.\n"
                 "Теперь отправь фото и запускай видео.",
                 reply_markup=motion_control_kb(state),
             )
@@ -3709,7 +3709,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         deactivate_motion_session(state)
         state.prompt = item["prompt"]
         await query.message.reply_text(
-            f"Готово ✨\nСтиль «{item['title']}» применён.\n"
+            f"Готово ✨\nСтиль «{_showcase_item_label(item)}» применён.\n"
             "Нажми «Запустить генерацию ⚡» или отправь своё фото.",
             reply_markup=main_menu_kb(),
         )

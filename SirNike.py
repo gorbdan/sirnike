@@ -536,6 +536,42 @@ async def _locked_save_and_refresh(data: list) -> None:
         await asyncio.to_thread(refresh_prompt_library)
 
 
+def _showcase_item_kind(item: dict) -> str:
+    raw = str(item.get("kind") or item.get("type") or "").strip().lower()
+    return "video" if raw in {"video", "video_prompt"} else "image"
+
+
+def _safe_media_url(url: str) -> str:
+    # Кириллица в путях (например .../videos/ДР.mp4) ломает выдачу медиа по URL
+    from urllib.parse import quote
+    return quote(str(url or "").strip(), safe=":/?&=%#")
+
+
+def pick_showcase_items(limit_images: int = 2, limit_videos: int = 2) -> list:
+    """Свежие стили с превью для витрины новичка: (cat_idx, item_idx, item).
+    Фото-стили — по example_url, видео-стили — по video_url. Сначала фото, потом видео."""
+    images, videos = [], []
+    for cat_idx, cat in enumerate(PROMPT_LIBRARY):
+        for item_idx, item in enumerate(cat.get("items") or []):
+            if not isinstance(item, dict):
+                continue
+            if not str(item.get("prompt") or "").strip():
+                continue
+            if _showcase_item_kind(item) == "video":
+                if str(item.get("video_url") or "").strip().startswith("http"):
+                    videos.append((cat_idx, item_idx, item))
+            else:
+                if str(item.get("example_url") or "").strip().startswith("http"):
+                    images.append((cat_idx, item_idx, item))
+
+    def _freshness(pick):
+        return str(pick[2].get("added_at") or "")
+
+    images.sort(key=_freshness, reverse=True)
+    videos.sort(key=_freshness, reverse=True)
+    return images[:limit_images] + videos[:limit_videos]
+
+
 # ══════════════════════════════════════════════════════════════
 # УТИЛИТЫ: вспомогательные функции
 # ══════════════════════════════════════════════════════════════
@@ -1385,6 +1421,45 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Напиши описание картинки или выбери стиль из библиотеки 📚"
         )
     await update.message.reply_text(text, reply_markup=main_menu_kb())
+
+    # Витрина для новичка: альбом примеров из библиотеки + кнопки "хочу так же"
+    if is_new_user:
+        try:
+            showcase = pick_showcase_items()
+            if showcase:
+                media = []
+                for _, _, item in showcase:
+                    if _showcase_item_kind(item) == "video":
+                        media.append(InputMediaVideo(
+                            media=_safe_media_url(item.get("video_url")),
+                            supports_streaming=True,
+                        ))
+                    else:
+                        media.append(InputMediaPhoto(
+                            media=_safe_media_url(item.get("example_url")),
+                        ))
+                if len(media) > 1:
+                    await update.message.reply_media_group(media)
+                elif isinstance(media[0], InputMediaVideo):
+                    await update.message.reply_video(media[0].media)
+                else:
+                    await update.message.reply_photo(media[0].media)
+                digits = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
+                buttons = [
+                    [InlineKeyboardButton(
+                        f"{digits[i]} {str(item.get('title') or 'Стиль').strip()}"
+                        + (" 🎬" if _showcase_item_kind(item) == "video" else ""),
+                        callback_data=f"shc_{cat_idx}_{item_idx}",
+                    )]
+                    for i, (cat_idx, item_idx, item) in enumerate(showcase)
+                ]
+                await update.message.reply_text(
+                    "Такие фото и видео делают пользователи Сырника 👆\n"
+                    "Нравится стиль? Жми на него — я всё подготовлю:",
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                )
+        except Exception:
+            logger.warning("Failed to send showcase to new user %s", user.id, exc_info=True)
 
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -3340,6 +3415,55 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("pl_admin_mode", None)
         context.user_data.pop("pl_admin_rename_old", None)
         await query.message.reply_text("Админ-режим закрыт.")
+        return
+
+    if query.data.startswith("shc_"):
+        # Витрина новичка: применяем выбранный стиль из библиотеки по индексам
+        try:
+            _, cat_raw, item_raw = query.data.split("_", 2)
+            cat_idx, item_idx = int(cat_raw), int(item_raw)
+            if not (0 <= cat_idx < len(PROMPT_LIBRARY)):
+                raise ValueError(f"cat_idx out of range: {cat_idx}")
+            cat_items = PROMPT_LIBRARY[cat_idx].get("items") or []
+            if not (0 <= item_idx < len(cat_items)):
+                raise ValueError(f"item_idx out of range: {item_idx}")
+            item = cat_items[item_idx]
+            prompt = str(item.get("prompt") or "").strip()
+            if not prompt:
+                raise ValueError("showcase item has no prompt")
+        except Exception as e:
+            logger.warning("Showcase callback failed (%s): %s", query.data, e)
+            await query.message.reply_text(
+                "Этот стиль обновился — открой «Библиотека стилей 📚» и выбери оттуда.",
+                reply_markup=main_menu_kb(),
+            )
+            return
+        title = str(item.get("title") or "стиль").strip() or "стиль"
+        state = get_or_init_state(context)
+        if _showcase_item_kind(item) == "video":
+            state.motion_prompt = prompt
+            state.motion_session_active = True
+            state.waiting_for_motion_image = True
+            hint = str(item.get("upload_hint") or "").strip()
+            hint_line = f"Что прислать: {hint.lower()}" if hint else "Теперь пришли своё фото."
+            await query.message.reply_text(
+                f"Видео-стиль «{title}» применён для Seedance 2 ✨\n"
+                f"{hint_line}\n"
+                "Дальше выбирай параметры и запускай видео.",
+            )
+            await query.message.reply_text(
+                "Параметры видео:",
+                reply_markup=motion_control_kb(state),
+            )
+        else:
+            deactivate_motion_session(state)
+            state.prompt = prompt
+            await query.message.reply_text(
+                f"Стиль «{title}» применён ✨\n"
+                "Хочешь себя на этом фото? Сначала пришли своё фото обычным сообщением.\n"
+                "А дальше жми «Запустить генерацию ⚡»",
+                reply_markup=main_menu_kb(),
+            )
         return
 
     if query.data.startswith("support_reply_"):

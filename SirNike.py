@@ -5727,6 +5727,27 @@ def build_seedance_prompt_with_refs(prompt_text: str, refs_count: int) -> str:
     return f"{binding}\n{text}"
 
 
+def _data_url_to_jpeg_rgb(data_url: str) -> str:
+    """Перекодирует data: URL картинки в JPEG RGB (без альфа-канала).
+
+    Kling/Veo принимают картинку как первый кадр видео и отклоняют
+    кадры с прозрачностью («Image pixel is invalid»)."""
+    try:
+        comma = data_url.find(",")
+        if comma == -1:
+            return data_url
+        raw = base64.b64decode(data_url[comma + 1:])
+        img = Image.open(io.BytesIO(raw))
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=92)
+        return "data:image/jpeg;base64," + base64.b64encode(out.getvalue()).decode()
+    except Exception:
+        logger.warning("_data_url_to_jpeg_rgb: conversion failed, sending original")
+        return data_url
+
+
 def is_seedance_privacy_moderation_error(error_text: str) -> bool:
     lowered = (error_text or "").lower()
     keys = [
@@ -5831,6 +5852,11 @@ async def start_seedance_task(
         else:
             resolved.append(u)
     combined_image_urls = resolved
+    if model_code in ("kling3", "veo31"):
+        combined_image_urls = [
+            _data_url_to_jpeg_rgb(u) if u.startswith("data:") else u
+            for u in combined_image_urls
+        ]
 
     prompt_text = build_seedance_prompt_with_refs((prompt or "").strip(), len(combined_image_urls))
     if len(combined_image_urls) > 1 and SEEDANCE_VIDEO_REFERENCE_MODE == "timeline":
@@ -6615,7 +6641,10 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        if motion_images:
+        # Удаление фона + сетка нужны только Seedance (реф внешности).
+        # Kling/Veo используют картинку как первый кадр видео — обработка ломает
+        # кадр («Image pixel is invalid») и зря тратит кредиты remove.bg.
+        if motion_images and selected_model not in ("kling3", "veo31"):
             motion_images = await apply_grid_overlay_to_refs(motion_images)
 
         if not spend_izyminki(user.id, selected_cost):

@@ -7301,8 +7301,11 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
 
             response_data = None
             image_url = None
+            blocked_models: set = set()
             async with aiohttp.ClientSession() as session:
                 for attempt_idx, payload in enumerate(payload_variants, start=1):
+                    if payload.get("model") in blocked_models:
+                        continue
                     async with session.post(
                         request_url,
                         headers={
@@ -7372,7 +7375,10 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                     )
                     native_upper = native_finish_reason.upper() if isinstance(native_finish_reason, str) else ""
                     if "IMAGE_PROHIBITED_CONTENT" in native_upper:
-                        break
+                        # Контент-фильтр: повторять ту же модель бессмысленно, но
+                        # fallback-модель (Pro) часто пропускает то, что флагает flash.
+                        blocked_models.add(payload.get("model"))
+                        continue
                     if attempt_idx < len(payload_variants):
                         await asyncio.sleep(0.7)
             if not image_url:

@@ -6762,10 +6762,10 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             channel_caption = (
                 f"🎬 Видео | {selected_model_label}\n"
                 f"👤 {uname}\n"
-                + (f"📝 {prompt_text[:200]}" if prompt_text else "")
+                + (f"📝 {prompt_text[:950]}" if prompt_text else "")
             ).strip()
             context.application.create_task(
-                _post_to_results_channel(context.application, "video", video_bytes, channel_caption)
+                _post_to_results_channel(context.application, "video", video_bytes, channel_caption, full_prompt=prompt_text)
             )
             logger.info(
                 "Seedance send_video success: chat_id=%s, user_id=%s, model=%s",
@@ -6862,6 +6862,7 @@ async def _post_to_results_channel(
     kind: str,
     media_bytes: bytes,
     caption: str,
+    full_prompt: str = "",
 ) -> None:
     if not RESULTS_CHANNEL_ID:
         logger.warning("_post_to_results_channel: RESULTS_CHANNEL_ID is not set, skipping")
@@ -6871,7 +6872,7 @@ async def _post_to_results_channel(
         buf = io.BytesIO(media_bytes)
         if kind == "video":
             buf.name = "result.mp4"
-            await app.bot.send_video(
+            sent_msg = await app.bot.send_video(
                 chat_id=RESULTS_CHANNEL_ID,
                 video=buf,
                 caption=caption,
@@ -6879,10 +6880,17 @@ async def _post_to_results_channel(
             )
         else:
             buf.name = "result.jpg"
-            await app.bot.send_photo(
+            sent_msg = await app.bot.send_photo(
                 chat_id=RESULTS_CHANNEL_ID,
                 photo=buf,
                 caption=caption,
+            )
+        # Caption ограничен 1024 символами — длинный промт досылаем целиком реплаем.
+        if full_prompt and len(full_prompt) > 950:
+            await app.bot.send_message(
+                chat_id=RESULTS_CHANNEL_ID,
+                text=f"📝 Полный промт:\n{full_prompt[:4000]}",
+                reply_to_message_id=sent_msg.message_id,
             )
         logger.info("_post_to_results_channel: success kind=%s channel=%s", kind, RESULTS_CHANNEL_ID)
     except Exception:
@@ -7399,10 +7407,13 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
             )
             if RESULTS_CHANNEL_ID and image_url:
                 uname = f"@{job.username}" if job.username else f"id{user_id}"
+                # Лимит caption у фото — 1024 символа: короткий промт влезает целиком,
+                # длинный досылаем полностью отдельным сообщением-реплаем (лимит 4096).
+                _prompt_full = (prompt or "").strip()
                 channel_caption = (
                     f"🖼 Изображение\n"
                     f"👤 {uname}\n"
-                    + (f"📝 {prompt[:200]}" if prompt else "")
+                    + (f"📝 {_prompt_full[:950]}" if _prompt_full else "")
                 ).strip()
                 # Скачиваем байты сразу — URL Zveno может истечь к моменту выполнения task
                 try:
@@ -7415,11 +7426,17 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 except Exception:
                     _ch_bytes = None
                 if _ch_bytes:
-                    async def _send_img_to_channel(b=_ch_bytes, cap=channel_caption):
+                    async def _send_img_to_channel(b=_ch_bytes, cap=channel_caption, full_prompt=_prompt_full):
                         try:
                             buf = io.BytesIO(b)
                             buf.name = "result.jpg"
-                            await app.bot.send_photo(chat_id=RESULTS_CHANNEL_ID, photo=buf, caption=cap)
+                            sent_msg = await app.bot.send_photo(chat_id=RESULTS_CHANNEL_ID, photo=buf, caption=cap)
+                            if len(full_prompt) > 950:
+                                await app.bot.send_message(
+                                    chat_id=RESULTS_CHANNEL_ID,
+                                    text=f"📝 Полный промт:\n{full_prompt[:4000]}",
+                                    reply_to_message_id=sent_msg.message_id,
+                                )
                             logger.info("Posted image to channel %s", RESULTS_CHANNEL_ID)
                         except Exception:
                             logger.exception("Failed to post image to channel %s", RESULTS_CHANNEL_ID)

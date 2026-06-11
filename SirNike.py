@@ -888,7 +888,7 @@ def get_prompt_webapp_url() -> str:
 
 
 def motion_unavailable_text() -> str:
-    return "Seedance в разработке 🚧\nСкоро включим эту функцию."
+    return "Видео в разработке 🚧\nСкоро включим эту функцию."
 
 def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     old_task = photo_tasks.pop(chat_id, None)  # pop сразу, чтобы finally старой задачи не удалил новую
@@ -1104,7 +1104,7 @@ def get_prompt_item_kind(item: dict) -> str:
 
 
 def prompt_library_item_kb(cat_idx: int, item_idx: int, item_kind: str = "image") -> InlineKeyboardMarkup:
-    use_text = "Использовать в Seedance 2 ✅" if item_kind == "video" else "Использовать этот стиль ✅"
+    use_text = "Использовать в видео ✅" if item_kind == "video" else "Использовать этот стиль ✅"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(use_text, callback_data=f"pl_use_{cat_idx}_{item_idx}")],
         [InlineKeyboardButton("← Назад к категории", callback_data=f"pl_cat_{cat_idx}")],
@@ -1662,7 +1662,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "2. Нажми «Запустить генерацию ⚡»\n"
         "3. Получи фото — готово!\n\n"
         "🪄 Аватар — загрузи свои фото, и бот поставит тебя в любой образ\n"
-        "🎬 Видео — режим Seedance 2 (кнопка в меню)\n"
+        "🎬 Видео — Seedance 2, Kling 3.0, Veo 3.1 (кнопка в меню)\n"
         f"🆓 {FREE_GENERATIONS_PER_DAY} бесплатная генерация каждый день\n"
         f"💰 Твой баланс: {bal} изюминок (1 фото = {BASE_GENERATION_COST} изюминок)\n\n"
         "Команды:\n"
@@ -2476,7 +2476,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.waiting_for_motion_prompt = False
         state.motion_session_active = True
         await update.message.reply_text(
-            "Описание для Seedance сохранено ✅\n"
+            "Описание для видео сохранено ✅\n"
             "Теперь можешь отправить фото, выбрать длительность/качество и нажать запуск.",
             reply_markup=motion_control_kb(state),
         )
@@ -2566,7 +2566,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             current_refs = get_motion_image_urls(state)
             if len(current_refs) >= MAX_SEEDANCE_IMAGE_REFERENCES and direct_url not in current_refs:
                 await update.message.reply_text(
-                    f"Уже загружено {MAX_SEEDANCE_IMAGE_REFERENCES} фото для Seedance.\n"
+                    f"Уже загружено {MAX_SEEDANCE_IMAGE_REFERENCES} фото для видео.\n"
                     "Очисти референсы или замени одно из фото, затем запускай генерацию.",
                     reply_markup=motion_control_kb(state),
                 )
@@ -2577,7 +2577,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user.id, total_refs, state.animation_source_urls,
             )
             await update.message.reply_text(
-                f"Фото для Seedance добавлено ✅\n"
+                f"Фото для видео добавлено ✅\n"
                 f"Сейчас загружено: {total_refs}/{MAX_SEEDANCE_IMAGE_REFERENCES}\n"
                 "Бот запомнит внешность с фото.\n"
                 "Можешь отправить ещё фото или запускать генерацию.",
@@ -2612,7 +2612,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     video = update.message.video
     if not video:
-        await update.message.reply_text("Пришли обычное видеофайл-сообщение для Seedance.")
+        await update.message.reply_text("Пришли обычное видеофайл-сообщение для видео-режима.")
         return
 
     tg_file = await context.bot.get_file(video.file_id)
@@ -2684,7 +2684,7 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
     if update.effective_message:
         if action == "set_video_prompt":
             await update.effective_message.reply_text(
-                f"Готово ✨\nСтиль «{title}» применён для Seedance 2.\n"
+                f"Готово ✨\nСтиль «{title}» применён для видео.\n"
                 "Теперь отправь фото и запускай видео.",
                 reply_markup=motion_control_kb(state),
             )
@@ -2744,7 +2744,7 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
     if update.effective_message:
         if action in {"set_video_prompt", "set_video_prompt_ref"}:
             await update.effective_message.reply_text(
-                f"Готово ✨\nСтиль «{title}» применён для Seedance 2.\n"
+                f"Готово ✨\nСтиль «{title}» применён для видео.\n"
                 "Теперь отправь фото и запускай видео.",
                 reply_markup=ReplyKeyboardRemove(),
             )
@@ -3592,7 +3592,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             hint = str(item.get("upload_hint") or "").strip()
             hint_line = f"Что прислать: {hint.lower()}" if hint else "Теперь пришли своё фото."
             await query.message.reply_text(
-                f"Видео-стиль «{title}» применён для Seedance 2 ✨\n"
+                f"Видео-стиль «{title}» применён для видео ✨\n"
                 f"{hint_line}\n"
                 "Дальше выбирай параметры и запускай видео.",
             )
@@ -3753,7 +3753,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         description_text = str(item.get("description") or item.get("hint") or "").strip()
         what_to_upload = str(item.get("upload_hint") or item.get("what_to_upload") or "").strip()
         if item_kind == "video":
-            default_desc = "Видео-шаблон для Seedance. Загрузи фото-референс и запусти видео."
+            default_desc = "Видео-шаблон. Загрузи фото-референс и запусти видео."
         else:
             default_desc = "Фото-шаблон. Можно использовать как есть или добавить референс."
         body = description_text or default_desc
@@ -3833,7 +3833,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state.motion_session_active = True
             state.waiting_for_motion_image = True
             await query.message.reply_text(
-                f"Готово ✨\nСтиль «{_showcase_item_label(item)}» применён для Seedance 2.\n"
+                f"Готово ✨\nСтиль «{_showcase_item_label(item)}» применён для видео.\n"
                 "Теперь отправь фото и запускай видео.",
                 reply_markup=motion_control_kb(state),
             )
@@ -4386,7 +4386,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "2. Нажми «Запустить генерацию ⚡»\n"
             "3. Получи фото — готово!\n\n"
             "🪄 Аватар — загрузи свои фото, и бот поставит тебя в любой образ\n"
-            "🎬 Видео — режим Seedance 2 (кнопка в меню)\n"
+            "🎬 Видео — Seedance 2, Kling 3.0, Veo 3.1 (кнопка в меню)\n"
             f"💰 Баланс: {bal} изюминок (1 фото = {BASE_GENERATION_COST} изюминок)\n\n"
             "Изюминки — внутренняя валюта бота. Их можно купить или получить бесплатно, "
             "пригласив друга: /ref",
@@ -6012,11 +6012,11 @@ async def start_seedance_task(
     privacy_blocked = False
     async with aiohttp.ClientSession() as session:
         for create_url in create_urls:
-            logger.info(f"Seedance create task endpoint: {create_url}")
+            logger.info(f"Video create task endpoint: {create_url}")
             for payload in payload_variants:
                 ref_keys = [k for k in ("frame_images", "input_references", "image_url", "image_urls", "reference_images") if k in payload]
                 logger.info(
-                    f"Seedance create payload: model={payload.get('model')}, model_code={model_code}, duration={payload.get('duration') or payload.get('seconds')}, refs={ref_keys}, refs_count={len(combined_image_urls)}"
+                    f"Video create payload: model={payload.get('model')}, model_code={model_code}, duration={payload.get('duration') or payload.get('seconds')}, refs={ref_keys}, refs_count={len(combined_image_urls)}"
                 )
                 async with session.post(
                     create_url,
@@ -6029,10 +6029,10 @@ async def start_seedance_task(
                     timeout=aiohttp.ClientTimeout(total=90),
                 ) as resp:
                     response_text = await resp.text()
-                    logger.info(f"Seedance create response: status={resp.status}, endpoint={create_url}")
+                    logger.info(f"Video create response: status={resp.status}, endpoint={create_url}")
                     if not (200 <= resp.status < 300):
                         logger.warning(
-                            "Seedance create rejected: status=%s, body=%s",
+                            "Video create rejected: status=%s, body=%s",
                             resp.status,
                             response_text[:500],
                         )
@@ -6049,10 +6049,10 @@ async def start_seedance_task(
                     task_id = data.get("id")
                     polling_url = data.get("polling_url")
                     if is_video_jobs_endpoint and isinstance(polling_url, str) and polling_url.strip():
-                        logger.info(f"Seedance create accepted: polling_url={polling_url.strip()}")
+                        logger.info(f"Video create accepted: polling_url={polling_url.strip()}")
                         return "__POLL_URL__:" + polling_url.strip()
                     if task_id:
-                        logger.info(f"Seedance create accepted: task_id={task_id}")
+                        logger.info(f"Video create accepted: task_id={task_id}")
                         return str(task_id)
                     last_error = f"Task id missing in response: {data}"
             if privacy_blocked:
@@ -6077,7 +6077,7 @@ async def start_seedance_task(
             aspect_ratio=aspect_ratio,
         )
 
-    raise Exception(f"Seedance create task error: {last_error}")
+    raise Exception(f"Video create task error: {last_error}")
 
 
 async def _start_seedance_task_fal(
@@ -6271,7 +6271,7 @@ async def poll_seedance_task(
         poll_urls = [build_zveno_url(ZVENO_API_BASE, path) for path in poll_paths]
 
     logger.info(
-        f"Seedance polling started: task_ref={task_id}, max_attempts={max_attempts}, interval={poll_interval}s, urls={poll_urls}"
+        f"Video polling started: task_ref={task_id}, max_attempts={max_attempts}, interval={poll_interval}s, urls={poll_urls}"
     )
 
     content_probe_urls: List[str] = []
@@ -6325,7 +6325,7 @@ async def poll_seedance_task(
 
     async with aiohttp.ClientSession() as session:
         for attempt in range(max_attempts):
-            logger.info(f"Seedance poll tick: attempt={attempt + 1}/{max_attempts}")
+            logger.info(f"Video poll tick: attempt={attempt + 1}/{max_attempts}")
             if status_callback and attempt > 0 and attempt % 8 == 0:
                 elapsed_min = (attempt * poll_interval) // 60
                 try:
@@ -6352,14 +6352,14 @@ async def poll_seedance_task(
                         response_text = await resp.text()
                         if resp.status != 200:
                             logger.warning(
-                                f"Seedance status check failed: {resp.status}, url={poll_url}, auth={'yes' if headers else 'no'}, body={response_text}"
+                                f"Video status check failed: {resp.status}, url={poll_url}, auth={'yes' if headers else 'no'}, body={response_text}"
                             )
                             continue
                         try:
                             data = json.loads(response_text)
                             break
                         except json.JSONDecodeError:
-                            logger.warning(f"Seedance status non-JSON response: {response_text}")
+                            logger.warning(f"Video status non-JSON response: {response_text}")
                             continue
                 if data:
                     break
@@ -6369,7 +6369,7 @@ async def poll_seedance_task(
 
             status_raw = str(data.get("status", ""))
             status = status_raw.upper()
-            logger.info(f"Seedance task {task_id}: attempt={attempt + 1}/{max_attempts}, status={status}")
+            logger.info(f"Video task {task_id}: attempt={attempt + 1}/{max_attempts}, status={status}")
 
             task_id_from_data = str(data.get("id") or "").strip()
             if task_id_from_data.startswith("vj_"):
@@ -6380,7 +6380,7 @@ async def poll_seedance_task(
             video_url_any_status = _extract_video_url_from_task(data)
             if video_url_any_status and status not in ("FAILED", "CANCELLED", "ERROR"):
                 logger.info(
-                    "Seedance poll early-finish: video url is already available at status=%s",
+                    "Video poll early-finish: video url is already available at status=%s",
                     status or "unknown",
                 )
                 return video_url_any_status
@@ -6392,7 +6392,7 @@ async def poll_seedance_task(
                         ready = await _probe_content_url(session, probe_url)
                         if ready:
                             logger.info(
-                                "Seedance content probe ready: status=%s, url=%s",
+                                "Video content probe ready: status=%s, url=%s",
                                 status or "unknown",
                                 probe_url,
                             )
@@ -6409,7 +6409,7 @@ async def poll_seedance_task(
                         )
                 video_url = _extract_video_url_from_task(data)
                 if not video_url:
-                    raise Exception(f"Seedance task completed but video URL missing: {data}")
+                    raise Exception(f"Video task completed but video URL missing: {data}")
                 return video_url
 
             if status in ("FAILED", "CANCELLED", "ERROR"):
@@ -6419,7 +6419,7 @@ async def poll_seedance_task(
                     ready = await _probe_content_url(session, probe_url)
                     if ready:
                         logger.info(
-                            "Seedance failed status but content is ready: status=%s, url=%s",
+                            "Video failed status but content is ready: status=%s, url=%s",
                             status,
                             probe_url,
                         )
@@ -6428,7 +6428,7 @@ async def poll_seedance_task(
                     data.get("error")
                     or data.get("message")
                     or data.get("details")
-                    or f"Seedance task failed with status {status}"
+                    or f"Video task failed with status {status}"
                 )
 
     raise Exception("Превышено время ожидания генерации видео Seedance")
@@ -6514,7 +6514,7 @@ async def download_video_bytes_with_fallback(video_url: str) -> bytes:
             for headers in headers_variants:
                 try:
                     logger.info(
-                        f"Seedance download attempt: url={candidate_url}, auth={'yes' if headers else 'no'}"
+                        f"Video download attempt: url={candidate_url}, auth={'yes' if headers else 'no'}"
                     )
                     async with session.get(
                         candidate_url,
@@ -6531,12 +6531,12 @@ async def download_video_bytes_with_fallback(video_url: str) -> bytes:
                         body = await resp.text()
                         last_error = f"{resp.status}. {body[:500]}"
                         logger.warning(
-                            f"Seedance download failed: status={resp.status}, url={candidate_url}, auth={'yes' if headers else 'no'}"
+                            f"Video download failed: status={resp.status}, url={candidate_url}, auth={'yes' if headers else 'no'}"
                         )
                 except Exception as e:
                     last_error = str(e)
                     logger.warning(
-                        f"Seedance download exception: url={candidate_url}, auth={'yes' if headers else 'no'}, error={e}"
+                        f"Video download exception: url={candidate_url}, auth={'yes' if headers else 'no'}, error={e}"
                     )
 
     raise Exception(f"Не удалось скачать видео: {last_error}")
@@ -6714,7 +6714,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     if seedance_attempt < max_seedance_attempts and sensitive_audio_like:
                         logger.warning(
-                            "Seedance moderation fail. Auto-restart with silent-safe prompt: attempt=%s/%s user_id=%s model=%s",
+                            "Video moderation fail. Auto-restart with silent-safe prompt: attempt=%s/%s user_id=%s model=%s",
                             seedance_attempt,
                             max_seedance_attempts,
                             user.id,
@@ -6731,12 +6731,12 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not video_url:
                 if last_seedance_error:
                     raise last_seedance_error
-                raise Exception("Seedance video URL missing after retries")
+                raise Exception("Video URL missing after retries")
     
             video_bytes = await download_video_bytes_with_fallback(video_url)
             saved_path = save_video_debug_copy(video_bytes, user.id, selected_model_label)
             if saved_path:
-                logger.info(f"Seedance local copy saved: {saved_path}")
+                logger.info(f"Video local copy saved: {saved_path}")
     
             video_buffer = io.BytesIO(video_bytes)
             video_buffer.name = "seedance.mp4"
@@ -6768,13 +6768,13 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 _post_to_results_channel(context.application, "video", video_bytes, channel_caption, full_prompt=prompt_text)
             )
             logger.info(
-                "Seedance send_video success: chat_id=%s, user_id=%s, model=%s",
+                "Video send_video success: chat_id=%s, user_id=%s, model=%s",
                 update.effective_chat.id,
                 user.id,
                 selected_model_label,
             )
         except BaseException as e:
-            logger.exception("Seedance generation failed")
+            logger.exception("Video generation failed")
             add_izyminki(user.id, selected_cost)
             # Restore state so "Повторить" can reuse the same images/prompt
             state.animation_source_urls = _saved_animation_source_urls
@@ -6792,7 +6792,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if is_seedance_privacy_moderation_error(error_text):
                 await reply_target.reply_text(
                     f"Не удалось выполнить {selected_model_label}.\n"
-                    "Seedance отклонил фото модерацией.\n"
+                    "Модель отклонила фото модерацией.\n"
                     "Это ограничение нейросети, а не сбой бота.\n"
                     "Попробуй другое фото (менее похожее на фото реального человека).\n\n"
                     "Списанные изюминки возвращены на баланс."

@@ -56,7 +56,7 @@ MASHAGPT_CHAT_MODEL=gpt-4o-mini
 AI_PROVIDER=ZVENO
 ZVENO_API_BASE=https://api.zveno.ai/v1
 ZVENO_API_KEY=your_key
-ZVENO_IMAGE_MODEL=google/gemini-3-pro-image-preview
+ZVENO_IMAGE_MODEL=google/gemini-3.1-flash-image-preview
 ZVENO_CHAT_MODEL=google/gemini-2.5-flash
 ```
 

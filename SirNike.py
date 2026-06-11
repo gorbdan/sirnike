@@ -100,6 +100,17 @@ from config import (
     DATA_DIR,
     GITHUB_TOKEN,
     GITHUB_REPO,
+    KLING3_ENABLED,
+    KLING3_MODEL,
+    KLING3_COST_PER_SECOND,
+    KLING3_DURATION_OPTIONS,
+    VEO31_ENABLED,
+    VEO31_MODEL,
+    VEO31_COST_PER_SECOND,
+    VEO31_DURATION_OPTIONS,
+    GPT5_IMAGE_ENABLED,
+    ZVENO_GPT5_IMAGE_MODEL,
+    GPT5_IMAGE_COST,
 )
 
 from db import (
@@ -276,6 +287,7 @@ class UserState:
     waiting_for_motion_prompt: bool = False
     waiting_for_motion_image: bool = False
     waiting_for_motion_video: bool = False
+    image_model: str = "gemini"  # gemini | gpt5
 
 @dataclass
 class GenerationJob:
@@ -290,6 +302,7 @@ class GenerationJob:
     avatar_kind: str = "female"
     username: Optional[str] = None
     aspect_ratio: str = "16:9"
+    image_model: str = "gemini"  # gemini | gpt5
 
 generation_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
 queued_user_ids = set()
@@ -595,8 +608,33 @@ def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 
-def calc_generation_cost(references: Optional[List[str]] = None) -> int:
-    cost = BASE_GENERATION_COST
+def get_image_model(state: UserState) -> str:
+    if state.image_model == "gpt5" and GPT5_IMAGE_ENABLED:
+        return "gpt5"
+    return "gemini"
+
+
+def get_image_model_label(model_code: str) -> str:
+    if model_code == "gpt5":
+        return "GPT-5 Image"
+    slug = (ZVENO_IMAGE_MODEL or "").lower()
+    if "3.1-flash-image" in slug:
+        return "Nano Banana 2"
+    if "3-pro-image" in slug:
+        return "Nano Banana Pro"
+    if "2.5-flash-image" in slug:
+        return "Nano Banana"
+    return ZVENO_IMAGE_MODEL or "Gemini"
+
+
+def get_image_model_base_cost(model_code: str) -> int:
+    if model_code == "gpt5":
+        return max(GPT5_IMAGE_COST, 1)
+    return BASE_GENERATION_COST
+
+
+def calc_generation_cost(references: Optional[List[str]] = None, image_model: str = "gemini") -> int:
+    cost = get_image_model_base_cost(image_model)
     if references:
         cost += REFERENCE_COST
     return cost
@@ -614,12 +652,20 @@ def ru_plural(value: int, one: str, few: str, many: str) -> str:
 
 
 def get_seedance_duration_bounds(model_code: Optional[str] = None) -> tuple[int, int]:
+    if model_code == "veo31":
+        return 4, 8
+    if model_code == "kling3":
+        return 3, 15
     return 5, 15
 
 
 def normalize_seedance_duration(value: int, model_code: Optional[str] = None) -> int:
     min_sec, max_sec = get_seedance_duration_bounds(model_code)
-    return max(min_sec, min(int(value), max_sec))
+    clamped = max(min_sec, min(int(value), max_sec))
+    if model_code == "veo31":
+        # Veo 3.1 принимает только 4/6/8 секунд — прижимаем к ближайшему допустимому.
+        clamped = min((4, 6, 8), key=lambda sec: abs(sec - clamped))
+    return clamped
 
 
 def normalize_seedance_mode(value: str) -> str:
@@ -639,6 +685,9 @@ def seedance_mode_ui_label(mode: str) -> str:
 def get_seedance_mode_options(model_code: Optional[str] = None) -> List[str]:
     if model_code == "seedance2_fast":
         return [normalize_seedance_mode(SEEDANCE_FAST_MODE)]
+    if model_code in ("kling3", "veo31"):
+        # Zveno: kling-v3.0 и veo-3.1-fast поддерживают только 720p.
+        return ["720p"]
 
     raw_options = os.getenv("SEEDANCE_MODE_OPTIONS", "480,720")
     parsed: List[str] = []
@@ -659,7 +708,7 @@ def get_seedance_mode_options(model_code: Optional[str] = None) -> List[str]:
 def get_selected_seedance_mode(state: UserState) -> str:
     selected_model = get_motion_model(state)
     options = get_seedance_mode_options(selected_model)
-    if selected_model == "seedance2_fast":
+    if selected_model in ("seedance2_fast", "kling3", "veo31"):
         return options[0]
     picked = normalize_seedance_mode(state.motion_mode or SEEDANCE_MODE)
     if picked not in options:
@@ -668,7 +717,14 @@ def get_selected_seedance_mode(state: UserState) -> str:
 
 
 def get_seedance_duration_options(model_code: Optional[str] = None) -> List[int]:
-    raw_options = SEEDANCE_FAST_DURATION_OPTIONS if model_code == "seedance2_fast" else SEEDANCE_DURATION_OPTIONS
+    if model_code == "kling3":
+        raw_options = KLING3_DURATION_OPTIONS
+    elif model_code == "veo31":
+        raw_options = VEO31_DURATION_OPTIONS
+    elif model_code == "seedance2_fast":
+        raw_options = SEEDANCE_FAST_DURATION_OPTIONS
+    else:
+        raw_options = SEEDANCE_DURATION_OPTIONS
     parsed: List[int] = []
     for raw in str(raw_options).split(","):
         raw = raw.strip()
@@ -748,16 +804,30 @@ def deactivate_motion_session(state: UserState) -> None:
 def get_motion_model(state: UserState) -> str:
     if state.motion_model == "seedance2_fast" and SEEDANCE_FAST_ENABLED:
         return "seedance2_fast"
+    if state.motion_model == "kling3" and KLING3_ENABLED:
+        return "kling3"
+    if state.motion_model == "veo31" and VEO31_ENABLED:
+        return "veo31"
     return "seedance2"
 
 
 def get_motion_model_label(model_code: str) -> str:
-    return "Seedance 2 Fast (бета)" if model_code == "seedance2_fast" else "Seedance 2"
+    labels = {
+        "seedance2_fast": "Seedance 2 Fast (бета)",
+        "seedance2": "Seedance 2",
+        "kling3": "Kling 3.0 🆕",
+        "veo31": "Veo 3.1 (Google) 🆕",
+    }
+    return labels.get(model_code, "Seedance 2")
 
 
 def get_motion_model_cost_per_second(model_code: str) -> float:
     if model_code == "seedance2_fast":
         return max(SEEDANCE_FAST_COST_PER_SECOND, 0.01)
+    if model_code == "kling3":
+        return max(KLING3_COST_PER_SECOND, 0.01)
+    if model_code == "veo31":
+        return max(VEO31_COST_PER_SECOND, 0.01)
     return max(SEEDANCE_COST_PER_SECOND, 0.01)
 
 
@@ -866,7 +936,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
             callback_data="pl_open",
         )
 
-    video_label = "Seedance 2 🎬" if SEEDANCE_ENABLED else "Seedance 2 🚧"
+    video_label = "Видео 🎬" if SEEDANCE_ENABLED else "Видео 🚧"
     rows = [
         # Главные действия
         [InlineKeyboardButton("⚡ Запустить генерацию", callback_data="generate")],
@@ -876,11 +946,43 @@ def main_menu_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton(video_label, callback_data="video_control"),
             InlineKeyboardButton("🪄 Мой аватар", callback_data="avatar_actions"),
         ],
+    ]
+    if GPT5_IMAGE_ENABLED:
+        rows.append([InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu")])
+    rows.extend([
         # Служебные — на отдельных строках, понятнее
         [InlineKeyboardButton("🔄 Начать заново", callback_data="reset")],
         [InlineKeyboardButton("🚨 Сообщить о проблеме", callback_data="report_problem")],
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def image_model_menu_kb(state: UserState) -> InlineKeyboardMarkup:
+    selected = get_image_model(state)
+    gemini_cost = calc_generation_cost(None, "gemini")
+    gpt5_cost = calc_generation_cost(None, "gpt5")
+    rows = [
+        [InlineKeyboardButton(
+            ("● " if selected == "gemini" else "") + f"{get_image_model_label('gemini')} · {gemini_cost} изюминок",
+            callback_data="image_model_set_gemini",
+        )],
+        [InlineKeyboardButton(
+            ("● " if selected == "gpt5" else "") + f"GPT-5 Image 🆕 · {gpt5_cost} изюминок",
+            callback_data="image_model_set_gpt5",
+        )],
+        [InlineKeyboardButton("В меню", callback_data="reset")],
     ]
     return InlineKeyboardMarkup(rows)
+
+
+def image_model_menu_text(state: UserState) -> str:
+    selected = get_image_model(state)
+    return (
+        "🧠 Модель генерации картинок\n\n"
+        f"• {get_image_model_label('gemini')} — модель Google: быстрая, отлично работает с фото-референсами и аватарами.\n"
+        "• GPT-5 Image — новинка от OpenAI: точнее следует описанию, лучше рисует текст на картинке.\n\n"
+        f"Сейчас выбрана: {get_image_model_label(selected)}"
+    )
 
 def promo_try_kb(promo_id: str) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton("🚀 Сгенерировать", callback_data=f"promo_try_{promo_id}")]]
@@ -1103,6 +1205,21 @@ def video_control_kb(state: UserState) -> InlineKeyboardMarkup:
                 callback_data="video_model_seedance2_fast",
             )
         )
+    model_buttons_extra = []
+    if KLING3_ENABLED:
+        model_buttons_extra.append(
+            InlineKeyboardButton(
+                ("● " if selected_model == "kling3" else "") + "Kling 3.0 🆕",
+                callback_data="video_model_kling3",
+            )
+        )
+    if VEO31_ENABLED:
+        model_buttons_extra.append(
+            InlineKeyboardButton(
+                ("● " if selected_model == "veo31" else "") + "Veo 3.1 🆕",
+                callback_data="video_model_veo31",
+            )
+        )
 
     rows = [
         # Основные параметры
@@ -1127,6 +1244,8 @@ def video_control_kb(state: UserState) -> InlineKeyboardMarkup:
             rows.append(delete_buttons[3:6])
     # Модель
     rows.append(model_buttons)
+    if model_buttons_extra:
+        rows.append(model_buttons_extra)
     # Режим качества
     if selected_model == "seedance2":
         mode_buttons = []
@@ -1142,12 +1261,16 @@ def video_control_kb(state: UserState) -> InlineKeyboardMarkup:
             rows.append(mode_buttons)
     # Формат (aspect ratio)
     selected_aspect = getattr(state, "motion_aspect_ratio", "16:9")
+    aspect_options = [("16:9", "📺 16:9 (горизонталь)"), ("9:16", "📱 9:16 (вертикаль, Reels)"), ("1:1", "⬛ 1:1 (квадрат)")]
+    if selected_model == "veo31":
+        # Veo 3.1 не поддерживает квадрат.
+        aspect_options = [(ar, label) for ar, label in aspect_options if ar != "1:1"]
     aspect_buttons = [
         InlineKeyboardButton(
             ("● " if ar == selected_aspect else "") + label,
             callback_data=f"video_aspect_{ar.replace(':', 'x')}",
         )
-        for ar, label in [("16:9", "📺 16:9 (горизонталь)"), ("9:16", "📱 9:16 (вертикаль, Reels)"), ("1:1", "⬛ 1:1 (квадрат)")]
+        for ar, label in aspect_options
     ]
     rows.append(aspect_buttons)
     # Длительность
@@ -1339,6 +1462,8 @@ def result_actions_kb(user_id: int = 0, bot_username: str = "") -> InlineKeyboar
     rows = [
         [InlineKeyboardButton("Повторить 🔁", callback_data="generate_again")],
     ]
+    if user_id and SEEDANCE_ENABLED:
+        rows.append([InlineKeyboardButton("Оживить 🎬 (сделать видео)", callback_data="animate_last")])
     if user_id and bot_username:
         ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
         rows.append([InlineKeyboardButton("🎁 Пригласить друга (+10 изюминок)", url=ref_link)])
@@ -3281,7 +3406,8 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
-    cost = calc_generation_cost(references)
+    selected_image_model = get_image_model(state)
+    cost = calc_generation_cost(references, selected_image_model)
 
     # Atomic free-slot check-and-consume to prevent TOCTOU double-use
     use_free = try_use_free_generation(user.id, FREE_GENERATIONS_PER_DAY)
@@ -3328,6 +3454,7 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cost=cost if paid else 0,
             was_free=use_free,
             username=user.username,
+            image_model=selected_image_model,
         )
         try:
             generation_queue.put_nowait(job)
@@ -3840,10 +3967,35 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         deactivate_motion_session(state)
         if was_in_motion and not state.prompt:
             await query.message.reply_text(
-                "Режим Seedance закрыт. Напиши описание и нажми «Запустить генерацию ⚡»."
+                "Режим видео закрыт. Напиши описание и нажми «Запустить генерацию ⚡»."
             )
             return
         await run_generation(update, context)
+        return
+
+    if query.data == "image_model_menu":
+        state = get_or_init_state(context)
+        await query.message.reply_text(
+            image_model_menu_text(state),
+            reply_markup=image_model_menu_kb(state),
+        )
+        return
+
+    if query.data in ("image_model_set_gemini", "image_model_set_gpt5"):
+        state = get_or_init_state(context)
+        picked = "gpt5" if query.data == "image_model_set_gpt5" else "gemini"
+        if picked == "gpt5" and not GPT5_IMAGE_ENABLED:
+            await query.answer("GPT-5 Image временно недоступна.", show_alert=True)
+            return
+        state.image_model = picked
+        await query.answer(f"Модель: {get_image_model_label(picked)} ✅")
+        try:
+            await query.message.edit_text(
+                image_model_menu_text(state),
+                reply_markup=image_model_menu_kb(state),
+            )
+        except BadRequest:
+            pass
         return
 
     if query.data == "generate_again":
@@ -3871,7 +4023,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         await run_generation(update, context)
         return
-    
+
+    if query.data == "animate_last":
+        if not SEEDANCE_ENABLED:
+            await query.message.reply_text(motion_unavailable_text(), reply_markup=main_menu_kb())
+            return
+        state = get_or_init_state(context)
+        last_img = last_generated_image_url.get(user.id)
+        if last_img and _is_img_ref(last_img) and _resolve_image_bytes(last_img) is None:
+            last_img = None
+        if not last_img:
+            await query.message.reply_text(
+                "Не нашла свежую генерацию — она могла устареть.\n"
+                "Сгенерируй картинку заново и нажми «Оживить 🎬» под результатом."
+            )
+            return
+        state.motion_session_active = True
+        state.waiting_for_motion_prompt = False
+        state.waiting_for_motion_image = True
+        state.waiting_for_motion_video = False
+        set_motion_image_urls(state, [last_img])
+        await query.message.reply_text(
+            "Картинка добавлена в видео-буфер 🎬\n"
+            "Можешь описать, что должно происходить в кадре, выбрать модель и длительность — "
+            "или сразу жми «Запустить видео ⚡»."
+        )
+        await query.message.reply_text(
+            motion_control_status_text(state),
+            reply_markup=motion_control_kb(state),
+        )
+        return
+
     if video_cb == "video_control":
         state = get_or_init_state(context)
         state.motion_session_active = True
@@ -3880,10 +4062,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.waiting_for_motion_video = False
 
         await query.message.reply_text(
-            "Режим Seedance включён 🎬\n"
+            "Режим видео включён 🎬\n"
             "Можно сразу отправлять текст описания и фото без дополнительных кнопок.\n"
-            "Я сохраню всё в буфер Seedance.\n\n"
-            "Дальше выбери длительность/качество и нажми «Запустить ⚡».",
+            "Я сохраню всё в видео-буфер.\n\n"
+            "Дальше выбери модель, длительность/качество и нажми «Запустить ⚡».",
         )
         await query.message.reply_text(
             motion_control_status_text(state),
@@ -3973,6 +4155,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if picked_model == "seedance2_fast" and SEEDANCE_FAST_ENABLED:
             state.motion_model = "seedance2_fast"
             state.motion_mode = normalize_seedance_mode(SEEDANCE_FAST_MODE)
+        elif picked_model == "kling3" and KLING3_ENABLED:
+            state.motion_model = "kling3"
+            state.motion_mode = "720p"
+        elif picked_model == "veo31" and VEO31_ENABLED:
+            state.motion_model = "veo31"
+            state.motion_mode = "720p"
+            if state.motion_aspect_ratio == "1:1":
+                state.motion_aspect_ratio = "16:9"
         else:
             state.motion_model = "seedance2"
             if not state.motion_mode:
@@ -5603,10 +5793,18 @@ async def start_seedance_task(
     elif model_code == "seedance2_fast":
         model_value = "bytedance/seedance-2.0-fast"
         model_value_lower = model_value.lower()
+    elif model_code == "kling3":
+        model_value = KLING3_MODEL
+        model_value_lower = model_value.lower()
+    elif model_code == "veo31":
+        model_value = VEO31_MODEL
+        model_value_lower = model_value.lower()
     duration = normalize_seedance_duration(
         int(duration if duration is not None else SEEDANCE_DURATION),
         model_code,
     )
+    if model_code == "veo31" and aspect_ratio not in ("16:9", "9:16"):
+        aspect_ratio = "16:9"
     is_wan_model = "wan-2.7" in model_value_lower or model_value_lower.startswith("alibaba/wan")
     is_seedance2_model = model_value_lower in ("bytedance/seedance-2.0", "bytedance/seedance-2.0-fast")
     combined_image_urls: List[str] = []
@@ -5655,6 +5853,10 @@ async def start_seedance_task(
             "resolution": mode_value,
             "aspect_ratio": aspect_ratio,
         }
+        if model_code in ("kling3", "veo31"):
+            # Модели умеют звук, но держим его выключенным: дешевле и совпадает
+            # с safety-промтом "silent video" в run_seedance.
+            payload_base["generate_audio"] = False
     payload_variants = []
     if combined_image_urls:
         primary_image_url = combined_image_urls[0]
@@ -5675,6 +5877,25 @@ async def start_seedance_task(
                 }
                 for url in combined_image_urls
             ]
+
+            if model_code in ("kling3", "veo31"):
+                # Kling 3.0: first(+last) кадры; Veo 3.1: только first.
+                clean_frames = [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": primary_image_url},
+                        "frame_type": "first_frame",
+                    }
+                ]
+                if model_code == "kling3" and len(combined_image_urls) > 1:
+                    clean_frames.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": combined_image_urls[1]},
+                            "frame_type": "last_frame",
+                        }
+                    )
+                payload_variants.append({**payload_base, "frame_images": clean_frames})
 
             if SEEDANCE_VIDEO_REFERENCE_MODE == "timeline":
                 # 1 image -> first_frame, 2 images -> first+last interpolation
@@ -5818,7 +6039,8 @@ async def start_seedance_task(
         or "insufficient funds" in last_error.lower()
         or "no available" in last_error.lower()
     )
-    if FAL_API_KEY and zveno_retriable and not privacy_blocked:
+    if FAL_API_KEY and zveno_retriable and not privacy_blocked and model_code not in ("kling3", "veo31"):
+        # fal-фоллбэк замаплен только на Seedance-слаги — Kling/Veo не подменяем.
         logger.info("Zveno.ai unavailable (%s), falling back to fal.ai Seedance", last_error[:80])
         return await _start_seedance_task_fal(
             prompt=prompt,
@@ -6345,7 +6567,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prompt_text = (state.motion_prompt or "").strip()
         if not motion_images and not prompt_text:
             await reply_target.reply_text(
-                "Для Seedance нужно фото и/или описание. Добавь и запусти снова."
+                "Для видео нужно фото и/или описание. Добавь и запусти снова."
             )
             return
 
@@ -6365,8 +6587,16 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         selected_cost = calc_seedance_cost(selected_duration, selected_cps)
         selected_endpoint = SEEDANCE_FAST_ENDPOINT if selected_model == "seedance2_fast" else SEEDANCE_ENDPOINT
         selected_mode = get_selected_seedance_mode(state)
-        selected_model_slug = SEEDANCE_FAST_MODEL if selected_model == "seedance2_fast" else SEEDANCE_MODEL
+        if selected_model == "kling3":
+            selected_model_slug = KLING3_MODEL
+        elif selected_model == "veo31":
+            selected_model_slug = VEO31_MODEL
+        elif selected_model == "seedance2_fast":
+            selected_model_slug = SEEDANCE_FAST_MODEL
+        else:
+            selected_model_slug = SEEDANCE_MODEL
 
+        # Seedance работает только от фото; Kling 3.0 и Veo 3.1 умеют text-to-video.
         if selected_model in {"seedance2", "seedance2_fast"} and len(motion_images) < 1:
             await reply_target.reply_text(
                 "Загрузи хотя бы 1 фото-ференс и запусти снова.",
@@ -6710,6 +6940,8 @@ async def send_generation_result_by_url(
     if job and getattr(job, "prompt", None):
         _short_prompt = job.prompt[:80] + ("…" if len(job.prompt) > 80 else "")
         _caption_parts.append(f"📝 {_short_prompt}")
+    if job and getattr(job, "image_model", "gemini") == "gpt5":
+        _caption_parts.append("🧠 Модель: GPT-5 Image")
     if job:
         _cost = getattr(job, "cost", 0)
         _was_free = getattr(job, "was_free", False)
@@ -6944,8 +7176,15 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 if resolved and (resolved.startswith("http") or resolved.startswith("data:")):
                     user_content.append({"type": "image_url", "image_url": {"url": resolved}})
 
+            job_image_model = getattr(job, "image_model", "gemini")
+            zveno_image_model = (
+                ZVENO_GPT5_IMAGE_MODEL
+                if job_image_model == "gpt5" and GPT5_IMAGE_ENABLED
+                else ZVENO_IMAGE_MODEL
+            )
+
             base_payload = {
-                "model": ZVENO_IMAGE_MODEL,
+                "model": zveno_image_model,
                 "messages": [
                     {
                         "role": "user",
@@ -6956,7 +7195,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 "image_config": {"aspect_ratio": "9:16"},
             }
             fallback_payload = {
-                "model": ZVENO_IMAGE_MODEL,
+                "model": zveno_image_model,
                 "messages": [
                     {
                         "role": "system",
@@ -6976,7 +7215,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 "temperature": 0.2,
             }
             strict_payload = {
-                "model": ZVENO_IMAGE_MODEL,
+                "model": zveno_image_model,
                 "messages": [
                     {
                         "role": "system",
@@ -6998,8 +7237,8 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
             }
             payload_variants = [base_payload, fallback_payload, strict_payload]
 
-            fallback_model = os.getenv("ZVENO_IMAGE_FALLBACK_MODEL", "google/gemini-2.5-flash-image").strip()
-            if fallback_model and fallback_model != ZVENO_IMAGE_MODEL:
+            fallback_model = os.getenv("ZVENO_IMAGE_FALLBACK_MODEL", "google/gemini-3-pro-image-preview").strip()
+            if fallback_model and fallback_model != zveno_image_model:
                 payload_variants.append(
                     {
                         "model": fallback_model,
@@ -7024,7 +7263,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 )
 
             request_url = build_zveno_url(ZVENO_API_BASE, "/v1/chat/completions")
-            logger.info("Zveno image start: user=%s refs=%s endpoint=%s", user_id, len(references or []), request_url)
+            logger.info("Zveno image start: user=%s refs=%s endpoint=%s model=%s", user_id, len(references or []), request_url, zveno_image_model)
 
             response_data = None
             image_url = None
@@ -7042,6 +7281,13 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                         response_text = await resp.text()
                         logger.info("Zveno image response: status=%s attempt=%s/%s", resp.status, attempt_idx, len(payload_variants))
                         if not (200 <= resp.status < 300):
+                            if attempt_idx < len(payload_variants):
+                                logger.warning(
+                                    "Zveno image attempt %s/%s rejected: status=%s body=%s — trying next variant",
+                                    attempt_idx, len(payload_variants), resp.status, response_text[:300],
+                                )
+                                await asyncio.sleep(0.7)
+                                continue
                             raise Exception(f"Zveno image error: {resp.status}. {response_text}")
                         try:
                             response_data = json.loads(response_text)

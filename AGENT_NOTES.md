@@ -30,3 +30,14 @@ queued_user_ids.add(user.id) стоит сразу после проверки �
 - Провайдеры генерации: Zveno (Gemini), MashaGPT, YesAPI, Seedance
 - Внутренняя валюта: изюминки
 - Деплой: BotHost + Docker + SQLite
+
+### [2026-06-11] Новые модели через Zveno
+- Картинки: основная модель сменена на Nano Banana 2 (google/gemini-3.1-flash-image-preview,
+  в ~8 раз дешевле прежней Nano Banana Pro). Fallback — gemini-3-pro-image-preview.
+  Добавлен выбор модели Nano Banana 2 / GPT-5 Image (openai/gpt-5-image).
+  Меню «🧠 Модель картинок», состояние в UserState.image_model, цена GPT5_IMAGE_COST=10.
+- Видео: добавлены Kling 3.0 (kwaivgi/kling-v3.0-std) и Veo 3.1 Fast (google/veo-3.1-fast)
+  через тот же Zveno Videos API (/v1/videos), что и Seedance. generate_audio=False.
+  Veo: только 4/6/8 сек, 16:9/9:16. Kling: 3–15 сек, first+last frame.
+- Кнопка «Оживить 🎬» под готовой картинкой: кладёт последнюю генерацию
+  в видео-буфер (animate_last callback) и открывает видео-меню.

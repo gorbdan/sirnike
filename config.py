@@ -56,7 +56,8 @@ MASHAGPT_IMAGE_MODEL = os.getenv("MASHAGPT_IMAGE_MODEL", "nano-banana-pro")
 MASHAGPT_CHAT_MODEL = os.getenv("MASHAGPT_CHAT_MODEL", "gpt-4o-mini")
 ZVENO_API_BASE = os.getenv("ZVENO_API_BASE", "https://api.zveno.ai/v1")
 ZVENO_API_KEY = os.getenv("ZVENO_API_KEY", "")
-ZVENO_IMAGE_MODEL = os.getenv("ZVENO_IMAGE_MODEL", "google/gemini-3-pro-image-preview")
+# Nano Banana 2: качество уровня Pro при цене в ~8 раз ниже (0.055/0.27 руб за 1k vs 0.36/2.12 у Pro).
+ZVENO_IMAGE_MODEL = os.getenv("ZVENO_IMAGE_MODEL", "google/gemini-3.1-flash-image-preview")
 ZVENO_CHAT_MODEL = os.getenv("ZVENO_CHAT_MODEL", "google/gemini-2.5-flash")
 
 PROMPT_WEBAPP_URL = os.getenv("PROMPT_WEBAPP_URL", "").strip()
@@ -131,6 +132,20 @@ SEEDANCE_FAST_COST_PER_SECOND = float(
     os.getenv("SEEDANCE_FAST_COST_PER_SECOND", "5.4")
 )
 
+# Kling 3.0 (kwaivgi) через Zveno Videos API — те же эндпоинты, что Seedance.
+# Закупка Zveno: 12.10 руб/сек (zveno.ai/models, 2026-06-11) — тариф 8.0 изюм/сек даёт маржу ~x3.3 как у Seedance.
+KLING3_ENABLED = os.getenv("KLING3_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+KLING3_MODEL = os.getenv("KLING3_MODEL", "kwaivgi/kling-v3.0-std")
+KLING3_COST_PER_SECOND = float(os.getenv("KLING3_COST_PER_SECOND", "8.0"))
+KLING3_DURATION_OPTIONS = os.getenv("KLING3_DURATION_OPTIONS", "5,10,15")
+
+# Veo 3.1 Fast (Google) через Zveno Videos API. Только 4/6/8 секунд, 720p, 16:9 или 9:16.
+# Закупка Zveno: 12.21 руб/сек (без аудио) — тариф 8.0 изюм/сек, маржа ~x3.3.
+VEO31_ENABLED = os.getenv("VEO31_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+VEO31_MODEL = os.getenv("VEO31_MODEL", "google/veo-3.1-fast")
+VEO31_COST_PER_SECOND = float(os.getenv("VEO31_COST_PER_SECOND", "8.0"))
+VEO31_DURATION_OPTIONS = os.getenv("VEO31_DURATION_OPTIONS", "4,6,8")
+
 if AI_PROVIDER == "ZVENO" and not ZVENO_API_KEY:
     raise RuntimeError("Missing required environment variable for ZVENO: ZVENO_API_KEY")
 
@@ -141,6 +156,13 @@ REFERRAL_BONUS_NEW_USER = int(os.getenv("REFERRAL_BONUS_NEW_USER", "5"))
 FREE_GENERATIONS_PER_DAY = int(os.getenv("FREE_GENERATIONS_PER_DAY", "1"))
 BASE_GENERATION_COST = int(os.getenv("BASE_GENERATION_COST", "5"))
 REFERENCE_COST = int(os.getenv("REFERENCE_COST", "0"))
+
+# GPT-5 Image (OpenAI) через Zveno — альтернатива Gemini для генерации картинок.
+# Закупка Zveno: 1.79/7.03 руб за 1k токенов (in/out) ≈ 12-30 руб за картинку —
+# при 5 изюминках маржа около нуля, поэтому дефолт 2x от базовой цены.
+GPT5_IMAGE_ENABLED = os.getenv("GPT5_IMAGE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+ZVENO_GPT5_IMAGE_MODEL = os.getenv("ZVENO_GPT5_IMAGE_MODEL", "openai/gpt-5-image")
+GPT5_IMAGE_COST = int(os.getenv("GPT5_IMAGE_COST", str(BASE_GENERATION_COST * 2)))
 
 MAX_POLL_ATTEMPTS = int(os.getenv("MAX_POLL_ATTEMPTS", "30"))
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "60"))

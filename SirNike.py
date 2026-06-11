@@ -6937,9 +6937,6 @@ async def send_generation_result_by_url(
     except Exception:
         bot_username = ""
     _caption_parts = ["✨ Готово!"]
-    if job and getattr(job, "prompt", None):
-        _short_prompt = job.prompt[:80] + ("…" if len(job.prompt) > 80 else "")
-        _caption_parts.append(f"📝 {_short_prompt}")
     if job and getattr(job, "image_model", "gemini") == "gpt5":
         _caption_parts.append("🧠 Модель: GPT-5 Image")
     if job:

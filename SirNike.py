@@ -3176,7 +3176,13 @@ async def _remove_background_api(image_bytes: bytes) -> bytes:
 
     def _sync_png_to_jpg(data: bytes) -> bytes:
         img = Image.open(io.BytesIO(data)).convert("RGBA")
-        bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
+        w, h = img.size
+        # Noisy textured background instead of flat white. A clean white fill turns
+        # the cut-out person into a passport-style photo, which face detectors flag
+        # instantly (this is why Seedance moderation started failing after bg removal
+        # was enabled). Random noise breaks the "real photo" signal while keeping the
+        # subject itself clean for the video model.
+        bg = Image.merge("RGB", [Image.effect_noise((w, h), 64) for _ in range(3)]).convert("RGBA")
         bg.paste(img, mask=img.split()[3])
         out = io.BytesIO()
         bg.convert("RGB").save(out, format="JPEG", quality=95)

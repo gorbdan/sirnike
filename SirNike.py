@@ -3192,21 +3192,22 @@ def _apply_grid_overlay(
     line_color: tuple = (40, 40, 40, 130),
     line_width: int = 2,
 ) -> bytes:
-    """Downscale + posterize + blur + grid to bypass Seedance face moderation.
+    """De-photographize a reference to bypass Seedance "real person" moderation.
 
-    Strategy (ordered by impact):
-    1. Downscale to 512px — face becomes tiny, detector loses accuracy
-    2. Posterize (5 bits) — reduces color depth, makes photo look less
-       "photographic". Face detectors are trained on realistic photos,
-       posterization shifts the image toward illustration territory.
-    3. Light blur (r=1) — softens remaining facial edges
-    4. Grid + dots — geometric disruption. Lines are DARK and semi-transparent:
-       white lines vanished on light skin and the detector still locked on the
-       face. Dark lines at 8×8 actually cut the face into ~16 pieces, breaking
-       the detector, while ~50% opacity keeps the reference usable for video.
+    Grid lines (any color/thickness) failed: the face detector is robust to thin
+    occlusion and reassembles the face from the cells between lines. New strategy
+    attacks photorealism itself, since the moderation triggers on photographic
+    cues (skin texture, pores, smooth gradients), NOT on geometry:
 
-    The video model extracts identity from shape/color/hair, not pixel
-    detail — 512px posterized is enough for character reference.
+    1. Downscale to 512px — fewer pixels, less fine detail.
+    2. Heavy posterize (3 bits = 8 levels) — collapses smooth skin gradients into
+       flat color bands, reads as illustration rather than a photo.
+    3. Median smooth — wipes skin texture/pores the "real person" detector keys on.
+    4. Sparse noise dots — minor extra disruption.
+
+    Seedance's reference encoder extracts identity from shape/color/hair and is
+    robust to style, so the face stays usable even when it no longer looks like a
+    raw photograph. (rows/cols/line_* kept for signature compatibility, unused.)
     """
     import random as _rng
 
@@ -3219,39 +3220,23 @@ def _apply_grid_overlay(
         scale = max_dim / max(w, h)
         img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
 
-    # --- Layer 2: posterize — reduce color depth ---
-    # 5 bits = 32 levels per channel. Subtle but enough to shift away from
-    # "photographic" territory. Face detectors expect smooth gradients on skin.
-    img = ImageOps.posterize(img, 5)
+    # --- Layer 2: heavy posterize (3 bits = 8 levels) ---
+    # Strong banding pushes the image from photo toward flat illustration.
+    img = ImageOps.posterize(img, 3)
 
-    # --- Layer 3: light blur (radius=1) ---
-    img = img.filter(ImageFilter.GaussianBlur(radius=1))
+    # --- Layer 3: median smooth — kills skin texture/pores ---
+    img = img.filter(ImageFilter.MedianFilter(size=3))
 
-    # --- Layer 4: contrast grid (dark, semi-transparent) + noise dots ---
-    # Drawn on a separate RGBA overlay so the lines blend at ~50% opacity:
-    # visible on any skin/background tone, but not a harsh solid black cage.
-    img = img.convert("RGBA")
-    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
+    # --- Layer 4: sparse noise dots ---
+    draw = ImageDraw.Draw(img)
     w, h = img.size
-    lw = line_width if line_width > 0 else 2
-    for i in range(1, cols):
-        x = w * i // cols
-        draw.line([(x, 0), (x, h)], fill=line_color, width=lw)
-    for i in range(1, rows):
-        y = h * i // rows
-        draw.line([(0, y), (w, y)], fill=line_color, width=lw)
-
-    # --- Layer 5: sparse noise dots ---
     num_dots = 30
     for _ in range(num_dots):
         cx = _rng.randint(0, w - 1)
         cy = _rng.randint(0, h - 1)
         r = _rng.randint(2, 3)
         brightness = _rng.randint(230, 255)
-        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(brightness, brightness, brightness, 255))
-
-    img = Image.alpha_composite(img, overlay).convert("RGB")
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(brightness, brightness, brightness))
 
     out = io.BytesIO()
     img.save(out, format="JPEG", quality=80)

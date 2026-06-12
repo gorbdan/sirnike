@@ -70,8 +70,9 @@ PHOTOROOM_API_KEY = os.getenv("PHOTOROOM_API_KEY", "").strip()
 FAPIHUB_API_KEY = os.getenv("FAPIHUB_API_KEY", "").strip()
 CLIPDROP_API_KEY = os.getenv("CLIPDROP_API_KEY", "").strip()
 # Local rembg fallback: needs ~500MB RAM for U2Net model.
-# Enabled by default after BotHost RAM upgrade. Set REMBG_LOCAL_ENABLED=0 to disable.
-REMBG_LOCAL_ENABLED = os.getenv("REMBG_LOCAL_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+# Disabled — bg removal made faces detect more easily and failed Seedance
+# moderation. Set REMBG_LOCAL_ENABLED=1 only if re-enabling bg removal.
+REMBG_LOCAL_ENABLED = os.getenv("REMBG_LOCAL_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 
 FAL_API_KEY = os.getenv("FAL_API_KEY", "").strip()
 FAL_API_BASE = os.getenv("FAL_API_BASE", "https://queue.fal.run").strip()

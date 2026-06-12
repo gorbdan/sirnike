@@ -3442,15 +3442,10 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         _bounded_set(last_generated_prompt, user.id, state.prompt)
-        # Store only persistent URLs — __img__ refs evaporate after restart
-        saved_refs = [r for r in references if not _is_img_ref(r)]
-        dropped_img_refs = len(references) - len(saved_refs)
-        _bounded_set(last_generation_references, user.id, saved_refs)
-        if dropped_img_refs > 0:
-            await reply_target.reply_text(
-                f"ℹ️ {dropped_img_refs} фото загружены через чат и не сохранятся для «Повторить». "
-                "Чтобы сохранить — загрузи аватар через меню «Мой аватар»."
-            )
+        # Keep all refs (incl. __img__) so "Повторить" works within the session.
+        # __img__ refs live in _image_cache until restart; generate_again drops
+        # the dead ones on replay, so stale refs after a restart are harmless.
+        _bounded_set(last_generation_references, user.id, list(references))
 
         job = GenerationJob(
             chat_id=update.effective_chat.id,
@@ -4018,7 +4013,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = get_or_init_state(context)
         deactivate_motion_session(state)
         state.prompt = saved_prompt
-        saved_refs = list(last_generation_references.get(user_id) or [])
+        # Keep refs that are still usable: persistent URLs + __img__ refs still in cache.
+        # __img__ refs evaporate on bot restart, so drop the ones that no longer resolve.
+        saved_refs = [
+            r for r in (last_generation_references.get(user_id) or [])
+            if not _is_img_ref(r) or _resolve_image_bytes(r) is not None
+        ]
         state.references = saved_refs
         if not saved_refs:
             avatar_url_repeat = get_avatar_url(user.id)

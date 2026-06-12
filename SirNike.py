@@ -3187,9 +3187,9 @@ async def _remove_background_api(image_bytes: bytes) -> bytes:
 
 def _apply_grid_overlay(
     image_bytes: bytes,
-    rows: int = 6,
-    cols: int = 6,
-    line_color: tuple = (255, 255, 255),
+    rows: int = 8,
+    cols: int = 8,
+    line_color: tuple = (40, 40, 40, 130),
     line_width: int = 2,
 ) -> bytes:
     """Downscale + posterize + blur + grid to bypass Seedance face moderation.
@@ -3200,7 +3200,10 @@ def _apply_grid_overlay(
        "photographic". Face detectors are trained on realistic photos,
        posterization shifts the image toward illustration territory.
     3. Light blur (r=1) — softens remaining facial edges
-    4. Light grid + dots — final geometric disruption
+    4. Grid + dots — geometric disruption. Lines are DARK and semi-transparent:
+       white lines vanished on light skin and the detector still locked on the
+       face. Dark lines at 8×8 actually cut the face into ~16 pieces, breaking
+       the detector, while ~50% opacity keeps the reference usable for video.
 
     The video model extracts identity from shape/color/hair, not pixel
     detail — 512px posterized is enough for character reference.
@@ -3224,8 +3227,12 @@ def _apply_grid_overlay(
     # --- Layer 3: light blur (radius=1) ---
     img = img.filter(ImageFilter.GaussianBlur(radius=1))
 
-    # --- Layer 4: light grid ---
-    draw = ImageDraw.Draw(img)
+    # --- Layer 4: contrast grid (dark, semi-transparent) + noise dots ---
+    # Drawn on a separate RGBA overlay so the lines blend at ~50% opacity:
+    # visible on any skin/background tone, but not a harsh solid black cage.
+    img = img.convert("RGBA")
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
     w, h = img.size
     lw = line_width if line_width > 0 else 2
     for i in range(1, cols):
@@ -3242,7 +3249,9 @@ def _apply_grid_overlay(
         cy = _rng.randint(0, h - 1)
         r = _rng.randint(2, 3)
         brightness = _rng.randint(230, 255)
-        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(brightness, brightness, brightness))
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(brightness, brightness, brightness, 255))
+
+    img = Image.alpha_composite(img, overlay).convert("RGB")
 
     out = io.BytesIO()
     img.save(out, format="JPEG", quality=80)

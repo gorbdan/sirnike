@@ -252,6 +252,8 @@ def _bounded_set(d: dict, key, value, max_size: int = _LAST_GEN_MAX) -> None:
 last_generated_image_url: "_collections.OrderedDict" = _collections.OrderedDict()
 last_generated_prompt: "_collections.OrderedDict" = _collections.OrderedDict()
 last_generation_references: "_collections.OrderedDict" = _collections.OrderedDict()
+# Параметры последнего успешного видео — для воронки «Сделать длиннее» / апгрейда модели.
+last_video_params: "_collections.OrderedDict" = _collections.OrderedDict()
 MEDIA_GROUP_CACHE: "_collections.OrderedDict[Tuple[int, str], List[Dict[str, Any]]]" = _collections.OrderedDict()
 MAX_CACHED_MEDIA_GROUPS = 300
 _MEDIA_GROUP_LAST_TTL_CHECK: float = 0.0
@@ -1340,6 +1342,38 @@ def video_control_status_text(state: UserState) -> str:
         f"Стоимость: {selected_cost} изюминок\n"
         f"Ожидание результата: обычно {eta_min}–{eta_max} минут"
     )
+
+
+def video_upsell_kb(user_id: int) -> tuple:
+    """Воронка под готовым видео: «Сделать длиннее» и апгрейд Fast → Seedance 2.
+
+    Возвращает (markup | None, has_upsell)."""
+    params = last_video_params.get(user_id)
+    if not isinstance(params, dict) or not params.get("model"):
+        return None, False
+    model = params.get("model") or "seedance2"
+    try:
+        duration = int(params.get("duration") or 0)
+    except (TypeError, ValueError):
+        duration = 0
+    rows = []
+    longer = [d for d in get_seedance_duration_options(model) if d > duration]
+    if longer:
+        next_dur = longer[0]
+        cost = calc_seedance_cost(next_dur, get_motion_model_cost_per_second(model))
+        rows.append([InlineKeyboardButton(
+            f"📏 Сделать длиннее — {next_dur} сек · {cost} изюминок",
+            callback_data=f"video_longer_{next_dur}",
+        )])
+    if model == "seedance2_fast":
+        upgrade_cost = calc_seedance_cost(duration, get_motion_model_cost_per_second("seedance2"))
+        rows.append([InlineKeyboardButton(
+            f"💎 Переделать в Seedance 2 — {upgrade_cost} изюминок",
+            callback_data="video_upgrade_seedance2",
+        )])
+    has_upsell = bool(rows)
+    rows.append([InlineKeyboardButton("🔁 Ещё видео", callback_data="video_control")])
+    return InlineKeyboardMarkup(rows), has_upsell
 
 
 # Backward-compatible aliases for legacy internal calls.
@@ -4038,6 +4072,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         or video_cb.startswith("video_mode_")
         or video_cb.startswith("video_delimg_")
         or video_cb.startswith("video_aspect_")
+        or video_cb.startswith("video_longer_")
+        or video_cb == "video_upgrade_seedance2"
     )
 
     if is_video_callback and not SEEDANCE_ENABLED:
@@ -4140,6 +4176,64 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             motion_control_status_text(state),
             reply_markup=motion_control_kb(state),
         )
+        return
+
+    if video_cb.startswith("video_longer_") or video_cb == "video_upgrade_seedance2":
+        user_u = update.effective_user
+        if user_u.id in queued_user_ids or user_u.id in processing_user_ids:
+            await query.answer("Уже выполняется другая задача. Подожди.", show_alert=False)
+            return
+        params = last_video_params.get(user_u.id)
+        if not isinstance(params, dict) or not params.get("model"):
+            await query.message.reply_text(
+                "Не нашла параметры прошлого видео — возможно, бот перезапускался.\n"
+                "Открой «Видео 🎬» и запусти заново.",
+                reply_markup=main_menu_kb(),
+            )
+            return
+        refs = [r for r in (params.get("refs") or []) if isinstance(r, str) and r.strip()]
+        if any(_is_img_ref(r) and _resolve_image_bytes(r) is None for r in refs):
+            await query.message.reply_text(
+                "Исходное фото устарело (бот перезапускался).\n"
+                "Открой «Видео 🎬», загрузи фото и запусти заново.",
+                reply_markup=main_menu_kb(),
+            )
+            return
+        state = get_or_init_state(context)
+        state.motion_model = params["model"]
+        state.motion_mode = params.get("mode")
+        state.motion_aspect_ratio = params.get("aspect") or "16:9"
+        state.motion_prompt = params.get("prompt") or ""
+        set_motion_image_urls(state, refs)
+        if video_cb == "video_upgrade_seedance2":
+            state.motion_model = "seedance2"
+            try:
+                state.motion_duration = int(params.get("duration") or SEEDANCE_DURATION)
+            except (TypeError, ValueError):
+                state.motion_duration = int(SEEDANCE_DURATION)
+        else:
+            try:
+                picked_longer = int(video_cb.replace("video_longer_", "", 1))
+            except ValueError:
+                picked_longer = int(SEEDANCE_DURATION)
+            longer_options = get_seedance_duration_options(get_motion_model(state))
+            if picked_longer not in longer_options:
+                picked_longer = max(longer_options)
+            state.motion_duration = picked_longer
+        state.waiting_for_motion_image = False
+        state.motion_session_active = False
+        logger.info(
+            "video_upsell: user=%s action=%s model=%s duration=%s",
+            user_u.id, video_cb, state.motion_model, state.motion_duration,
+        )
+        # Add to processing_user_ids BEFORE create_task to close the race window
+        processing_user_ids.add(user_u.id)
+        try:
+            context.application.create_task(run_seedance(update, context))
+        except Exception:
+            processing_user_ids.discard(user_u.id)
+            logger.exception("create_task(run_seedance upsell) failed for user=%s", user_u.id)
+            await query.answer("Не удалось запустить генерацию. Попробуй ещё раз.", show_alert=True)
         return
 
     if video_cb == "video_control":
@@ -6729,10 +6823,12 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Удаление фона + сетка нужны только Seedance (реф внешности).
-        # Kling/Veo используют картинку как первый кадр видео — обработка ломает
-        # кадр («Image pixel is invalid») и зря тратит кредиты remove.bg.
+        # Обработка рефа (AI-портрет) нужна только Seedance (реф внешности).
+        # Kling/Veo используют картинку как первый кадр видео — обработка ломает кадр.
+        # AI-portrait refify занимает ~15-40с, поэтому сразу показываем статус,
+        # иначе чат молчит почти минуту и кажется, что бот завис.
         if motion_images and selected_model not in ("kling3", "veo31"):
+            await reply_target.reply_text("Готовлю фото для генерации… ⏳")
             motion_images = await apply_grid_overlay_to_refs(motion_images)
 
         if not spend_izyminki(user.id, selected_cost):
@@ -6828,12 +6924,26 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
             video_buffer = io.BytesIO(video_bytes)
             video_buffer.name = "seedance.mp4"
-    
+
+            _bounded_set(last_video_params, user.id, {
+                "model": selected_model,
+                "duration": selected_duration,
+                "mode": selected_mode,
+                "aspect": getattr(state, "motion_aspect_ratio", "16:9"),
+                "prompt": prompt_text,
+                "refs": list(_saved_animation_source_urls),
+            })
+            upsell_markup, has_upsell = video_upsell_kb(user.id)
+            video_caption = f"Готово 🎬\n{selected_model_label} завершён."
+            if has_upsell:
+                video_caption += "\n\nПонравилось? Можно сделать ещё круче 👇"
+
             await context.bot.send_video(
                 chat_id=update.effective_chat.id,
                 video=video_buffer,
                 supports_streaming=True,
-                caption=f"Готово 🎬\n{selected_model_label} завершён.",
+                caption=video_caption,
+                reply_markup=upsell_markup,
             )
             log_generation_event(
                 user_id=user.id,

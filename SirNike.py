@@ -236,6 +236,11 @@ class _BoundedImageCache:
 
 _image_cache: _BoundedImageCache = _BoundedImageCache(_IMAGE_CACHE_MAX_ENTRIES, _IMAGE_CACHE_MAX_BYTES)
 
+# Serialize local rembg: U2Net inference is ~500MB RAM each. Refs are processed
+# in parallel (asyncio.gather), so without this 5 photos = 5 concurrent inferences
+# and an OOM kill. Paid bg-removal APIs stay parallel (they're network-bound).
+_rembg_semaphore = asyncio.Semaphore(1)
+
 _LAST_GEN_MAX = 1000  # max users to keep in per-user generation caches
 
 def _bounded_set(d: dict, key, value, max_size: int = _LAST_GEN_MAX) -> None:
@@ -3157,7 +3162,8 @@ async def _remove_background_api(image_bytes: bytes) -> bytes:
             def _run_rembg(data: bytes) -> bytes:
                 return _rembg_remove(data)
 
-            png_bytes = await asyncio.to_thread(_run_rembg, image_bytes)
+            async with _rembg_semaphore:
+                png_bytes = await asyncio.to_thread(_run_rembg, image_bytes)
             logger.info("Background removed via rembg (local)")
         except ImportError:
             logger.warning("rembg not installed, skipping local bg removal")

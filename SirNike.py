@@ -950,7 +950,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
         [prompt_library_button],
         # Дополнительные инструменты в одну строку
         [
-            InlineKeyboardButton(video_label, callback_data="video_control"),
+            InlineKeyboardButton(video_label, callback_data="video"),
             InlineKeyboardButton("🪄 Мой аватар", callback_data="avatar_actions"),
         ],
     ]
@@ -1181,7 +1181,7 @@ def prompt_library_admin_kb() -> InlineKeyboardMarkup:
 
 
 # Video control UI (single final implementation).
-def video_control_kb(state: UserState) -> InlineKeyboardMarkup:
+def video_kb(state: UserState) -> InlineKeyboardMarkup:
     selected_duration = get_selected_seedance_duration(state)
     selected_model = get_motion_model(state)
     selected_mode = get_selected_seedance_mode(state)
@@ -1290,7 +1290,7 @@ def video_control_kb(state: UserState) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def video_control_status_text(state: UserState) -> str:
+def video_status_text(state: UserState) -> str:
     prompt_state = "добавлен" if state.motion_prompt.strip() else "необязательно"
     motion_images = get_motion_image_urls(state)
     image_state = (
@@ -1372,17 +1372,8 @@ def video_upsell_kb(user_id: int) -> tuple:
             callback_data="video_upgrade_seedance2",
         )])
     has_upsell = bool(rows)
-    rows.append([InlineKeyboardButton("🔁 Ещё видео", callback_data="video_control")])
+    rows.append([InlineKeyboardButton("🔁 Ещё видео", callback_data="video")])
     return InlineKeyboardMarkup(rows), has_upsell
-
-
-# Backward-compatible aliases for legacy internal calls.
-def motion_control_kb(state: UserState) -> InlineKeyboardMarkup:
-    return video_control_kb(state)
-
-
-def motion_control_status_text(state: UserState) -> str:
-    return video_control_status_text(state)
 
 
 # ----------------------------
@@ -2517,7 +2508,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Описание для видео сохранено ✅\n"
             "Теперь можешь отправить фото, выбрать длительность/качество и нажать запуск.",
-            reply_markup=motion_control_kb(state),
+            reply_markup=video_kb(state),
         )
         return
 
@@ -2607,7 +2598,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(
                     f"Уже загружено {MAX_SEEDANCE_IMAGE_REFERENCES} фото для видео.\n"
                     "Очисти референсы или замени одно из фото, затем запускай генерацию.",
-                    reply_markup=motion_control_kb(state),
+                    reply_markup=video_kb(state),
                 )
                 return
             total_refs = add_motion_image_url(state, direct_url)
@@ -2620,7 +2611,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Сейчас загружено: {total_refs}/{MAX_SEEDANCE_IMAGE_REFERENCES}\n"
                 "Бот запомнит внешность с фото.\n"
                 "Можешь отправить ещё фото или запускать генерацию.",
-                reply_markup=motion_control_kb(state),
+                reply_markup=video_kb(state),
             )
             return
 
@@ -2660,7 +2651,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "Видео с движением добавлено ✅",
-        reply_markup=motion_control_kb(state),
+        reply_markup=video_kb(state),
     )
 
 
@@ -2725,7 +2716,7 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
             await update.effective_message.reply_text(
                 f"Готово ✨\nСтиль «{title}» применён для видео.\n"
                 "Теперь отправь фото и запускай видео.",
-                reply_markup=motion_control_kb(state),
+                reply_markup=video_kb(state),
             )
         else:
             await update.effective_message.reply_text(
@@ -2789,7 +2780,7 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
             )
             await update.effective_message.reply_text(
                 "Параметры видео:",
-                reply_markup=motion_control_kb(state),
+                reply_markup=video_kb(state),
             )
         else:
             await update.effective_message.reply_text(
@@ -3711,7 +3702,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await query.message.reply_text(
                 "Параметры видео:",
-                reply_markup=motion_control_kb(state),
+                reply_markup=video_kb(state),
             )
         else:
             deactivate_motion_session(state)
@@ -3948,7 +3939,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(
                 f"Готово ✨\nСтиль «{_showcase_item_label(item)}» применён для видео.\n"
                 "Теперь отправь фото и запускай видео.",
-                reply_markup=motion_control_kb(state),
+                reply_markup=video_kb(state),
             )
             return
         deactivate_motion_session(state)
@@ -4049,11 +4040,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     video_cb = callback_data
     if callback_data.startswith("mc_"):
         video_cb = f"video_{callback_data[3:]}"
-    elif callback_data in {"seedance_control", "motion_control"}:
-        video_cb = "video_control"
+    elif callback_data == "seedance_control":
+        video_cb = "video"
 
     video_callbacks = {
-        "video_control",
+        "video",
         "video_set_prompt",
         "video_set_image",
         "video_clear_images",
@@ -4169,8 +4160,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "или сразу жми «Запустить видео ⚡»."
         )
         await query.message.reply_text(
-            motion_control_status_text(state),
-            reply_markup=motion_control_kb(state),
+            video_status_text(state),
+            reply_markup=video_kb(state),
         )
         return
 
@@ -4232,7 +4223,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("Не удалось запустить генерацию. Попробуй ещё раз.", show_alert=True)
         return
 
-    if video_cb == "video_control":
+    if video_cb == "video":
         state = get_or_init_state(context)
         state.motion_session_active = True
         state.waiting_for_motion_prompt = False
@@ -4246,8 +4237,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Дальше выбери модель, длительность/качество и нажми «Запустить ⚡».",
         )
         await query.message.reply_text(
-            motion_control_status_text(state),
-            reply_markup=motion_control_kb(state),
+            video_status_text(state),
+            reply_markup=video_kb(state),
         )
         return
 
@@ -4276,8 +4267,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.waiting_for_motion_image = True
         state.motion_session_active = True
         await query.message.reply_text(
-            "Фото очищены ✅\n\n" + motion_control_status_text(state),
-            reply_markup=motion_control_kb(state),
+            "Фото очищены ✅\n\n" + video_status_text(state),
+            reply_markup=video_kb(state),
         )
         return
 
@@ -4288,8 +4279,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if picked_ar in {"16:9", "9:16", "1:1"}:
             state.motion_aspect_ratio = picked_ar
         await query.message.reply_text(
-            video_control_status_text(state),
-            reply_markup=video_control_kb(state),
+            video_status_text(state),
+            reply_markup=video_kb(state),
         )
         return
 
@@ -4306,7 +4297,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if idx < 1 or idx > len(motion_images):
             await query.message.reply_text(
                 "Не нашла этот референс в буфере.",
-                reply_markup=motion_control_kb(state),
+                reply_markup=video_kb(state),
             )
             return
 
@@ -4316,8 +4307,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(removed_text) > 96:
             removed_text = f"{removed_text[:60]}...{removed_text[-28:]}"
         await query.message.reply_text(
-            f"Удалён референс #{idx} ✅\n{removed_text}\n\n{motion_control_status_text(state)}",
-            reply_markup=motion_control_kb(state),
+            f"Удалён референс #{idx} ✅\n{removed_text}\n\n{video_status_text(state)}",
+            reply_markup=video_kb(state),
         )
         return
 
@@ -4346,8 +4337,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not state.motion_mode:
                 state.motion_mode = normalize_seedance_mode(SEEDANCE_MODE)
         await query.message.reply_text(
-            motion_control_status_text(state),
-            reply_markup=motion_control_kb(state),
+            video_status_text(state),
+            reply_markup=video_kb(state),
         )
         return
 
@@ -4358,8 +4349,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         selected_model = get_motion_model(state)
         if selected_model != "seedance2":
             await query.message.reply_text(
-                motion_control_status_text(state),
-                reply_markup=motion_control_kb(state),
+                video_status_text(state),
+                reply_markup=video_kb(state),
             )
             return
         picked_mode = normalize_seedance_mode(video_cb.replace("video_mode_", "", 1))
@@ -4367,8 +4358,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             picked_mode = get_selected_seedance_mode(state)
         state.motion_mode = picked_mode
         await query.message.reply_text(
-            motion_control_status_text(state),
-            reply_markup=motion_control_kb(state),
+            video_status_text(state),
+            reply_markup=video_kb(state),
         )
         return
 
@@ -4387,8 +4378,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         state.motion_duration = picked
         await query.message.reply_text(
-            motion_control_status_text(state),
-            reply_markup=motion_control_kb(state),
+            video_status_text(state),
+            reply_markup=video_kb(state),
         )
         return
 
@@ -6804,7 +6795,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if selected_model in {"seedance2", "seedance2_fast"} and len(motion_images) < 1:
             await reply_target.reply_text(
                 "Загрузи хотя бы 1 фото-ференс и запусти снова.",
-                reply_markup=motion_control_kb(state),
+                reply_markup=video_kb(state),
             )
             return
 

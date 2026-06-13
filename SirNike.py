@@ -3380,20 +3380,15 @@ async def _process_single_grid_ref(session: aiohttp.ClientSession, url: str) -> 
                     return url
                 image_bytes = await resp.read()
 
-        # Primary: redraw the selfie as an AI portrait. Seedance blocks real-person
-        # photos but accepts AI generations (documented ByteDance path). Clean video,
-        # no grid artifacts, identity preserved.
-        ai_bytes = await _seedance_aiportrait(image_bytes)
-        if ai_bytes:
-            ref = await asyncio.to_thread(_cache_image, ai_bytes)
-            logger.info("AI-portrait refify applied: %s", url[:60])
-            return ref
-
-        # Fallback: solid grid overlay if the AI portrait couldn't be generated.
+        # AI-portrait disabled: the hyperrealistic CGI render came out
+        # indistinguishable from the real photo, so it didn't help moderation
+        # (and looked like the original). Using the SOLID grid overlay instead —
+        # 6×6 white 12px lines at 100% opacity (community-tested working params).
+        # _seedance_aiportrait() is kept in the code for possible future use.
         grid_ref = await asyncio.to_thread(
             lambda ib: _cache_image(_apply_grid_overlay(ib)), image_bytes
         )
-        logger.info("Grid overlay (fallback) applied: %s", url[:60])
+        logger.info("Grid overlay applied: %s", url[:60])
         return grid_ref
     except Exception:
         logger.exception("Ref processing failed for url=%s, using original", url[:60])
@@ -6824,12 +6819,9 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Обработка рефа (AI-портрет) нужна только Seedance (реф внешности).
+        # Обработка рефа (сетка) нужна только Seedance (реф внешности).
         # Kling/Veo используют картинку как первый кадр видео — обработка ломает кадр.
-        # AI-portrait refify занимает ~15-40с, поэтому сразу показываем статус,
-        # иначе чат молчит почти минуту и кажется, что бот завис.
         if motion_images and selected_model not in ("kling3", "veo31"):
-            await reply_target.reply_text("Готовлю фото для генерации… ⏳")
             motion_images = await apply_grid_overlay_to_refs(motion_images)
 
         if not spend_izyminki(user.id, selected_cost):
@@ -8182,7 +8174,7 @@ async def preview_refs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Рефов нет. Добавь фото в Seedance-панели сначала.")
         return
     await update.message.reply_text(
-        f"Обрабатываю {len(motion_images)} реф(ов) — AI-портрет…"
+        f"Обрабатываю {len(motion_images)} реф(ов) — сетка…"
     )
     try:
         processed = await apply_grid_overlay_to_refs(motion_images)

@@ -8182,7 +8182,7 @@ async def preview_refs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Рефов нет. Добавь фото в Seedance-панели сначала.")
         return
     await update.message.reply_text(
-        f"Обрабатываю {len(motion_images)} реф(ов) — фон + сетка…"
+        f"Обрабатываю {len(motion_images)} реф(ов) — AI-портрет…"
     )
     try:
         processed = await apply_grid_overlay_to_refs(motion_images)
@@ -8190,16 +8190,19 @@ async def preview_refs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.exception("preview_refs: processing failed")
         await update.message.reply_text("Ошибка при обработке рефов.")
         return
-    for i, url in enumerate(processed, start=1):
+    for i, (orig, url) in enumerate(zip(motion_images, processed), start=1):
+        # If the processed ref equals the original, both AI-portrait and grid
+        # fallback failed and the raw photo is being sent to Seedance as-is.
+        status = "⚠️ ОРИГИНАЛ (обработка не сработала!)" if url == orig else "✅ обработано"
         try:
             if url.startswith("data:") or _is_img_ref(url):
                 photo_bytes = _resolve_image_bytes(url)
                 if photo_bytes:
-                    await update.message.reply_photo(photo_bytes, caption=f"Реф {i}/{len(processed)}")
+                    await update.message.reply_photo(photo_bytes, caption=f"Реф {i}/{len(processed)} — {status}")
                 else:
                     await update.message.reply_text(f"Реф {i}: не найден в кэше")
             else:
-                await update.message.reply_photo(url, caption=f"Реф {i}/{len(processed)}")
+                await update.message.reply_photo(url, caption=f"Реф {i}/{len(processed)} — {status}")
         except Exception:
             await update.message.reply_text(f"Реф {i}: не удалось отправить")
 

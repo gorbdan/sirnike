@@ -3261,17 +3261,18 @@ async def _seedance_aiportrait(image_bytes: bytes) -> Optional[bytes]:
         return None
 
     data_url = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()
-    # IMPORTANT: the portrait must NOT look photorealistic — Seedance's detector
-    # flags photographic real-person images. Render as stylized digital art / CGI
-    # so it reads as a synthetic image, while keeping the facial features clearly
-    # recognizable (Seedance still extracts identity, then re-realizes it in video).
+    # IMPORTANT: the portrait must NOT read as a real photograph — Seedance's
+    # detector flags photographic real-person images. But too much stylization made
+    # the video cartoonish, so aim for a HYPERREALISTIC 3D CGI render (digital human /
+    # Unreal MetaHuman): looks realistic, yet is clearly a computer render, not a
+    # photo. Keeps identity recognizable while passing moderation.
     prompt = (
-        "Redraw this person as a semi-realistic digital art portrait — stylized 3D CGI "
-        "render / digital painting, clearly NOT a photograph. Keep the facial features, "
-        "face shape, eyes, nose, lips, eyebrows, hairstyle and outfit clearly "
-        "recognizable as the same person. Smooth artistic shading, painterly rendered "
-        "skin, soft stylized lighting, clean background. Digital illustration style, "
-        "not photorealistic, not a real photo, no camera grain."
+        "Recreate this person as a hyperrealistic 3D CGI character render — a digital "
+        "human like a high-end video game / Unreal Engine MetaHuman. Keep the face, "
+        "facial features, eyes, nose, lips, eyebrows, face shape, hairstyle and outfit "
+        "clearly recognizable as the same person. Realistic rendered skin and lighting, "
+        "highly detailed, sharp — but clearly a polished 3D computer render, NOT a "
+        "photograph, not a real photo, no camera grain, no photographic film look."
     )
     payload = {
         "model": ZVENO_IMAGE_MODEL,

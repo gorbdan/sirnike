@@ -284,15 +284,15 @@ class UserState:
     avatar_photos: List[str] = field(default_factory=list)
     avatar_status_msg_id: Optional[int] = None
     waiting_for_problem_report: bool = False
-    motion_prompt: str = ""
+    video_prompt: str = ""
     motion_video_url: Optional[str] = None
-    motion_duration: Optional[int] = None
-    motion_mode: Optional[str] = None
-    motion_model: str = "seedance2_fast"
-    motion_aspect_ratio: str = "16:9"
-    motion_session_active: bool = False
-    waiting_for_motion_prompt: bool = False
-    waiting_for_motion_image: bool = False
+    video_duration: Optional[int] = None
+    video_mode: Optional[str] = None
+    video_model: str = "seedance2_fast"
+    video_aspect_ratio: str = "16:9"
+    video_session_active: bool = False
+    waiting_for_video_prompt: bool = False
+    waiting_for_video_image: bool = False
     waiting_for_motion_video: bool = False
     image_model: str = "gemini"  # gemini | gpt5
 
@@ -713,11 +713,11 @@ def get_seedance_mode_options(model_code: Optional[str] = None) -> List[str]:
 
 
 def get_selected_seedance_mode(state: UserState) -> str:
-    selected_model = get_motion_model(state)
+    selected_model = get_video_model(state)
     options = get_seedance_mode_options(selected_model)
     if selected_model in ("seedance2_fast", "kling3", "veo31"):
         return options[0]
-    picked = normalize_seedance_mode(state.motion_mode or SEEDANCE_MODE)
+    picked = normalize_seedance_mode(state.video_mode or SEEDANCE_MODE)
     if picked not in options:
         picked = options[0]
     return picked
@@ -759,16 +759,16 @@ def get_seedance_duration_options(model_code: Optional[str] = None) -> List[int]
 
 
 def get_selected_seedance_duration(state: UserState) -> int:
-    model_code = get_motion_model(state)
+    model_code = get_video_model(state)
     options = get_seedance_duration_options(model_code)
     default_sec = options[0] if options else normalize_seedance_duration(int(SEEDANCE_DURATION), model_code)
-    selected = normalize_seedance_duration(state.motion_duration, model_code) if isinstance(state.motion_duration, int) else default_sec
+    selected = normalize_seedance_duration(state.video_duration, model_code) if isinstance(state.video_duration, int) else default_sec
     if selected not in options:
         selected = default_sec
     return selected
 
 
-def get_motion_image_urls(state: UserState) -> List[str]:
+def get_video_image_urls(state: UserState) -> List[str]:
     urls: List[str] = []
     for item in state.animation_source_urls:
         if isinstance(item, str):
@@ -778,7 +778,7 @@ def get_motion_image_urls(state: UserState) -> List[str]:
     return urls[:MAX_SEEDANCE_IMAGE_REFERENCES]
 
 
-def set_motion_image_urls(state: UserState, image_urls: List[str]) -> None:
+def set_video_image_urls(state: UserState, image_urls: List[str]) -> None:
     clean_urls: List[str] = []
     for item in image_urls:
         if isinstance(item, str):
@@ -790,35 +790,35 @@ def set_motion_image_urls(state: UserState, image_urls: List[str]) -> None:
     state.animation_source_url = clean_urls[-1] if clean_urls else None
 
 
-def add_motion_image_url(state: UserState, image_url: str) -> int:
-    current = get_motion_image_urls(state)
+def add_video_image_url(state: UserState, image_url: str) -> int:
+    current = get_video_image_urls(state)
     candidate = image_url.strip()
     if candidate and candidate not in current:
         if len(current) >= MAX_SEEDANCE_IMAGE_REFERENCES:
             current = current[-(MAX_SEEDANCE_IMAGE_REFERENCES - 1):]
         current.append(candidate)
-    set_motion_image_urls(state, current)
+    set_video_image_urls(state, current)
     return len(state.animation_source_urls)
 
 
-def deactivate_motion_session(state: UserState) -> None:
-    state.motion_session_active = False
-    state.waiting_for_motion_prompt = False
-    state.waiting_for_motion_image = False
+def deactivate_video_session(state: UserState) -> None:
+    state.video_session_active = False
+    state.waiting_for_video_prompt = False
+    state.waiting_for_video_image = False
     state.waiting_for_motion_video = False
 
 
-def get_motion_model(state: UserState) -> str:
-    if state.motion_model == "seedance2_fast" and SEEDANCE_FAST_ENABLED:
+def get_video_model(state: UserState) -> str:
+    if state.video_model == "seedance2_fast" and SEEDANCE_FAST_ENABLED:
         return "seedance2_fast"
-    if state.motion_model == "kling3" and KLING3_ENABLED:
+    if state.video_model == "kling3" and KLING3_ENABLED:
         return "kling3"
-    if state.motion_model == "veo31" and VEO31_ENABLED:
+    if state.video_model == "veo31" and VEO31_ENABLED:
         return "veo31"
     return "seedance2"
 
 
-def get_motion_model_label(model_code: str) -> str:
+def get_video_model_label(model_code: str) -> str:
     labels = {
         "seedance2_fast": "Seedance 2 Fast (бета)",
         "seedance2": "Seedance 2",
@@ -828,7 +828,7 @@ def get_motion_model_label(model_code: str) -> str:
     return labels.get(model_code, "Seedance 2")
 
 
-def get_motion_model_cost_per_second(model_code: str) -> float:
+def get_video_model_cost_per_second(model_code: str) -> float:
     if model_code == "seedance2_fast":
         return max(SEEDANCE_FAST_COST_PER_SECOND, 0.01)
     if model_code == "kling3":
@@ -894,7 +894,7 @@ def get_prompt_webapp_url() -> str:
     return f"{base}{sep}rev={PROMPT_WEBAPP_REV}"
 
 
-def motion_unavailable_text() -> str:
+def video_unavailable_text() -> str:
     return "Видео в разработке 🚧\nСкоро включим эту функцию."
 
 def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
@@ -1183,10 +1183,10 @@ def prompt_library_admin_kb() -> InlineKeyboardMarkup:
 # Video control UI (single final implementation).
 def video_kb(state: UserState) -> InlineKeyboardMarkup:
     selected_duration = get_selected_seedance_duration(state)
-    selected_model = get_motion_model(state)
+    selected_model = get_video_model(state)
     selected_mode = get_selected_seedance_mode(state)
-    cps = get_motion_model_cost_per_second(selected_model)
-    motion_images = get_motion_image_urls(state)
+    cps = get_video_model_cost_per_second(selected_model)
+    video_images = get_video_image_urls(state)
 
     duration_buttons = []
     for sec in get_seedance_duration_options(selected_model):
@@ -1234,17 +1234,17 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("2️⃣ Изображение 🌄", callback_data="video_set_image")],
     ]
     # Загруженные фото — одна кнопка с количеством вместо кучи кнопок удаления
-    if motion_images:
+    if video_images:
         rows.append([
             InlineKeyboardButton(
-                f"📸 Фото: {len(motion_images)} шт. · Очистить 🧹",
+                f"📸 Фото: {len(video_images)} шт. · Очистить 🧹",
                 callback_data="video_clear_images",
             )
         ])
         # Кнопки удаления по одной — максимум 3 штуки чтобы не перегружать
         delete_buttons = [
             InlineKeyboardButton(f"✕ #{idx}", callback_data=f"video_delimg_{idx}")
-            for idx, _ in enumerate(motion_images, start=1)
+            for idx, _ in enumerate(video_images, start=1)
         ]
         rows.append(delete_buttons[:3])
         if len(delete_buttons) > 3:
@@ -1267,7 +1267,7 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
         if mode_buttons:
             rows.append(mode_buttons)
     # Формат (aspect ratio)
-    selected_aspect = getattr(state, "motion_aspect_ratio", "16:9")
+    selected_aspect = getattr(state, "video_aspect_ratio", "16:9")
     aspect_options = [("16:9", "📺 16:9 (горизонталь)"), ("9:16", "📱 9:16 (вертикаль, Reels)"), ("1:1", "⬛ 1:1 (квадрат)")]
     if selected_model == "veo31":
         # Veo 3.1 не поддерживает квадрат.
@@ -1291,15 +1291,15 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
 
 
 def video_status_text(state: UserState) -> str:
-    prompt_state = "добавлен" if state.motion_prompt.strip() else "необязательно"
-    motion_images = get_motion_image_urls(state)
+    prompt_state = "добавлен" if state.video_prompt.strip() else "необязательно"
+    video_images = get_video_image_urls(state)
     image_state = (
-        f"{len(motion_images)} шт. (макс. {MAX_SEEDANCE_IMAGE_REFERENCES})"
-        if motion_images
+        f"{len(video_images)} шт. (макс. {MAX_SEEDANCE_IMAGE_REFERENCES})"
+        if video_images
         else "не добавлено"
     )
     refs_preview_lines: List[str] = []
-    for idx, ref_url in enumerate(motion_images, start=1):
+    for idx, ref_url in enumerate(video_images, start=1):
         ref_text = str(ref_url or "").strip()
         if len(ref_text) > 96:
             ref_text = f"{ref_text[:60]}...{ref_text[-28:]}"
@@ -1310,10 +1310,10 @@ def video_status_text(state: UserState) -> str:
         else "Рефы в буфере: —"
     )
     selected_duration = get_selected_seedance_duration(state)
-    selected_model = get_motion_model(state)
-    model_label = get_motion_model_label(selected_model)
+    selected_model = get_video_model(state)
+    model_label = get_video_model_label(selected_model)
     selected_mode = get_selected_seedance_mode(state)
-    cps = get_motion_model_cost_per_second(selected_model)
+    cps = get_video_model_cost_per_second(selected_model)
     selected_cost = calc_seedance_cost(selected_duration, cps)
     eta_min = max(2, int(selected_duration * 0.8))
     eta_max = max(eta_min + 1, int(selected_duration * 2.0))
@@ -1336,7 +1336,7 @@ def video_status_text(state: UserState) -> str:
         f"Описание: {prompt_state}\n"
         f"Изображение: {image_state}\n"
         f"{refs_preview_text}\n"
-        f"Формат: {getattr(state, 'motion_aspect_ratio', '16:9')}\n"
+        f"Формат: {getattr(state, 'video_aspect_ratio', '16:9')}\n"
         f"Качество: {quality_text}\n"
         f"Длительность: {selected_duration} сек (варианты: {options_text})\n"
         f"Стоимость: {selected_cost} изюминок\n"
@@ -1360,13 +1360,13 @@ def video_upsell_kb(user_id: int) -> tuple:
     longer = [d for d in get_seedance_duration_options(model) if d > duration]
     if longer:
         next_dur = longer[0]
-        cost = calc_seedance_cost(next_dur, get_motion_model_cost_per_second(model))
+        cost = calc_seedance_cost(next_dur, get_video_model_cost_per_second(model))
         rows.append([InlineKeyboardButton(
             f"📏 Сделать длиннее — {next_dur} сек · {cost} изюминок",
             callback_data=f"video_longer_{next_dur}",
         )])
     if model == "seedance2_fast":
-        upgrade_cost = calc_seedance_cost(duration, get_motion_model_cost_per_second("seedance2"))
+        upgrade_cost = calc_seedance_cost(duration, get_video_model_cost_per_second("seedance2"))
         rows.append([InlineKeyboardButton(
             f"💎 Переделать в Seedance 2 — {upgrade_cost} изюминок",
             callback_data="video_upgrade_seedance2",
@@ -1561,7 +1561,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bal = get_balance(user.id)
     free_date, free_count = get_free_info(user.id)
     state = get_or_init_state(context)
-    deactivate_motion_session(state)
+    deactivate_video_session(state)
     avatar_urls = get_avatar_urls(user.id)
     avatar_status = ", ".join([avatar_kind_label(k) for k, v in avatar_urls.items() if v]) or "нет"
 
@@ -2501,10 +2501,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    if state.waiting_for_motion_prompt or state.motion_session_active:
-        state.motion_prompt = text
-        state.waiting_for_motion_prompt = False
-        state.motion_session_active = True
+    if state.waiting_for_video_prompt or state.video_session_active:
+        state.video_prompt = text
+        state.waiting_for_video_prompt = False
+        state.video_session_active = True
         await update.message.reply_text(
             "Описание для видео сохранено ✅\n"
             "Теперь можешь отправить фото, выбрать длительность/качество и нажать запуск.",
@@ -2512,7 +2512,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    deactivate_motion_session(state)
+    deactivate_video_session(state)
     state.prompt = text
 
     await update.message.reply_text(
@@ -2591,9 +2591,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(saved_msg, reply_markup=main_menu_kb())
             return
 
-        if state.waiting_for_motion_image:
-            state.motion_session_active = True
-            current_refs = get_motion_image_urls(state)
+        if state.waiting_for_video_image:
+            state.video_session_active = True
+            current_refs = get_video_image_urls(state)
             if len(current_refs) >= MAX_SEEDANCE_IMAGE_REFERENCES and direct_url not in current_refs:
                 await update.message.reply_text(
                     f"Уже загружено {MAX_SEEDANCE_IMAGE_REFERENCES} фото для видео.\n"
@@ -2601,9 +2601,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=video_kb(state),
                 )
                 return
-            total_refs = add_motion_image_url(state, direct_url)
+            total_refs = add_video_image_url(state, direct_url)
             logger.info(
-                "handle_photo: added motion image for user=%s, total=%s, animation_source_urls=%s",
+                "handle_photo: added video image for user=%s, total=%s, animation_source_urls=%s",
                 user.id, total_refs, state.animation_source_urls,
             )
             await update.message.reply_text(
@@ -2678,7 +2678,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     state = get_or_init_state(context)
-    deactivate_motion_session(state)
+    deactivate_video_session(state)
     state.prompt = prompt
 
     await update.message.reply_text(
@@ -2704,11 +2704,11 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
 
     state = get_or_init_state(context)
     if action == "set_video_prompt":
-        state.motion_prompt = prompt
-        state.motion_session_active = True
-        state.waiting_for_motion_image = True
+        state.video_prompt = prompt
+        state.video_session_active = True
+        state.waiting_for_video_image = True
     else:
-        deactivate_motion_session(state)
+        deactivate_video_session(state)
         state.prompt = prompt
 
     if update.effective_message:
@@ -2764,11 +2764,11 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
 
     state = get_or_init_state(context)
     if action in {"set_video_prompt", "set_video_prompt_ref"}:
-        state.motion_prompt = prompt
-        state.motion_session_active = True
-        state.waiting_for_motion_image = True
+        state.video_prompt = prompt
+        state.video_session_active = True
+        state.waiting_for_video_image = True
     else:
-        deactivate_motion_session(state)
+        deactivate_video_session(state)
         state.prompt = prompt
 
     if update.effective_message:
@@ -3690,9 +3690,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title = _showcase_item_label(item)
         state = get_or_init_state(context)
         if _showcase_item_kind(item) == "video":
-            state.motion_prompt = prompt
-            state.motion_session_active = True
-            state.waiting_for_motion_image = True
+            state.video_prompt = prompt
+            state.video_session_active = True
+            state.waiting_for_video_image = True
             hint = str(item.get("upload_hint") or "").strip()
             hint_line = f"Что прислать: {hint.lower()}" if hint else "Теперь пришли своё фото."
             await query.message.reply_text(
@@ -3705,7 +3705,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=video_kb(state),
             )
         else:
-            deactivate_motion_session(state)
+            deactivate_video_session(state)
             state.prompt = prompt
             await query.message.reply_text(
                 f"Стиль «{title}» применён ✨\n"
@@ -3933,16 +3933,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         state = get_or_init_state(context)
         if item_kind == "video":
-            state.motion_prompt = str(item.get("prompt") or item.get("title") or "").strip()
-            state.motion_session_active = True
-            state.waiting_for_motion_image = True
+            state.video_prompt = str(item.get("prompt") or item.get("title") or "").strip()
+            state.video_session_active = True
+            state.waiting_for_video_image = True
             await query.message.reply_text(
                 f"Готово ✨\nСтиль «{_showcase_item_label(item)}» применён для видео.\n"
                 "Теперь отправь фото и запускай видео.",
                 reply_markup=video_kb(state),
             )
             return
-        deactivate_motion_session(state)
+        deactivate_video_session(state)
         state.prompt = item["prompt"]
         await query.message.reply_text(
             f"Готово ✨\nСтиль «{_showcase_item_label(item)}» применён.\n"
@@ -4064,14 +4064,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if is_video_callback and not SEEDANCE_ENABLED:
-        await query.message.reply_text(motion_unavailable_text(), reply_markup=main_menu_kb())
+        await query.message.reply_text(video_unavailable_text(), reply_markup=main_menu_kb())
         return
 
     if query.data == "generate":
         state = get_or_init_state(context)
-        was_in_motion = state.motion_session_active
-        deactivate_motion_session(state)
-        if was_in_motion and not state.prompt:
+        was_in_video = state.video_session_active
+        deactivate_video_session(state)
+        if was_in_video and not state.prompt:
             await query.message.reply_text(
                 "Режим видео закрыт. Напиши описание и нажми «Запустить генерацию ⚡»."
             )
@@ -4106,7 +4106,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "generate_again":
         state = get_or_init_state(context)
-        deactivate_motion_session(state)
+        deactivate_video_session(state)
         user_id = update.effective_user.id
         saved_prompt = (last_generated_prompt.get(user_id) or "").strip()
         if not saved_prompt:
@@ -4116,7 +4116,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         state = get_or_init_state(context)
-        deactivate_motion_session(state)
+        deactivate_video_session(state)
         state.prompt = saved_prompt
         # Keep refs that are still usable: persistent URLs + __img__ refs still in cache.
         # __img__ refs evaporate on bot restart, so drop the ones that no longer resolve.
@@ -4137,7 +4137,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "animate_last":
         if not SEEDANCE_ENABLED:
-            await query.message.reply_text(motion_unavailable_text(), reply_markup=main_menu_kb())
+            await query.message.reply_text(video_unavailable_text(), reply_markup=main_menu_kb())
             return
         state = get_or_init_state(context)
         last_img = last_generated_image_url.get(user.id)
@@ -4149,11 +4149,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Сгенерируй картинку заново и нажми «Оживить 🎬» под результатом."
             )
             return
-        state.motion_session_active = True
-        state.waiting_for_motion_prompt = False
-        state.waiting_for_motion_image = True
+        state.video_session_active = True
+        state.waiting_for_video_prompt = False
+        state.waiting_for_video_image = True
         state.waiting_for_motion_video = False
-        set_motion_image_urls(state, [last_img])
+        set_video_image_urls(state, [last_img])
         await query.message.reply_text(
             "Картинка добавлена в видео-буфер 🎬\n"
             "Можешь описать, что должно происходить в кадре, выбрать модель и длительность — "
@@ -4187,31 +4187,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         state = get_or_init_state(context)
-        state.motion_model = params["model"]
-        state.motion_mode = params.get("mode")
-        state.motion_aspect_ratio = params.get("aspect") or "16:9"
-        state.motion_prompt = params.get("prompt") or ""
-        set_motion_image_urls(state, refs)
+        state.video_model = params["model"]
+        state.video_mode = params.get("mode")
+        state.video_aspect_ratio = params.get("aspect") or "16:9"
+        state.video_prompt = params.get("prompt") or ""
+        set_video_image_urls(state, refs)
         if video_cb == "video_upgrade_seedance2":
-            state.motion_model = "seedance2"
+            state.video_model = "seedance2"
             try:
-                state.motion_duration = int(params.get("duration") or SEEDANCE_DURATION)
+                state.video_duration = int(params.get("duration") or SEEDANCE_DURATION)
             except (TypeError, ValueError):
-                state.motion_duration = int(SEEDANCE_DURATION)
+                state.video_duration = int(SEEDANCE_DURATION)
         else:
             try:
                 picked_longer = int(video_cb.replace("video_longer_", "", 1))
             except ValueError:
                 picked_longer = int(SEEDANCE_DURATION)
-            longer_options = get_seedance_duration_options(get_motion_model(state))
+            longer_options = get_seedance_duration_options(get_video_model(state))
             if picked_longer not in longer_options:
                 picked_longer = max(longer_options)
-            state.motion_duration = picked_longer
-        state.waiting_for_motion_image = False
-        state.motion_session_active = False
+            state.video_duration = picked_longer
+        state.waiting_for_video_image = False
+        state.video_session_active = False
         logger.info(
             "video_upsell: user=%s action=%s model=%s duration=%s",
-            user_u.id, video_cb, state.motion_model, state.motion_duration,
+            user_u.id, video_cb, state.video_model, state.video_duration,
         )
         # Add to processing_user_ids BEFORE create_task to close the race window
         processing_user_ids.add(user_u.id)
@@ -4225,9 +4225,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if video_cb == "video":
         state = get_or_init_state(context)
-        state.motion_session_active = True
-        state.waiting_for_motion_prompt = False
-        state.waiting_for_motion_image = True
+        state.video_session_active = True
+        state.waiting_for_video_prompt = False
+        state.waiting_for_video_image = True
         state.waiting_for_motion_video = False
 
         await query.message.reply_text(
@@ -4244,15 +4244,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if video_cb == "video_set_prompt":
         state = get_or_init_state(context)
-        state.motion_session_active = True
-        state.waiting_for_motion_prompt = True
+        state.video_session_active = True
+        state.waiting_for_video_prompt = True
         await query.message.reply_text("Напиши описание для видео одним сообщением.")
         return
 
     if video_cb == "video_set_image":
         state = get_or_init_state(context)
-        state.motion_session_active = True
-        state.waiting_for_motion_image = True
+        state.video_session_active = True
+        state.waiting_for_video_image = True
         await query.message.reply_text(
             "Отправляй фото для Seedance (можно несколько подряд).\n"
             f"Лимит: до {MAX_SEEDANCE_IMAGE_REFERENCES} фото.\n"
@@ -4263,9 +4263,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if video_cb == "video_clear_images":
         state = get_or_init_state(context)
-        set_motion_image_urls(state, [])
-        state.waiting_for_motion_image = True
-        state.motion_session_active = True
+        set_video_image_urls(state, [])
+        state.waiting_for_video_image = True
+        state.video_session_active = True
         await query.message.reply_text(
             "Фото очищены ✅\n\n" + video_status_text(state),
             reply_markup=video_kb(state),
@@ -4274,10 +4274,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if video_cb.startswith("video_aspect_"):
         state = get_or_init_state(context)
-        state.motion_session_active = True
+        state.video_session_active = True
         picked_ar = video_cb.replace("video_aspect_", "", 1).replace("x", ":")
         if picked_ar in {"16:9", "9:16", "1:1"}:
-            state.motion_aspect_ratio = picked_ar
+            state.video_aspect_ratio = picked_ar
         await query.message.reply_text(
             video_status_text(state),
             reply_markup=video_kb(state),
@@ -4286,23 +4286,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if video_cb.startswith("video_delimg_"):
         state = get_or_init_state(context)
-        state.motion_session_active = True
-        state.waiting_for_motion_image = True
-        motion_images = get_motion_image_urls(state)
+        state.video_session_active = True
+        state.waiting_for_video_image = True
+        video_images = get_video_image_urls(state)
         try:
             idx = int(video_cb.replace("video_delimg_", "", 1))
         except ValueError:
             idx = -1
 
-        if idx < 1 or idx > len(motion_images):
+        if idx < 1 or idx > len(video_images):
             await query.message.reply_text(
                 "Не нашла этот референс в буфере.",
                 reply_markup=video_kb(state),
             )
             return
 
-        removed_url = motion_images.pop(idx - 1)
-        set_motion_image_urls(state, motion_images)
+        removed_url = video_images.pop(idx - 1)
+        set_video_image_urls(state, video_images)
         removed_text = str(removed_url or "").strip()
         if len(removed_text) > 96:
             removed_text = f"{removed_text[:60]}...{removed_text[-28:]}"
@@ -4318,24 +4318,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if video_cb.startswith("video_model_"):
         state = get_or_init_state(context)
-        state.motion_session_active = True
-        state.waiting_for_motion_image = True
+        state.video_session_active = True
+        state.waiting_for_video_image = True
         picked_model = video_cb.replace("video_model_", "", 1)
         if picked_model == "seedance2_fast" and SEEDANCE_FAST_ENABLED:
-            state.motion_model = "seedance2_fast"
-            state.motion_mode = normalize_seedance_mode(SEEDANCE_FAST_MODE)
+            state.video_model = "seedance2_fast"
+            state.video_mode = normalize_seedance_mode(SEEDANCE_FAST_MODE)
         elif picked_model == "kling3" and KLING3_ENABLED:
-            state.motion_model = "kling3"
-            state.motion_mode = "720p"
+            state.video_model = "kling3"
+            state.video_mode = "720p"
         elif picked_model == "veo31" and VEO31_ENABLED:
-            state.motion_model = "veo31"
-            state.motion_mode = "720p"
-            if state.motion_aspect_ratio == "1:1":
-                state.motion_aspect_ratio = "16:9"
+            state.video_model = "veo31"
+            state.video_mode = "720p"
+            if state.video_aspect_ratio == "1:1":
+                state.video_aspect_ratio = "16:9"
         else:
-            state.motion_model = "seedance2"
-            if not state.motion_mode:
-                state.motion_mode = normalize_seedance_mode(SEEDANCE_MODE)
+            state.video_model = "seedance2"
+            if not state.video_mode:
+                state.video_mode = normalize_seedance_mode(SEEDANCE_MODE)
         await query.message.reply_text(
             video_status_text(state),
             reply_markup=video_kb(state),
@@ -4344,9 +4344,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if video_cb.startswith("video_mode_"):
         state = get_or_init_state(context)
-        state.motion_session_active = True
-        state.waiting_for_motion_image = True
-        selected_model = get_motion_model(state)
+        state.video_session_active = True
+        state.waiting_for_video_image = True
+        selected_model = get_video_model(state)
         if selected_model != "seedance2":
             await query.message.reply_text(
                 video_status_text(state),
@@ -4356,7 +4356,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         picked_mode = normalize_seedance_mode(video_cb.replace("video_mode_", "", 1))
         if picked_mode not in get_seedance_mode_options(selected_model):
             picked_mode = get_selected_seedance_mode(state)
-        state.motion_mode = picked_mode
+        state.video_mode = picked_mode
         await query.message.reply_text(
             video_status_text(state),
             reply_markup=video_kb(state),
@@ -4365,18 +4365,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if video_cb.startswith("video_duration_"):
         state = get_or_init_state(context)
-        state.motion_session_active = True
-        state.waiting_for_motion_image = True
+        state.video_session_active = True
+        state.waiting_for_video_image = True
         try:
             picked = int(video_cb.replace("video_duration_", "", 1))
         except ValueError:
             picked = get_selected_seedance_duration(state)
 
-        selected_model = get_motion_model(state)
+        selected_model = get_video_model(state)
         if picked not in get_seedance_duration_options(selected_model):
             picked = get_selected_seedance_duration(state)
 
-        state.motion_duration = picked
+        state.video_duration = picked
         await query.message.reply_text(
             video_status_text(state),
             reply_markup=video_kb(state),
@@ -4390,10 +4390,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         state = get_or_init_state(context)
         logger.info(
-            "video_start: user=%s animation_source_urls=%s motion_prompt=%r",
-            user_vs.id, state.animation_source_urls, state.motion_prompt,
+            "video_start: user=%s animation_source_urls=%s video_prompt=%r",
+            user_vs.id, state.animation_source_urls, state.video_prompt,
         )
-        if not state.animation_source_urls and not (state.motion_prompt or "").strip():
+        if not state.animation_source_urls and not (state.video_prompt or "").strip():
             msg_date = getattr(query.message, "date", None)
             if msg_date and msg_date.replace(tzinfo=None) < BOT_START_TIME:
                 await query.message.reply_text(
@@ -4402,8 +4402,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=main_menu_kb(),
                 )
                 return
-        state.waiting_for_motion_image = False
-        state.motion_session_active = False
+        state.waiting_for_video_image = False
+        state.video_session_active = False
         # Add to processing_user_ids BEFORE create_task to close the race window
         processing_user_ids.add(user_vs.id)
         try:
@@ -4420,7 +4420,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("Уже выполняется другая задача. Подожди.", show_alert=False)
             return
         state = get_or_init_state(context)
-        state.motion_session_active = False
+        state.video_session_active = False
         processing_user_ids.add(user_r.id)
         try:
             context.application.create_task(run_seedance(update, context))
@@ -4443,7 +4443,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "avatar_gen_refsheet":
         state = get_or_init_state(context)
-        deactivate_motion_session(state)
+        deactivate_video_session(state)
         state.prompt = AVATAR_REFSHEET_PROMPT
         state.references = []
         state.avatar_photos = []
@@ -4593,7 +4593,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         state = get_or_init_state(context)
-        deactivate_motion_session(state)
+        deactivate_video_session(state)
         state.prompt = promo["promo_prompt"]
 
         register_promo_click(promo_id, update.effective_user.id)
@@ -6734,12 +6734,12 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Snapshot state before clearing — used to restore on error so "Повторить" still works
         _saved_animation_source_urls = list(state.animation_source_urls or [])
-        _saved_motion_prompt = state.motion_prompt
+        _saved_video_prompt = state.video_prompt
 
-        state.motion_session_active = False
+        state.video_session_active = False
 
         if not SEEDANCE_ENABLED:
-            await reply_target.reply_text(motion_unavailable_text(), reply_markup=main_menu_kb())
+            await reply_target.reply_text(video_unavailable_text(), reply_markup=main_menu_kb())
             return
 
         # Caller (video_start / seedance_retry) already added us to processing_user_ids before
@@ -6753,20 +6753,20 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             processing_user_ids.add(user.id)
 
-        motion_images = get_motion_image_urls(state)
+        video_images = get_video_image_urls(state)
         logger.info(
-            "run_seedance: user=%s animation_source_urls=%s motion_prompt=%r",
-            user.id, state.animation_source_urls, state.motion_prompt,
+            "run_seedance: user=%s animation_source_urls=%s video_prompt=%r",
+            user.id, state.animation_source_urls, state.video_prompt,
         )
 
-        prompt_text = (state.motion_prompt or "").strip()
-        if not motion_images and not prompt_text:
+        prompt_text = (state.video_prompt or "").strip()
+        if not video_images and not prompt_text:
             await reply_target.reply_text(
                 "Для видео нужно фото и/или описание. Добавь и запусти снова."
             )
             return
 
-        for idx, img_url in enumerate(motion_images, start=1):
+        for idx, img_url in enumerate(video_images, start=1):
             if img_url.startswith("data:") or _is_img_ref(img_url):
                 continue
             ok_img, reason_img = await validate_image_url(img_url)
@@ -6776,9 +6776,9 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
         selected_duration = get_selected_seedance_duration(state)
-        selected_model = get_motion_model(state)
-        selected_model_label = get_motion_model_label(selected_model)
-        selected_cps = get_motion_model_cost_per_second(selected_model)
+        selected_model = get_video_model(state)
+        selected_model_label = get_video_model_label(selected_model)
+        selected_cps = get_video_model_cost_per_second(selected_model)
         selected_cost = calc_seedance_cost(selected_duration, selected_cps)
         selected_endpoint = SEEDANCE_FAST_ENDPOINT if selected_model == "seedance2_fast" else SEEDANCE_ENDPOINT
         selected_mode = get_selected_seedance_mode(state)
@@ -6792,7 +6792,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             selected_model_slug = SEEDANCE_MODEL
 
         # Seedance работает только от фото; Kling 3.0 и Veo 3.1 умеют text-to-video.
-        if selected_model in {"seedance2", "seedance2_fast"} and len(motion_images) < 1:
+        if selected_model in {"seedance2", "seedance2_fast"} and len(video_images) < 1:
             await reply_target.reply_text(
                 "Загрузи хотя бы 1 фото-ференс и запусти снова.",
                 reply_markup=video_kb(state),
@@ -6812,8 +6812,8 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Обработка рефа (сетка) нужна только Seedance (реф внешности).
         # Kling/Veo используют картинку как первый кадр видео — обработка ломает кадр.
-        if motion_images and selected_model not in ("kling3", "veo31"):
-            motion_images = await apply_grid_overlay_to_refs(motion_images)
+        if video_images and selected_model not in ("kling3", "veo31"):
+            video_images = await apply_grid_overlay_to_refs(video_images)
 
         if not spend_izyminki(user.id, selected_cost):
             await reply_target.reply_text("Не удалось списать изюминки. Попробуй ещё раз.")
@@ -6826,7 +6826,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Запускаю {selected_model_label} 🎬\n"
                 f"Обычно это занимает {eta_min}–{eta_max} минут."
             )
-            expected_refs_count = len(motion_images)
+            expected_refs_count = len(video_images)
     
             per_attempt_max_polls = min(
                 SEEDANCE_MAX_POLL_ATTEMPTS,
@@ -6853,15 +6853,15 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for seedance_attempt in range(1, max_seedance_attempts + 1):
                 task_id = await start_seedance_task(
                     prompt=active_prompt,
-                    image_url=motion_images[0] if motion_images else None,
-                    image_urls=motion_images,
+                    image_url=video_images[0] if video_images else None,
+                    image_urls=video_images,
                     user_id=user.id,
                     duration=selected_duration,
                     endpoint=selected_endpoint,
                     mode=selected_mode,
                     model_slug=selected_model_slug,
                     model_code=selected_model,
-                    aspect_ratio=getattr(state, "motion_aspect_ratio", "16:9"),
+                    aspect_ratio=getattr(state, "video_aspect_ratio", "16:9"),
                 )
     
                 try:
@@ -6913,7 +6913,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "model": selected_model,
                 "duration": selected_duration,
                 "mode": selected_mode,
-                "aspect": getattr(state, "motion_aspect_ratio", "16:9"),
+                "aspect": getattr(state, "video_aspect_ratio", "16:9"),
                 "prompt": prompt_text,
                 "refs": list(_saved_animation_source_urls),
             })
@@ -6936,7 +6936,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 provider="ZVENO",
                 cost=selected_cost,
                 was_free=False,
-                references_count=len(motion_images),
+                references_count=len(video_images),
                 prompt=prompt_text[:500] if prompt_text else None,
                 username=user.username,
             )
@@ -6960,7 +6960,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             add_izyminki(user.id, selected_cost)
             # Restore state so "Повторить" can reuse the same images/prompt
             state.animation_source_urls = _saved_animation_source_urls
-            state.motion_prompt = _saved_motion_prompt
+            state.video_prompt = _saved_video_prompt
             log_generation_event(
                 user_id=user.id,
                 kind="video",
@@ -6968,7 +6968,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 provider="ZVENO",
                 cost=selected_cost,
                 was_free=False,
-                references_count=len(motion_images),
+                references_count=len(video_images),
             )
             error_text = str(e).lower()
             if is_seedance_privacy_moderation_error(error_text):
@@ -8160,20 +8160,20 @@ async def preview_refs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id not in ADMIN_IDS:
         return
     state = get_or_init_state(context)
-    motion_images = get_motion_image_urls(state)
-    if not motion_images:
+    video_images = get_video_image_urls(state)
+    if not video_images:
         await update.message.reply_text("Рефов нет. Добавь фото в Seedance-панели сначала.")
         return
     await update.message.reply_text(
-        f"Обрабатываю {len(motion_images)} реф(ов) — сетка…"
+        f"Обрабатываю {len(video_images)} реф(ов) — сетка…"
     )
     try:
-        processed = await apply_grid_overlay_to_refs(motion_images)
+        processed = await apply_grid_overlay_to_refs(video_images)
     except Exception:
         logger.exception("preview_refs: processing failed")
         await update.message.reply_text("Ошибка при обработке рефов.")
         return
-    for i, (orig, url) in enumerate(zip(motion_images, processed), start=1):
+    for i, (orig, url) in enumerate(zip(video_images, processed), start=1):
         # If the processed ref equals the original, both AI-portrait and grid
         # fallback failed and the raw photo is being sent to Seedance as-is.
         status = "⚠️ ОРИГИНАЛ (обработка не сработала!)" if url == orig else "✅ обработано"

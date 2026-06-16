@@ -314,6 +314,10 @@ class GenerationJob:
 generation_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
 queued_user_ids = set()
 processing_user_ids = set()
+# Hard single-execution guard for run_seedance, independent of callers' pre-add
+# of processing_user_ids. Guarantees only one run_seedance runs per user even if
+# a future caller forgets the pre-create_task guard (prevents double charge).
+_seedance_executing = set()
 queue_worker_task = None
 
 DEFAULT_PROMPT_LIBRARY = [
@@ -6728,6 +6732,14 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = None
     try:  # outer try/finally: guarantees processing_user_ids.discard runs from the very first line
         user = update.effective_user
+        # Hard guard: if a generation for this user is already executing, bail out
+        # without touching the running instance's markers. The check+add is atomic
+        # (no await between them), so two concurrent run_seedance calls can't both pass.
+        if user.id in _seedance_executing:
+            logger.warning("run_seedance: double execution blocked for user=%s", user.id)
+            user = None  # prevent finally from clearing the running instance's markers
+            return
+        _seedance_executing.add(user.id)
         create_user_if_not_exists(user.id, user.username, START_BONUS)
         reply_target = update.callback_query.message if update.callback_query else update.message
         state = get_or_init_state(context)
@@ -7009,6 +7021,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         if user is not None:
             processing_user_ids.discard(user.id)
+            _seedance_executing.discard(user.id)
 
 async def _persist_image_ref(ref: str) -> str:
     """Upload __img__ cache ref to permanent hosting. Returns persistent URL or empty string on failure."""

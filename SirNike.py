@@ -899,6 +899,16 @@ def get_prompt_webapp_url(user_id: int = None) -> str:
     if user_id is not None:
         bal = get_balance(user_id)
         url += f"&balance={bal}"
+        try:
+            history = get_generation_history(user_id, limit=10)
+            if history:
+                compact = [{"u": h["image_url"], "p": (h["prompt"] or "")[:60], "t": h["created_at"]} for h in history]
+                raw = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+                encoded = base64.urlsafe_b64encode(raw.encode()).decode()
+                if len(url) + len(encoded) + 3 < 2048:
+                    url += f"&h={encoded}"
+        except Exception as e:
+            logger.warning("Failed to encode history for webapp URL: %s", e)
     return url
 
 

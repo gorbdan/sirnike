@@ -890,12 +890,16 @@ def generation_failure_user_text(refunded: bool) -> str:
     )
 
 
-def get_prompt_webapp_url() -> str:
+def get_prompt_webapp_url(user_id: int = None) -> str:
     base = str(PROMPT_WEBAPP_URL or "").strip()
     if not base:
         return ""
     sep = "&" if "?" in base else "?"
-    return f"{base}{sep}rev={PROMPT_WEBAPP_REV}"
+    url = f"{base}{sep}rev={PROMPT_WEBAPP_REV}"
+    if user_id is not None:
+        bal = get_balance(user_id)
+        url += f"&balance={bal}"
+    return url
 
 
 def video_unavailable_text() -> str:
@@ -1071,18 +1075,18 @@ def avatar_actions_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton("Назад в меню ↩️", callback_data="avatar_back_menu")])
     return InlineKeyboardMarkup(rows)
 
-def webapp_open_kb() -> ReplyKeyboardMarkup:
+def webapp_open_kb(user_id: int = None) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[KeyboardButton("Открыть библиотеку 📚", web_app=WebAppInfo(url=get_prompt_webapp_url()))]],
+        [[KeyboardButton("Открыть библиотеку 📚", web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)))]],
         resize_keyboard=True,
         one_time_keyboard=True,
         selective=True,
     )
 
 
-def webapp_inline_kb() -> InlineKeyboardMarkup:
+def webapp_inline_kb(user_id: int = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Открыть библиотеку 📚", web_app=WebAppInfo(url=get_prompt_webapp_url()))]
+        [InlineKeyboardButton("Открыть библиотеку 📚", web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)))]
     ])
 
 
@@ -2738,6 +2742,14 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
         action = "set_prompt"
     if action in {"apply_video_prompt", "use_video_prompt", "set_video_template", "apply_video_template"}:
         action = "set_video_prompt"
+    if action == "topup":
+        if update.effective_message:
+            await update.effective_message.reply_text(
+                "Открываю меню пополнения 💰",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            await buy(update, context)
+        return True
     if action and action not in {"set_prompt", "set_video_prompt", "set_prompt_ref", "set_video_prompt_ref"}:
         return False
 
@@ -3819,9 +3831,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=prompt_library_menu_kb(),
             )
             return
+        uid = update.effective_user.id if update.effective_user else None
         await query.message.reply_text(
             "Открывай библиотеку по кнопке ниже:",
-            reply_markup=webapp_open_kb(),
+            reply_markup=webapp_open_kb(uid),
         )
         return
 

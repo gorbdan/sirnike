@@ -811,6 +811,7 @@ def deactivate_video_session(state: UserState) -> None:
     state.waiting_for_video_prompt = False
     state.waiting_for_video_image = False
     state.waiting_for_motion_video = False
+    state.image_prompt = ""
 
 
 def get_video_model(state: UserState) -> str:
@@ -2522,6 +2523,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state.waiting_for_video_prompt or state.video_session_active:
         state.video_prompt = text
+        state.image_prompt = ""
         state.waiting_for_video_prompt = False
         state.video_session_active = True
         await update.message.reply_text(
@@ -2722,6 +2724,7 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
         return False
 
     state = get_or_init_state(context)
+    state.image_prompt = ""
     if action == "set_video_prompt":
         state.video_prompt = prompt
         state.video_session_active = True
@@ -3770,6 +3773,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         title = _showcase_item_label(item)
         state = get_or_init_state(context)
+        state.image_prompt = str(item.get("image_prompt") or "").strip()
         if _showcase_item_kind(item) == "video":
             state.video_prompt = prompt
             state.video_session_active = True
@@ -4014,13 +4018,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         state = get_or_init_state(context)
+        state.image_prompt = str(item.get("image_prompt") or "").strip()
         if item_kind == "video":
             state.video_prompt = str(item.get("prompt") or item.get("title") or "").strip()
             state.video_session_active = True
             state.waiting_for_video_image = True
+            hint = "Теперь отправь фото и запускай видео."
+            if state.image_prompt:
+                hint = (
+                    "Теперь отправь фото и запускай видео.\n"
+                    "💡 Бот сначала стилизует фото через GPT Image, затем сгенерит видео."
+                )
             await query.message.reply_text(
-                f"Готово ✨\nСтиль «{_showcase_item_label(item)}» применён для видео.\n"
-                "Теперь отправь фото и запускай видео.",
+                f"Готово ✨\nСтиль «{_showcase_item_label(item)}» применён для видео.\n" + hint,
                 reply_markup=video_kb(state),
             )
             return
@@ -4273,6 +4283,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.video_mode = params.get("mode")
         state.video_aspect_ratio = params.get("aspect") or "16:9"
         state.video_prompt = params.get("prompt") or ""
+        state.image_prompt = params.get("image_prompt") or ""
         set_video_image_urls(state, refs)
         if video_cb == "video_upgrade_seedance2":
             state.video_model = "seedance2"
@@ -7025,6 +7036,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "aspect": getattr(state, "video_aspect_ratio", "16:9"),
                 "prompt": prompt_text,
                 "refs": list(_saved_animation_source_urls),
+                "image_prompt": _saved_image_prompt,
             })
             upsell_markup, has_upsell = video_upsell_kb(user.id)
             video_caption = f"Готово 🎬\n{selected_model_label} завершён."

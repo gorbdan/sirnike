@@ -295,6 +295,7 @@ class UserState:
     waiting_for_video_image: bool = False
     waiting_for_motion_video: bool = False
     image_model: str = "gemini"  # gemini | gpt5
+    image_prompt: str = ""
 
 @dataclass
 class GenerationJob:
@@ -2766,6 +2767,8 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
     title = str(payload.get("title") or payload.get("t") or "шаблон").strip() or "шаблон"
     prompt = str(payload.get("prompt") or payload.get("p") or "").strip()
 
+    image_prompt = str(payload.get("image_prompt") or "").strip()
+
     # Fallback mode for oversized WebApp payload:
     # app sends only (category,item) indices and bot resolves prompt locally.
     if not prompt:
@@ -2783,12 +2786,15 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
             if resolved_title:
                 title = resolved_title
             prompt = resolved_prompt or resolved_title
+            if not image_prompt:
+                image_prompt = str(item.get("image_prompt") or "").strip()
         except Exception:
             prompt = ""
 
     prompt = prompt or title
 
     state = get_or_init_state(context)
+    state.image_prompt = image_prompt
     if action in {"set_video_prompt", "set_video_prompt_ref"}:
         state.video_prompt = prompt
         state.video_session_active = True
@@ -2799,9 +2805,14 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
 
     if update.effective_message:
         if action in {"set_video_prompt", "set_video_prompt_ref"}:
+            hint = "Теперь отправь фото и запускай видео."
+            if image_prompt:
+                hint = (
+                    "Теперь отправь фото и запускай видео.\n"
+                    "💡 Бот сначала стилизует фото через GPT Image, затем сгенерит видео."
+                )
             await update.effective_message.reply_text(
-                f"Готово ✨\nСтиль «{title}» применён для видео.\n"
-                "Теперь отправь фото и запускай видео.",
+                f"Готово ✨\nСтиль «{title}» применён для видео.\n" + hint,
                 reply_markup=ReplyKeyboardRemove(),
             )
             await update.effective_message.reply_text(
@@ -3261,6 +3272,50 @@ def _extract_zveno_image_result(rd: dict) -> Optional[str]:
                 if isinstance(iu, str) and iu.strip():
                     return iu.strip()
     return None
+
+
+async def _run_image_prompt_pipeline(image_prompt: str, ref_urls: List[str]) -> Optional[str]:
+    """Generate a stylized image via GPT Image before video generation.
+
+    Returns an image URL (or data: URL) on success, None on failure.
+    """
+    user_content: list = [{"type": "text", "text": image_prompt}]
+    for url in ref_urls[:4]:
+        resolved = _ref_to_data_url(url) if _is_img_ref(url) else url
+        if resolved and (resolved.startswith("http") or resolved.startswith("data:")):
+            user_content.append({"type": "image_url", "image_url": {"url": resolved}})
+
+    payload = {
+        "model": ZVENO_GPT5_IMAGE_MODEL,
+        "messages": [{"role": "user", "content": user_content}],
+        "modalities": ["image", "text"],
+        "image_config": {"aspect_ratio": "16:9"},
+    }
+    request_url = build_zveno_url(ZVENO_API_BASE, "/v1/chat/completions")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                request_url,
+                headers={
+                    "Authorization": f"Bearer {ZVENO_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=180),
+            ) as resp:
+                if not (200 <= resp.status < 300):
+                    body = await resp.text()
+                    logger.warning("image_prompt pipeline failed: status=%s body=%s", resp.status, body[:300])
+                    return None
+                rd = await resp.json()
+            result = _extract_zveno_image_result(rd)
+            if not result:
+                logger.warning("image_prompt pipeline: no image in response")
+                return None
+            return result
+    except Exception as e:
+        logger.warning("image_prompt pipeline exception: %s", e)
+        return None
 
 
 async def _seedance_aiportrait(image_bytes: bytes) -> Optional[bytes]:
@@ -6770,6 +6825,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Snapshot state before clearing — used to restore on error so "Повторить" still works
         _saved_animation_source_urls = list(state.animation_source_urls or [])
         _saved_video_prompt = state.video_prompt
+        _saved_image_prompt = state.image_prompt
 
         state.video_session_active = False
 
@@ -6844,6 +6900,24 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]])
             )
             return
+
+        # Two-step pipeline: if image_prompt is set, first generate a stylized
+        # image via GPT Image, then use that as the video reference.
+        if (state.image_prompt or "").strip() and video_images:
+            await reply_target.reply_text("🎨 Стилизую фото через GPT Image…")
+            stylized_url = await _run_image_prompt_pipeline(
+                image_prompt=state.image_prompt,
+                ref_urls=video_images,
+            )
+            if stylized_url:
+                video_images = [stylized_url]
+                state.animation_source_urls = [stylized_url]
+            else:
+                await reply_target.reply_text(
+                    "Не удалось стилизовать фото. Попробуй ещё раз или выбери другой шаблон.",
+                    reply_markup=video_kb(state),
+                )
+                return
 
         # Обработка рефа (сетка) нужна только Seedance (реф внешности).
         # Kling/Veo используют картинку как первый кадр видео — обработка ломает кадр.
@@ -6996,6 +7070,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Restore state so "Повторить" can reuse the same images/prompt
             state.animation_source_urls = _saved_animation_source_urls
             state.video_prompt = _saved_video_prompt
+            state.image_prompt = _saved_image_prompt
             log_generation_event(
                 user_id=user.id,
                 kind="video",

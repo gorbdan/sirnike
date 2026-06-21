@@ -943,7 +943,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
             callback_data="pl_open",
         )
 
-    video_label = "Видео 🎬" if SEEDANCE_ENABLED else "Видео 🚧"
+    video_label = "Генерация видео 🎬" if SEEDANCE_ENABLED else "Генерация видео 🚧"
     rows = [
         # Главные действия
         [InlineKeyboardButton("⚡ Запустить генерацию", callback_data="generate")],

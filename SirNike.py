@@ -966,7 +966,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     video_label = "Генерация видео 🎬" if SEEDANCE_ENABLED else "Генерация видео 🚧"
     rows = [
         # Главные действия
-        [InlineKeyboardButton("⚡ Запустить генерацию", callback_data="generate")],
+        [InlineKeyboardButton("⚡ Запустить генерацию фото", callback_data="generate")],
         [prompt_library_button],
         # Дополнительные инструменты в одну строку
         [

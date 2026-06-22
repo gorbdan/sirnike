@@ -1109,6 +1109,19 @@ def avatar_delete_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton("◀️ Назад", callback_data="avatar_actions")])
     return InlineKeyboardMarkup(rows)
 
+
+def avatar_gen_kind_kb() -> InlineKeyboardMarkup:
+    # Перед генерацией спрашиваем тип аватара, иначе он всегда сохранялся как женский.
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("👩 Женский", callback_data="avatar_gen_kind_female"),
+            InlineKeyboardButton("👨 Мужской", callback_data="avatar_gen_kind_male"),
+        ],
+        [InlineKeyboardButton("🧒 Детский", callback_data="avatar_gen_kind_child")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="avatar_actions")],
+    ])
+
+
 def webapp_open_kb(user_id: int = None) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [[KeyboardButton("📚 Открыть библиотеку", web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)))]],
@@ -4620,14 +4633,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "avatar_gen_refsheet":
+        # Сначала спрашиваем тип аватара — без этого генерация всегда
+        # сохранялась как женский (pending_avatar_kind по умолчанию "female").
+        await query.message.reply_text(
+            "Для кого генерируем аватар? 🪄\n\n"
+            "Выбери тип — от этого зависит, как он сохранится.",
+            reply_markup=avatar_gen_kind_kb(),
+        )
+        return
+
+    if query.data in {"avatar_gen_kind_female", "avatar_gen_kind_male", "avatar_gen_kind_child"}:
         state = get_or_init_state(context)
         deactivate_video_session(state)
+        avatar_kind = query.data.rsplit("_", 1)[-1]
+        state.pending_avatar_kind = avatar_kind
         state.prompt = AVATAR_REFSHEET_PROMPT
         state.references = []
         state.avatar_photos = []
         state.avatar_status_msg_id = None
         state.generating_avatar = True
         await query.message.reply_text(
+            f"Тип: {avatar_kind_label(avatar_kind)} ✅\n\n"
             "Отправь фото для генерации аватара 📸\n\n"
             "Чем больше фото с разных ракурсов — тем лучше результат.\n"
             "Важно: на фото должно быть хорошо видно лицо.\n\n"

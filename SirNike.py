@@ -952,35 +952,36 @@ def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int
 # ══════════════════════════════════════════════════════════════
 
 def main_menu_kb() -> InlineKeyboardMarkup:
-    if PROMPT_WEBAPP_URL:
-        prompt_library_button = InlineKeyboardButton(
-            "Библиотека стилей 📚",
-            callback_data="pl_open_webapp",
-        )
-    else:
-        prompt_library_button = InlineKeyboardButton(
-            "Библиотека стилей 📚",
-            callback_data="pl_open",
-        )
+    pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
+    prompt_library_button = InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb)
 
-    video_label = "Генерация видео 🎬" if SEEDANCE_ENABLED else "Генерация видео 🚧"
+    video_label = "🎬 Создать видео" if SEEDANCE_ENABLED else "🎬 Создать видео 🚧"
     rows = [
-        # Главные действия
-        [InlineKeyboardButton("⚡ Запустить генерацию фото", callback_data="generate")],
-        [prompt_library_button],
-        # Дополнительные инструменты в одну строку
+        # Главные действия — во всю ширину
+        [InlineKeyboardButton("⚡ Создать фото", callback_data="generate")],
+        [InlineKeyboardButton(video_label, callback_data="video")],
+        # Контент
         [
-            InlineKeyboardButton(video_label, callback_data="video"),
+            prompt_library_button,
             InlineKeyboardButton("🪄 Мой аватар", callback_data="avatar_actions"),
         ],
+        # Деньги и рост
+        [InlineKeyboardButton("💰 Баланс и пополнение", callback_data="show_buy")],
     ]
+
+    referral_button = InlineKeyboardButton("🎁 Пригласить друга", callback_data="open_ref")
     if GPT5_IMAGE_ENABLED:
-        rows.append([InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu")])
-    rows.extend([
-        # Служебные — на отдельных строках, понятнее
-        [InlineKeyboardButton("❓ Как пользоваться", callback_data="show_help")],
-        [InlineKeyboardButton("🔄 Начать заново", callback_data="reset")],
-        [InlineKeyboardButton("🚨 Сообщить о проблеме", callback_data="report_problem")],
+        rows.append([
+            referral_button,
+            InlineKeyboardButton("🧠 Модель", callback_data="image_model_menu"),
+        ])
+    else:
+        rows.append([referral_button])
+
+    # Служебные — компактно в один ряд
+    rows.append([
+        InlineKeyboardButton("❓ Как пользоваться", callback_data="show_help"),
+        InlineKeyboardButton("🚨 Проблема", callback_data="report_problem"),
     ])
     return InlineKeyboardMarkup(rows)
 
@@ -998,7 +999,7 @@ def image_model_menu_kb(state: UserState) -> InlineKeyboardMarkup:
             ("● " if selected == "gpt5" else "") + f"GPT-5 Image 🆕 · {gpt5_cost} изюминок",
             callback_data="image_model_set_gpt5",
         )],
-        [InlineKeyboardButton("В меню", callback_data="reset")],
+        [InlineKeyboardButton("◀️ В меню", callback_data="reset")],
     ]
     return InlineKeyboardMarkup(rows)
 
@@ -1085,7 +1086,7 @@ def avatar_actions_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
         if existing.get("child"):
             rows.append([InlineKeyboardButton("Удалить детский 🗑", callback_data="delete_avatar_child")])
         rows.append([InlineKeyboardButton("Удалить все аватары 🧹", callback_data="delete_avatar")])
-    rows.append([InlineKeyboardButton("Назад в меню ↩️", callback_data="avatar_back_menu")])
+    rows.append([InlineKeyboardButton("◀️ В меню", callback_data="avatar_back_menu")])
     return InlineKeyboardMarkup(rows)
 
 def webapp_open_kb(user_id: int = None) -> ReplyKeyboardMarkup:
@@ -1107,7 +1108,7 @@ def prompt_library_menu_kb() -> InlineKeyboardMarkup:
     rows = []
     for idx, cat in enumerate(PROMPT_LIBRARY):
         rows.append([InlineKeyboardButton(f"{cat['emoji']} {cat['title']}", callback_data=f"pl_cat_{idx}")])
-    rows.append([InlineKeyboardButton("В меню", callback_data="reset")])
+    rows.append([InlineKeyboardButton("◀️ В меню", callback_data="reset")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -1116,7 +1117,7 @@ def prompt_library_category_kb(cat_idx: int) -> InlineKeyboardMarkup:
     items = PROMPT_LIBRARY[cat_idx]["items"]
     for item_idx, item in enumerate(items):
         rows.append([InlineKeyboardButton(_showcase_item_label(item), callback_data=f"pl_view_{cat_idx}_{item_idx}")])
-    rows.append([InlineKeyboardButton("← К категориям", callback_data="pl_open")])
+    rows.append([InlineKeyboardButton("◀️ К категориям", callback_data="pl_open")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -1135,8 +1136,10 @@ def prompt_library_item_kb(cat_idx: int, item_idx: int, item_kind: str = "image"
     use_text = "Использовать в видео ✅" if item_kind == "video" else "Использовать этот стиль ✅"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(use_text, callback_data=f"pl_use_{cat_idx}_{item_idx}")],
-        [InlineKeyboardButton("← Назад к категории", callback_data=f"pl_cat_{cat_idx}")],
-        [InlineKeyboardButton("К категориям", callback_data="pl_open")],
+        [
+            InlineKeyboardButton("◀️ Назад", callback_data=f"pl_cat_{cat_idx}"),
+            InlineKeyboardButton("◀️ К категориям", callback_data="pl_open"),
+        ],
     ])
 
 
@@ -1249,10 +1252,11 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
             )
         )
 
+    prompt_done = bool(str(getattr(state, "video_prompt", "") or "").strip())
     rows = [
-        # Основные параметры
-        [InlineKeyboardButton("1️⃣ Описание ✍️", callback_data="video_set_prompt")],
-        [InlineKeyboardButton("2️⃣ Изображение 🌄", callback_data="video_set_image")],
+        # Шаги: галочка, когда заполнено
+        [InlineKeyboardButton("✅ Описание" if prompt_done else "1️⃣ Описание ✍️", callback_data="video_set_prompt")],
+        [InlineKeyboardButton("✅ Изображение" if video_images else "2️⃣ Изображение 🌄", callback_data="video_set_image")],
     ]
     # Загруженные фото — одна кнопка с количеством вместо кучи кнопок удаления
     if video_images:
@@ -1289,7 +1293,7 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
             rows.append(mode_buttons)
     # Формат (aspect ratio)
     selected_aspect = getattr(state, "video_aspect_ratio", "16:9")
-    aspect_options = [("16:9", "📺 16:9 (горизонталь)"), ("9:16", "📱 9:16 (вертикаль, Reels)"), ("1:1", "⬛ 1:1 (квадрат)")]
+    aspect_options = [("16:9", "📺 16:9"), ("9:16", "📱 9:16"), ("1:1", "⬛ 1:1")]
     if selected_model == "veo31":
         # Veo 3.1 не поддерживает квадрат.
         aspect_options = [(ar, label) for ar, label in aspect_options if ar != "1:1"]
@@ -1308,11 +1312,15 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
         rows.append(duration_buttons[3:])
     # Запуск
     rows.append([InlineKeyboardButton("⚡ Запустить видео", callback_data="video_start")])
+    rows.append([InlineKeyboardButton("◀️ В меню", callback_data="reset")])
     return InlineKeyboardMarkup(rows)
 
 
 def video_status_text(state: UserState) -> str:
     prompt_state = "добавлен" if state.video_prompt.strip() else "необязательно"
+    _cur_aspect = getattr(state, "video_aspect_ratio", "16:9")
+    _aspect_names = {"16:9": "горизонталь", "9:16": "вертикаль, Reels", "1:1": "квадрат"}
+    _aspect_label = f"{_cur_aspect} ({_aspect_names[_cur_aspect]})" if _cur_aspect in _aspect_names else _cur_aspect
     video_images = get_video_image_urls(state)
     image_state = (
         f"{len(video_images)} шт. (макс. {MAX_SEEDANCE_IMAGE_REFERENCES})"
@@ -1357,7 +1365,7 @@ def video_status_text(state: UserState) -> str:
         f"Описание: {prompt_state}\n"
         f"Изображение: {image_state}\n"
         f"{refs_preview_text}\n"
-        f"Формат: {getattr(state, 'video_aspect_ratio', '16:9')}\n"
+        f"Формат: {_aspect_label}\n"
         f"Качество: {quality_text}\n"
         f"Длительность: {selected_duration} сек (варианты: {options_text})\n"
         f"Стоимость: {selected_cost} изюминок\n"
@@ -1518,7 +1526,7 @@ def result_actions_kb(user_id: int = 0, bot_username: str = "") -> InlineKeyboar
     if user_id and bot_username:
         ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
         rows.append([InlineKeyboardButton("🎁 Пригласить друга (+10 изюминок)", url=ref_link)])
-    rows.append([InlineKeyboardButton("В меню", callback_data="reset")])
+    rows.append([InlineKeyboardButton("◀️ В меню", callback_data="reset")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -1718,8 +1726,8 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if update.message.chat.type != "private":
-        await update.message.reply_text("Напиши мне эту команду в личный чат — там покажу ссылку.")
+    if update.effective_chat.type != "private":
+        await update.effective_message.reply_text("Напиши мне эту команду в личный чат — там покажу ссылку.")
         return
     bot_username = (await context.bot.get_me()).username
     link = f"https://t.me/{bot_username}?start=ref_{user.id}"
@@ -1728,8 +1736,9 @@ async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
     share_url = f"https://t.me/share/url?url={urllib.parse.quote(link)}&text={urllib.parse.quote('Попробуй этот AI-бот для фото!')}"
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📤 Поделиться с другом", url=share_url)],
+        [InlineKeyboardButton("◀️ В меню", callback_data="reset")],
     ])
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         f"Приглашай друзей и получай изюминки 🎁\n\n"
         f"Твоя ссылка:\n`{link}`\n\n"
         f"Ты получишь +{REFERRAL_BONUS_REFERRER} изюминок за каждого друга.\n"
@@ -1959,7 +1968,9 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         ])
 
-    await update.message.reply_text(
+    keyboard.append([InlineKeyboardButton("◀️ В меню", callback_data="reset")])
+
+    await update.effective_message.reply_text(
         f"💰 Пополнить баланс\n\n"
         f"• 1 фото = {BASE_GENERATION_COST} изюминок 🧀\n"
         f"• 1 видео 10 сек = {_video_10s_cost} изюминок 🎬\n"
@@ -4744,8 +4755,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "show_buy":
-        await query.answer()
         await buy(update, context)
+        return
+
+    if query.data == "open_ref":
+        await referral(update, context)
         return
 
     if query.data.startswith("buy_"):

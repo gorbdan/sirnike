@@ -5440,7 +5440,7 @@ async def prompt_library_history_command(update: Update, context: ContextTypes.D
 BOT_DESCRIPTION = (
     "🧀 Сырник — бот для AI-фото и видео.\n"
     "\n"
-    "🎨 Генерация изображений по тексту и фото — Nano Banana, Gemini, GPT Image\n"
+    "🎨 Генерация изображений по тексту и фото — Nano Banana, GPT Image\n"
     "🎬 Оживление фото в видео — Seedance 2, Kling, Veo\n"
     "🪄 AI-портреты и аватары из ваших фото\n"
     "📚 Библиотека готовых стилей в один тап\n"

@@ -5436,6 +5436,24 @@ async def prompt_library_history_command(update: Update, context: ContextTypes.D
 # ОЧЕРЕДЬ И ЖИЗНЕННЫЙ ЦИКЛ БОТА: worker, post_init, shutdown
 # ══════════════════════════════════════════════════════════════
 
+# Плашка «Что умеет этот бот?» (Telegram description, лимит 512 символов).
+BOT_DESCRIPTION = (
+    "🧀 Сырник — бот для AI-фото и видео.\n"
+    "\n"
+    "🎨 Генерация изображений по тексту и фото — Nano Banana, Gemini, GPT Image\n"
+    "🎬 Оживление фото в видео — Seedance 2, Kling, Veo\n"
+    "🪄 AI-портреты и аватары из ваших фото\n"
+    "📚 Библиотека готовых стилей в один тап\n"
+    "\n"
+    "🎁 Бесплатные генерации каждый день и бонус новичку. Жми «Старт» 🚀"
+)
+
+# Краткое описание профиля (Telegram short description, лимит 120 символов).
+BOT_SHORT_DESCRIPTION = (
+    "🧀 AI-фото и видео: генерация картинок, оживление фото, AI-портреты. "
+    "Бесплатные генерации каждый день 🎁"
+)
+
 _worker_current_job = None  # tracks the job being processed right now
 
 
@@ -5592,6 +5610,13 @@ async def _daily_log_push_loop():
 async def post_init(app: Application):
     global queue_worker_task, _prompt_library_lock
     _prompt_library_lock = asyncio.Lock()  # created inside running event loop — safe
+    # Описание бота (плашка «Что умеет этот бот?» над кнопкой «Старт») и краткое
+    # описание профиля — задаём из кода, чтобы не править вручную в BotFather.
+    try:
+        await app.bot.set_my_description(description=BOT_DESCRIPTION)
+        await app.bot.set_my_short_description(short_description=BOT_SHORT_DESCRIPTION)
+    except Exception:
+        logger.exception("Failed to set bot description")
     # Seed prompt library from remote in a thread so we don't block the event loop
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, _sync_prompt_library_from_remote)

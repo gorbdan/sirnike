@@ -72,6 +72,8 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN avatar_male_url TEXT")
         if "avatar_child_url" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN avatar_child_url TEXT")
+        if "active_avatar_kind" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN active_avatar_kind TEXT")
 
         conn.commit()
 
@@ -414,6 +416,31 @@ def clear_avatar_url(user_id: int, kind: str = "female"):
             (user_id,),
         )
         conn.commit()
+
+
+def set_active_avatar_kind(user_id: int, kind: str):
+    """Запоминает, какой аватар (female/male/child) использовать в генерации."""
+    normalized = _AVATAR_COLUMN_ALIASES.get((kind or "").strip().lower(), (kind or "").strip().lower())
+    if normalized not in _AVATAR_COLUMNS:
+        normalized = "female"
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE users SET active_avatar_kind = ? WHERE user_id = ?",
+            (normalized, user_id),
+        )
+        conn.commit()
+
+
+def get_active_avatar_kind(user_id: int) -> Optional[str]:
+    """Возвращает выбранный активный тип аватара или None, если не выбран."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT active_avatar_kind FROM users WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+    if not row or not row[0]:
+        return None
+    val = str(row[0]).strip().lower()
+    return val if val in _AVATAR_COLUMNS else None
 
 
 def purge_stale_avatar_refs() -> int:

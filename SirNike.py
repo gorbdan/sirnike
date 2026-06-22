@@ -136,6 +136,8 @@ from db import (
     get_avatar_url,
     get_avatar_urls,
     clear_avatar_url,
+    set_active_avatar_kind,
+    get_active_avatar_kind,
     purge_stale_avatar_refs,
     restore_free_generation,
     log_generation_event,
@@ -1080,6 +1082,25 @@ def avatar_actions_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton("🎨 Сгенерировать аватар", callback_data="avatar_gen_refsheet")])
     if has_any:
         rows.append([InlineKeyboardButton("👀 Показать аватары", callback_data="show_avatar")])
+
+    # Выбор активного аватара для генерации — показываем, только если
+    # загружено 2+ типа (иначе выбора нет). ● отмечает текущий.
+    loaded_kinds = [k for k in ("female", "male", "child") if existing.get(k)]
+    if user_id is not None and len(loaded_kinds) >= 2:
+        try:
+            active = get_active_avatar_kind(user_id)
+        except Exception:
+            active = None
+        if active not in loaded_kinds:
+            active = loaded_kinds[0]
+        short = {"female": "👩 Жен.", "male": "👨 Муж.", "child": "🧒 Дет."}
+        rows.append([
+            InlineKeyboardButton(
+                ("● " if k == active else "") + short[k],
+                callback_data=f"avatar_use_{k}",
+            )
+            for k in loaded_kinds
+        ])
     # Загрузка своих фото
     rows.append([
         InlineKeyboardButton("📤 Женский 👩", callback_data="set_avatar_female"),
@@ -2704,6 +2725,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             persistent_url = await _persist_image_ref(direct_url)
             if persistent_url:
                 set_avatar_url(user.id, persistent_url, avatar_kind)
+                # Только что загруженный аватар сразу делаем активным для генерации.
+                set_active_avatar_kind(user.id, avatar_kind)
                 state.animation_source_url = persistent_url
                 saved_msg = (
                     f"Аватар ({avatar_kind_label(avatar_kind)}) сохранён ✅\n"
@@ -3636,12 +3659,14 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     references = list(state.references)
-    # Pick best available avatar: use the first non-None among female/male/child
+    # Берём выбранный активный аватар; если не выбран или его слот пуст —
+    # откатываемся на первый доступный (female → male → child).
     _all_avatars = get_avatar_urls(user.id)
-    avatar_url = (
-        _all_avatars.get("female")
-        or _all_avatars.get("male")
-        or _all_avatars.get("child")
+    _active_kind = get_active_avatar_kind(user.id)
+    _avatar_order = ([_active_kind] if _active_kind else []) + ["female", "male", "child"]
+    avatar_url = next(
+        (_all_avatars.get(k) for k in _avatar_order if _all_avatars.get(k)),
+        None,
     )
     if avatar_url and not references:
         references = [avatar_url]
@@ -4653,9 +4678,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Загрузи 3–10 своих фото, и нейросеть запомнит твою внешность.\n"
             "После этого в каждой генерации будешь появляться именно ты — "
             "хоть в образе киберпанк-воина, хоть на обложке журнала.\n\n"
+            "Если загружено несколько аватаров (👩/👨/🧒) — кнопками ниже "
+            "выбери, каким генерировать (● текущий).\n\n"
             "Это то, чего нет у большинства конкурентов 💪",
             reply_markup=avatar_actions_kb(user.id),
         )
+        return
+
+    if query.data in {"avatar_use_female", "avatar_use_male", "avatar_use_child"}:
+        chosen = query.data.rsplit("_", 1)[-1]
+        if not get_avatar_urls(user.id).get(chosen):
+            await query.answer("Такой аватар ещё не загружен.", show_alert=True)
+            return
+        set_active_avatar_kind(user.id, chosen)
+        await query.answer(f"Генерирую как: {avatar_kind_label(chosen)} ✅")
+        try:
+            await query.message.edit_reply_markup(reply_markup=avatar_actions_kb(user.id))
+        except BadRequest:
+            pass
         return
 
     if query.data == "avatar_gen_refsheet":
@@ -7900,7 +7940,10 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
             if getattr(job, "save_as_avatar", False):
                 persistent_avatar_url = await _persist_image_ref(image_url)
                 if persistent_avatar_url:
-                    set_avatar_url(user_id, persistent_avatar_url, getattr(job, "avatar_kind", "female"))
+                    _job_avatar_kind = getattr(job, "avatar_kind", "female")
+                    set_avatar_url(user_id, persistent_avatar_url, _job_avatar_kind)
+                    # Свежесгенерированный аватар сразу делаем активным.
+                    set_active_avatar_kind(user_id, _job_avatar_kind)
                     await app.bot.send_message(chat_id=chat_id, text="Аватар сохранён ✅")
                 else:
                     await app.bot.send_message(chat_id=chat_id, text="⚠️ Аватар сгенерирован, но сохранить не удалось — хостинг недоступен. Загрузи фото вручную через меню.")
@@ -8183,7 +8226,10 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                             if getattr(job, "save_as_avatar", False):
                                 persistent_avatar_url = await _persist_image_ref(image_url)
                                 if persistent_avatar_url:
-                                    set_avatar_url(user_id, persistent_avatar_url, getattr(job, "avatar_kind", "female"))
+                                    _job_avatar_kind = getattr(job, "avatar_kind", "female")
+                                    set_avatar_url(user_id, persistent_avatar_url, _job_avatar_kind)
+                                    # Свежесгенерированный аватар сразу делаем активным.
+                                    set_active_avatar_kind(user_id, _job_avatar_kind)
                                     await app.bot.send_message(chat_id=chat_id, text="Аватар сохранён ✅")
                                 else:
                                     await app.bot.send_message(chat_id=chat_id, text="⚠️ Аватар сгенерирован, но сохранить не удалось — хостинг недоступен. Загрузи фото вручную через меню.")

@@ -999,7 +999,9 @@ def image_model_menu_kb(state: UserState) -> InlineKeyboardMarkup:
             ("● " if selected == "gpt5" else "") + f"GPT-5 Image 🆕 · {gpt5_cost} изюминок",
             callback_data="image_model_set_gpt5",
         )],
-        [InlineKeyboardButton("◀️ В меню", callback_data="reset")],
+        # Недеструктивный возврат: меню модели — это настройка, тут нельзя
+        # сбрасывать описание/фото (иначе кнопка «В меню» чистила prompt).
+        [InlineKeyboardButton("◀️ В меню", callback_data="avatar_back_menu")],
     ]
     return InlineKeyboardMarkup(rows)
 
@@ -3760,7 +3762,11 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Результат придёт сюда — не закрывай чат."
         )
 
-        context.user_data["state"] = UserState()
+        # Чистим временные данные, но сохраняем выбранную модель картинок —
+        # иначе предпочтение сбрасывалось на gemini после каждой генерации.
+        new_state = UserState()
+        new_state.image_model = state.image_model
+        context.user_data["state"] = new_state
 
     except BaseException as _enqueue_exc:
         queued_user_ids.discard(user.id)
@@ -4698,7 +4704,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.exception("Failed to enqueue avatar job for user=%s", user.id)
             await query.message.reply_text("Не удалось запустить генерацию. Попробуй ещё раз.")
             raise
-        context.user_data["state"] = UserState()
+        # Сохраняем выбранную модель картинок при сбросе временного состояния.
+        new_state = UserState()
+        new_state.image_model = state.image_model
+        context.user_data["state"] = new_state
         await query.message.reply_text(
             f"Запускаю генерацию аватара по {len(photos)} фото… ✨",
             reply_markup=main_menu_kb(),
@@ -4752,7 +4761,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "reset":
-        context.user_data["state"] = UserState()
+        # Сбрасываем только временные данные (описание/фото/видео-сессию).
+        # Липкие настройки-предпочтения переносим в новое состояние, иначе
+        # выбор модели картинок терялся при возврате в меню кнопкой «◀️ В меню».
+        prev_state = context.user_data.get("state")
+        new_state = UserState()
+        if isinstance(prev_state, UserState):
+            new_state.image_model = prev_state.image_model
+        context.user_data["state"] = new_state
         await query.message.reply_text(
             "Готово — текущее описание и фото очищены.\n"
             "Баланс и аватары на месте. Можно начинать заново!",

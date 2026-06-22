@@ -1016,15 +1016,15 @@ def image_model_menu_text(state: UserState) -> str:
 def promo_try_kb(promo_id: str) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton("🚀 Сгенерировать", callback_data=f"promo_try_{promo_id}")]]
     if PROMPT_WEBAPP_URL:
-        rows.append([InlineKeyboardButton("Библиотека стилей 📚", callback_data="pl_open_webapp")])
+        rows.append([InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open_webapp")])
     else:
-        rows.append([InlineKeyboardButton("Библиотека стилей 📚", callback_data="pl_open")])
+        rows.append([InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open")])
     return InlineKeyboardMarkup(rows)
 
 
 def support_report_admin_kb(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Ответить пользователю 💬", callback_data=f"support_reply_{user_id}")]
+        [InlineKeyboardButton("💬 Ответить пользователю", callback_data=f"support_reply_{user_id}")]
     ])
 
 
@@ -1065,33 +1065,53 @@ def avatar_actions_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     else:
         existing = {"female": True, "male": True, "child": True}
 
+    has_any = any(existing.values())
     rows = []
-    if not any(existing.values()):
+    if not has_any:
         rows.append([InlineKeyboardButton("❓ Что такое аватар?", callback_data="avatar_help")])
     rows.append([InlineKeyboardButton("🎨 Сгенерировать аватар", callback_data="avatar_gen_refsheet")])
+    if has_any:
+        rows.append([InlineKeyboardButton("👀 Показать аватары", callback_data="show_avatar")])
+    # Загрузка своих фото
     rows.append([
-        InlineKeyboardButton("Загрузить женский 👩", callback_data="set_avatar_female"),
-        InlineKeyboardButton("Загрузить мужской 👨", callback_data="set_avatar_male"),
+        InlineKeyboardButton("📤 Женский 👩", callback_data="set_avatar_female"),
+        InlineKeyboardButton("📤 Мужской 👨", callback_data="set_avatar_male"),
     ])
-    rows.append([InlineKeyboardButton("Загрузить детский 🧒", callback_data="set_avatar_child")])
-    if any(existing.values()):
-        rows.append([InlineKeyboardButton("Показать аватары 👀", callback_data="show_avatar")])
-        del_row = []
-        if existing.get("female"):
-            del_row.append(InlineKeyboardButton("Удалить женский 🗑", callback_data="delete_avatar_female"))
-        if existing.get("male"):
-            del_row.append(InlineKeyboardButton("Удалить мужской 🗑", callback_data="delete_avatar_male"))
-        if del_row:
-            rows.append(del_row)
-        if existing.get("child"):
-            rows.append([InlineKeyboardButton("Удалить детский 🗑", callback_data="delete_avatar_child")])
-        rows.append([InlineKeyboardButton("Удалить все аватары 🧹", callback_data="delete_avatar")])
+    rows.append([InlineKeyboardButton("📤 Детский 🧒", callback_data="set_avatar_child")])
+    # Удаление вынесено в отдельный экран, чтобы не загромождать
+    if has_any:
+        rows.append([InlineKeyboardButton("🗑 Управление аватарами", callback_data="avatar_delete_menu")])
     rows.append([InlineKeyboardButton("◀️ В меню", callback_data="avatar_back_menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def avatar_delete_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
+    existing = {}
+    if user_id is not None:
+        try:
+            existing = get_avatar_urls(user_id)
+        except Exception:
+            pass
+    else:
+        existing = {"female": True, "male": True, "child": True}
+
+    del_buttons = []
+    if existing.get("female"):
+        del_buttons.append(InlineKeyboardButton("🗑 Женский", callback_data="delete_avatar_female"))
+    if existing.get("male"):
+        del_buttons.append(InlineKeyboardButton("🗑 Мужской", callback_data="delete_avatar_male"))
+    if existing.get("child"):
+        del_buttons.append(InlineKeyboardButton("🗑 Детский", callback_data="delete_avatar_child"))
+
+    rows = [del_buttons[i:i + 2] for i in range(0, len(del_buttons), 2)]
+    if del_buttons:
+        rows.append([InlineKeyboardButton("🧹 Удалить все", callback_data="delete_avatar")])
+    rows.append([InlineKeyboardButton("◀️ Назад", callback_data="avatar_actions")])
     return InlineKeyboardMarkup(rows)
 
 def webapp_open_kb(user_id: int = None) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[KeyboardButton("Открыть библиотеку 📚", web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)))]],
+        [[KeyboardButton("📚 Открыть библиотеку", web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)))]],
         resize_keyboard=True,
         one_time_keyboard=True,
         selective=True,
@@ -1100,14 +1120,18 @@ def webapp_open_kb(user_id: int = None) -> ReplyKeyboardMarkup:
 
 def webapp_inline_kb(user_id: int = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Открыть библиотеку 📚", web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)))]
+        [InlineKeyboardButton("📚 Открыть библиотеку", web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)))]
     ])
 
 
 def prompt_library_menu_kb() -> InlineKeyboardMarkup:
-    rows = []
-    for idx, cat in enumerate(PROMPT_LIBRARY):
-        rows.append([InlineKeyboardButton(f"{cat['emoji']} {cat['title']}", callback_data=f"pl_cat_{idx}")])
+    # Пустые категории не показываем юзеру (тупик), индекс категории сохраняем для callback
+    buttons = [
+        InlineKeyboardButton(f"{cat['emoji']} {cat['title']}", callback_data=f"pl_cat_{idx}")
+        for idx, cat in enumerate(PROMPT_LIBRARY)
+        if (cat.get("items") or [])
+    ]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
     rows.append([InlineKeyboardButton("◀️ В меню", callback_data="reset")])
     return InlineKeyboardMarkup(rows)
 
@@ -1144,21 +1168,23 @@ def prompt_library_item_kb(cat_idx: int, item_idx: int, item_kind: str = "image"
 
 
 def prompt_library_save_category_kb() -> InlineKeyboardMarkup:
-    rows = []
-    for idx, cat in enumerate(PROMPT_LIBRARY):
-        rows.append([InlineKeyboardButton(f"{cat['emoji']} {cat['title']}", callback_data=f"plsave_cat_{idx}")])
-    rows.append([InlineKeyboardButton("Отмена", callback_data="plsave_cancel")])
+    buttons = [
+        InlineKeyboardButton(f"{cat['emoji']} {cat['title']}", callback_data=f"plsave_cat_{idx}")
+        for idx, cat in enumerate(PROMPT_LIBRARY)
+    ]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton("✖️ Отмена", callback_data="plsave_cancel")])
     return InlineKeyboardMarkup(rows)
 
 
 def prompt_library_admin_kb_legacy() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Показать категории", callback_data="pladm_list")],
-        [InlineKeyboardButton("Создать категорию", callback_data="pladm_new")],
-        [InlineKeyboardButton("Переименовать категорию", callback_data="pladm_rename")],
-        [InlineKeyboardButton("Удалить категорию", callback_data="pladm_delete")],
-        [InlineKeyboardButton("Экспорт JSON", callback_data="pladm_export")],
-        [InlineKeyboardButton("Закрыть", callback_data="pladm_cancel")],
+        [InlineKeyboardButton("📂 Показать категории", callback_data="pladm_list")],
+        [InlineKeyboardButton("➕ Создать категорию", callback_data="pladm_new")],
+        [InlineKeyboardButton("✏️ Переименовать категорию", callback_data="pladm_rename")],
+        [InlineKeyboardButton("🗑 Удалить категорию", callback_data="pladm_delete")],
+        [InlineKeyboardButton("📤 Экспорт JSON", callback_data="pladm_export")],
+        [InlineKeyboardButton("✖️ Закрыть", callback_data="pladm_cancel")],
     ])
 
 
@@ -1174,33 +1200,37 @@ def prompt_history_kb(items: list, offset: int, page_size: int = 5) -> InlineKey
     nav = []
     if offset > 0:
         prev_offset = max(0, offset - page_size)
-        nav.append(InlineKeyboardButton("← Назад", callback_data=f"plhist_open_{prev_offset}"))
+        nav.append(InlineKeyboardButton("◀️ Назад", callback_data=f"plhist_open_{prev_offset}"))
     if len(items) >= page_size:
         next_offset = offset + page_size
-        nav.append(InlineKeyboardButton("Вперед →", callback_data=f"plhist_open_{next_offset}"))
+        nav.append(InlineKeyboardButton("Вперёд ▶️", callback_data=f"plhist_open_{next_offset}"))
     if nav:
         rows.append(nav)
 
-    rows.append([InlineKeyboardButton("В админ-меню", callback_data="pladm_open")])
+    rows.append([InlineKeyboardButton("◀️ В админ-меню", callback_data="pladm_open")])
     return InlineKeyboardMarkup(rows)
 
 
 def prompt_history_preview_kb(item_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Сохранить в библиотеку ✅", callback_data=f"plhist_export_{item_id}")],
-        [InlineKeyboardButton("Назад к истории", callback_data="plhist_open_0")],
+        [InlineKeyboardButton("✅ Сохранить в библиотеку", callback_data=f"plhist_export_{item_id}")],
+        [InlineKeyboardButton("◀️ К истории", callback_data="plhist_open_0")],
     ])
 
 
 def prompt_library_admin_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Показать категории", callback_data="pladm_list")],
-        [InlineKeyboardButton("История генераций", callback_data="plhist_open_0")],
-        [InlineKeyboardButton("Создать категорию", callback_data="pladm_new")],
-        [InlineKeyboardButton("Переименовать категорию", callback_data="pladm_rename")],
-        [InlineKeyboardButton("Удалить категорию", callback_data="pladm_delete")],
-        [InlineKeyboardButton("Экспорт JSON", callback_data="pladm_export")],
-        [InlineKeyboardButton("Закрыть", callback_data="pladm_cancel")],
+        [InlineKeyboardButton("📂 Показать категории", callback_data="pladm_list")],
+        [InlineKeyboardButton("🕘 История генераций", callback_data="plhist_open_0")],
+        [
+            InlineKeyboardButton("➕ Создать", callback_data="pladm_new"),
+            InlineKeyboardButton("✏️ Переименовать", callback_data="pladm_rename"),
+        ],
+        [
+            InlineKeyboardButton("🗑 Удалить категорию", callback_data="pladm_delete"),
+            InlineKeyboardButton("📤 Экспорт JSON", callback_data="pladm_export"),
+        ],
+        [InlineKeyboardButton("✖️ Закрыть", callback_data="pladm_cancel")],
     ])
 
 
@@ -1218,7 +1248,7 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
         prefix = "● " if sec == selected_duration else ""
         duration_buttons.append(
             InlineKeyboardButton(
-                f"{prefix}{sec}с · {cost} изюминок",
+                f"{prefix}{sec}с · {cost} 🧀",
                 callback_data=f"video_duration_{sec}",
             )
         )
@@ -1411,18 +1441,18 @@ def video_upsell_kb(user_id: int) -> tuple:
 
 def seedance_retry_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Повторить 🔁", callback_data="seedance_retry")],
-        [InlineKeyboardButton("В меню", callback_data="reset")],
+        [InlineKeyboardButton("🔁 Повторить", callback_data="seedance_retry")],
+        [InlineKeyboardButton("◀️ В меню", callback_data="reset")],
     ])
 
 
 def broadcast_library_kb() -> InlineKeyboardMarkup:
     if PROMPT_WEBAPP_URL:
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton("Библиотека стилей 📚", callback_data="pl_open_webapp")]
+            [InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open_webapp")]
         ])
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Библиотека стилей 📚", callback_data="pl_open")]
+        [InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open")]
     ])
 
 
@@ -1519,10 +1549,10 @@ def build_media_group_payload(items: List[Dict[str, Any]]) -> List[Any]:
 # Override label to keep retry wording consistent after failed image generation.
 def result_actions_kb(user_id: int = 0, bot_username: str = "") -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton("Повторить 🔁", callback_data="generate_again")],
+        [InlineKeyboardButton("🔁 Повторить", callback_data="generate_again")],
     ]
     if user_id and SEEDANCE_ENABLED:
-        rows.append([InlineKeyboardButton("Оживить 🎬 (сделать видео)", callback_data="animate_last")])
+        rows.append([InlineKeyboardButton("🎬 Оживить (сделать видео)", callback_data="animate_last")])
     if user_id and bot_username:
         ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
         rows.append([InlineKeyboardButton("🎁 Пригласить друга (+10 изюминок)", url=ref_link)])
@@ -3564,7 +3594,7 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Например: «девушка на фоне заката», «кот в космосе», «портрет в стиле кино»\n\n"
             "Или выбери готовый стиль из библиотеки:",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Библиотека стилей 📚", callback_data="pl_open_webapp")],
+                [InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open_webapp")],
                 [InlineKeyboardButton("❓ Как пользоваться", callback_data="show_help")],
             ])
         )
@@ -4830,12 +4860,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         return
 
+    if query.data == "avatar_delete_menu":
+        await query.message.reply_text(
+            "🗑 Управление аватарами\n\nВыбери, что удалить:",
+            reply_markup=avatar_delete_kb(user.id),
+        )
+        return
+
     if query.data in {"delete_avatar", "delete_avatar_female", "delete_avatar_male", "delete_avatar_child"}:
         if query.data == "delete_avatar":
             clear_avatar_url(update.effective_user.id, "female")
             clear_avatar_url(update.effective_user.id, "male")
             clear_avatar_url(update.effective_user.id, "child")
-            await query.message.reply_text("Все аватары удалены.")
+            await query.message.reply_text(
+                "Все аватары удалены.",
+                reply_markup=avatar_actions_kb(user.id),
+            )
             return
         kind_map = {
             "delete_avatar_female": "female",
@@ -4844,7 +4884,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         avatar_kind = kind_map.get(query.data, "female")
         clear_avatar_url(update.effective_user.id, avatar_kind)
-        await query.message.reply_text(f"Удалён {avatar_kind_label(avatar_kind)} аватар.")
+        # После удаления показываем обновлённый экран управления (или меню, если пусто)
+        remaining = {}
+        try:
+            remaining = get_avatar_urls(update.effective_user.id)
+        except Exception:
+            pass
+        if any(remaining.values()):
+            await query.message.reply_text(
+                f"Удалён {avatar_kind_label(avatar_kind)} аватар.",
+                reply_markup=avatar_delete_kb(update.effective_user.id),
+            )
+        else:
+            await query.message.reply_text(
+                f"Удалён {avatar_kind_label(avatar_kind)} аватар. Аватаров больше нет.",
+                reply_markup=avatar_actions_kb(update.effective_user.id),
+            )
         return
 
 # ══════════════════════════════════════════════════════════════

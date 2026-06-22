@@ -3404,8 +3404,8 @@ async def _seedance_aiportrait(image_bytes: bytes) -> Optional[bytes]:
 
 def _apply_grid_overlay(
     image_bytes: bytes,
-    rows: int = 6,
-    cols: int = 6,
+    rows: int = 8,
+    cols: int = 8,
     line_color: tuple = (255, 255, 255),
     line_width: int = 12,
 ) -> bytes:
@@ -3413,9 +3413,10 @@ def _apply_grid_overlay(
 
     Per community testing of Seedance's face detector, the grid must be SOLID
     (100% opacity) and thick to reliably break face detection — semi-transparent
-    or thin lines re-engage the detector. Standard reliable setting is 6×6 white
-    lines at 12px. The grid breaks the pixel patterns the detector relies on while
-    Seedance still reads the character/pose from the cells between lines.
+    or thin lines re-engage the detector. The 6×6 setting stopped passing, so the
+    grid is denser: 8×8 white lines at 12px. The grid breaks the pixel patterns
+    the detector relies on while Seedance still reads the character/pose from the
+    cells between lines.
     """
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 

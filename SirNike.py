@@ -1103,50 +1103,24 @@ def avatar_actions_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     if active not in loaded_kinds:
         active = loaded_kinds[0] if loaded_kinds else None
 
-    label = {"female": "👩 Женский", "male": "👨 Мужской", "child": "🧒 Детский"}
+    short = {"female": "👩 Жен.", "male": "👨 Муж.", "child": "🧒 Дет."}
 
     rows = []
     if not has_any:
         rows.append([InlineKeyboardButton("❓ Что такое аватар?", callback_data="avatar_help")])
-    rows.append([InlineKeyboardButton("🎨 Сгенерировать аватар", callback_data="avatar_gen_refsheet")])
+    # Единая кнопка: генерация и есть создание/замена аватара (загрузки фото нет)
+    gen_label = "🎨 Создать / заменить аватар" if has_any else "🎨 Сгенерировать аватар"
+    rows.append([InlineKeyboardButton(gen_label, callback_data="avatar_gen_refsheet")])
     if has_any:
         rows.append([InlineKeyboardButton("👀 Показать аватары", callback_data="show_avatar")])
 
-    # По одной строке на тип: загруженный — выбрать активным (● текущий),
-    # пустой — добавить. Гендер встречается ровно один раз.
-    for k in ("female", "male", "child"):
-        if existing.get(k):
-            suffix = " · активен ●" if k == active else " · выбрать"
-            rows.append([InlineKeyboardButton(label[k] + suffix, callback_data=f"avatar_use_{k}")])
-        else:
-            rows.append([InlineKeyboardButton(label[k] + " · добавить +", callback_data=f"set_avatar_{k}")])
-
-    # Замена фото загруженных типов — на отдельном экране
-    if has_any:
-        rows.append([InlineKeyboardButton("🔄 Заменить фото", callback_data="avatar_replace_menu")])
+    # Выбор активного аватара — только если загружено 2+ типа (● текущий)
+    if len(loaded_kinds) >= 2:
+        rows.append([
+            InlineKeyboardButton(("● " if k == active else "") + short[k], callback_data=f"avatar_use_{k}")
+            for k in loaded_kinds
+        ])
     rows.append([InlineKeyboardButton("◀️ В меню", callback_data="avatar_back_menu")])
-    return InlineKeyboardMarkup(rows)
-
-
-def avatar_replace_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
-    existing = {}
-    if user_id is not None:
-        try:
-            existing = get_avatar_urls(user_id)
-        except Exception:
-            pass
-    else:
-        existing = {"female": True, "male": True, "child": True}
-
-    label = {"female": "🔄 Женский", "male": "🔄 Мужской", "child": "🔄 Детский"}
-    # Замена = повторная загрузка поверх (set_avatar_* перезаписывает фото)
-    buttons = [
-        InlineKeyboardButton(label[k], callback_data=f"set_avatar_{k}")
-        for k in ("female", "male", "child")
-        if existing.get(k)
-    ]
-    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-    rows.append([InlineKeyboardButton("◀️ Назад", callback_data="avatar_actions")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -4973,12 +4947,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         return
 
-    if query.data == "avatar_replace_menu":
-        await query.message.reply_text(
-            "🔄 Заменить фото\n\nВыбери тип — пришлёшь новое фото, оно перезапишет текущее:",
-            reply_markup=avatar_replace_kb(user.id),
-        )
-        return
 
 # ══════════════════════════════════════════════════════════════
 # БИБЛИОТЕКА ПРОМТОВ: просмотр, редактирование, история

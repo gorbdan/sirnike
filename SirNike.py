@@ -912,10 +912,25 @@ def get_prompt_webapp_url(user_id: int = None) -> str:
         try:
             history = get_generation_history(user_id, limit=10)
             if history:
-                compact = [{"u": h["image_url"], "p": (h["prompt"] or "")[:60], "t": h["created_at"]} for h in history]
-                raw = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
-                encoded = base64.urlsafe_b64encode(raw.encode()).decode()
-                if len(url) + len(encoded) + 3 < 2048:
+                # Влезаем в лимит URL (~2048). Раньше при 10 записях весь блок
+                # истории молча отбрасывался — теперь добираем столько свежих
+                # записей (от новых к старым), сколько помещается.
+                budget = 2048 - len(url) - len("&h=")
+                compact = []
+                for h in history:
+                    compact.append({
+                        "u": h["image_url"],
+                        "p": (h["prompt"] or "")[:60],
+                        "t": (h["created_at"] or "")[:19],  # без микросекунд — короче
+                    })
+                    raw = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+                    encoded = base64.urlsafe_b64encode(raw.encode()).decode()
+                    if len(encoded) > budget:
+                        compact.pop()
+                        break
+                if compact:
+                    raw = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+                    encoded = base64.urlsafe_b64encode(raw.encode()).decode()
                     url += f"&h={encoded}"
         except Exception as e:
             logger.warning("Failed to encode history for webapp URL: %s", e)

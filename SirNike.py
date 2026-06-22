@@ -259,6 +259,9 @@ MAX_CACHED_MEDIA_GROUPS = 300
 _MEDIA_GROUP_LAST_TTL_CHECK: float = 0.0
 MAX_MEDIA_GROUP_CHUNK_SIZE = 10
 MAX_AVATAR_PHOTOS = 20
+# Окно (сек) после загрузки аватара, в течение которого остальные фото из
+# того же альбома игнорируются, а не утекают в референсы генерации.
+AVATAR_UPLOAD_ALBUM_WINDOW_SEC = 12
 try:
     MAX_SEEDANCE_IMAGE_REFERENCES = max(
         1,
@@ -280,6 +283,9 @@ class UserState:
     animation_source_urls: List[str] = field(default_factory=list)
     waiting_for_avatar_upload: bool = False
     pending_avatar_kind: str = "female"
+    # Момент сохранения аватара через кнопку «Загрузить …». Нужно, чтобы
+    # «лишние» фото из того же альбома не утекали в референсы генерации.
+    avatar_uploaded_at: float = 0.0
     generating_avatar: bool = False
     avatar_photos: List[str] = field(default_factory=list)
     avatar_status_msg_id: Optional[int] = None
@@ -2699,7 +2705,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if persistent_url:
                 set_avatar_url(user.id, persistent_url, avatar_kind)
                 state.animation_source_url = persistent_url
-                saved_msg = f"Аватар ({avatar_kind_label(avatar_kind)}) сохранён ✅\nТеперь просто пиши описание — бот сам подставит твою внешность."
+                saved_msg = (
+                    f"Аватар ({avatar_kind_label(avatar_kind)}) сохранён ✅\n"
+                    "Это фото бот будет использовать как твою внешность.\n\n"
+                    "ℹ️ По кнопке «Загрузить …» сохраняется одно фото. Если прислал "
+                    "несколько — взял первое. Чтобы собрать аватар из 3–10 кадров, "
+                    "вернись в меню аватара и нажми «🎨 Сгенерировать аватар»."
+                )
             else:
                 state.animation_source_url = direct_url  # keep in-memory for this session
                 saved_msg = (
@@ -2708,6 +2720,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             state.waiting_for_avatar_upload = False
             state.pending_avatar_kind = "female"
+            # Метка времени: фото из того же альбома, прилетевшие следом, не должны
+            # утекать в референсы генерации (раньше фото №2+ молча становились ими).
+            state.avatar_uploaded_at = datetime.now().timestamp()
             await update.message.reply_text(saved_msg, reply_markup=main_menu_kb())
             return
 
@@ -2733,6 +2748,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Можешь отправить ещё фото или запускать генерацию.",
                 reply_markup=video_kb(state),
             )
+            return
+
+        # Лишние фото из альбома, отправленного на «Загрузить аватар», игнорируем,
+        # чтобы они не превращались молча в референсы для генерации картинки.
+        if datetime.now().timestamp() - getattr(state, "avatar_uploaded_at", 0.0) < AVATAR_UPLOAD_ALBUM_WINDOW_SEC:
             return
 
         state.animation_source_url = direct_url

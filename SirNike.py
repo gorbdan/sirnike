@@ -1075,7 +1075,21 @@ def avatar_actions_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     else:
         existing = {"female": True, "male": True, "child": True}
 
-    has_any = any(existing.values())
+    loaded_kinds = [k for k in ("female", "male", "child") if existing.get(k)]
+    has_any = bool(loaded_kinds)
+
+    # Активный аватар (тот, что подставляется в генерацию)
+    active = None
+    if user_id is not None and has_any:
+        try:
+            active = get_active_avatar_kind(user_id)
+        except Exception:
+            active = None
+    if active not in loaded_kinds:
+        active = loaded_kinds[0] if loaded_kinds else None
+
+    label = {"female": "👩 Женский", "male": "👨 Мужской", "child": "🧒 Детский"}
+
     rows = []
     if not has_any:
         rows.append([InlineKeyboardButton("❓ Что такое аватар?", callback_data="avatar_help")])
@@ -1083,38 +1097,23 @@ def avatar_actions_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     if has_any:
         rows.append([InlineKeyboardButton("👀 Показать аватары", callback_data="show_avatar")])
 
-    # Выбор активного аватара для генерации — показываем, только если
-    # загружено 2+ типа (иначе выбора нет). ● отмечает текущий.
-    loaded_kinds = [k for k in ("female", "male", "child") if existing.get(k)]
-    if user_id is not None and len(loaded_kinds) >= 2:
-        try:
-            active = get_active_avatar_kind(user_id)
-        except Exception:
-            active = None
-        if active not in loaded_kinds:
-            active = loaded_kinds[0]
-        short = {"female": "👩 Жен.", "male": "👨 Муж.", "child": "🧒 Дет."}
-        rows.append([
-            InlineKeyboardButton(
-                ("● " if k == active else "") + short[k],
-                callback_data=f"avatar_use_{k}",
-            )
-            for k in loaded_kinds
-        ])
-    # Загрузка своих фото
-    rows.append([
-        InlineKeyboardButton("📤 Женский 👩", callback_data="set_avatar_female"),
-        InlineKeyboardButton("📤 Мужской 👨", callback_data="set_avatar_male"),
-    ])
-    rows.append([InlineKeyboardButton("📤 Детский 🧒", callback_data="set_avatar_child")])
-    # Удаление вынесено в отдельный экран, чтобы не загромождать
+    # По одной строке на тип: загруженный — выбрать активным (● текущий),
+    # пустой — добавить. Гендер встречается ровно один раз.
+    for k in ("female", "male", "child"):
+        if existing.get(k):
+            suffix = " · активен ●" if k == active else " · выбрать"
+            rows.append([InlineKeyboardButton(label[k] + suffix, callback_data=f"avatar_use_{k}")])
+        else:
+            rows.append([InlineKeyboardButton(label[k] + " · добавить +", callback_data=f"set_avatar_{k}")])
+
+    # Замена фото загруженных типов — на отдельном экране
     if has_any:
-        rows.append([InlineKeyboardButton("🗑 Управление аватарами", callback_data="avatar_delete_menu")])
+        rows.append([InlineKeyboardButton("🔄 Заменить фото", callback_data="avatar_replace_menu")])
     rows.append([InlineKeyboardButton("◀️ В меню", callback_data="avatar_back_menu")])
     return InlineKeyboardMarkup(rows)
 
 
-def avatar_delete_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
+def avatar_replace_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     existing = {}
     if user_id is not None:
         try:
@@ -1124,17 +1123,14 @@ def avatar_delete_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     else:
         existing = {"female": True, "male": True, "child": True}
 
-    del_buttons = []
-    if existing.get("female"):
-        del_buttons.append(InlineKeyboardButton("🗑 Женский", callback_data="delete_avatar_female"))
-    if existing.get("male"):
-        del_buttons.append(InlineKeyboardButton("🗑 Мужской", callback_data="delete_avatar_male"))
-    if existing.get("child"):
-        del_buttons.append(InlineKeyboardButton("🗑 Детский", callback_data="delete_avatar_child"))
-
-    rows = [del_buttons[i:i + 2] for i in range(0, len(del_buttons), 2)]
-    if del_buttons:
-        rows.append([InlineKeyboardButton("🧹 Удалить все", callback_data="delete_avatar")])
+    label = {"female": "🔄 Женский", "male": "🔄 Мужской", "child": "🔄 Детский"}
+    # Замена = повторная загрузка поверх (set_avatar_* перезаписывает фото)
+    buttons = [
+        InlineKeyboardButton(label[k], callback_data=f"set_avatar_{k}")
+        for k in ("female", "male", "child")
+        if existing.get(k)
+    ]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
     rows.append([InlineKeyboardButton("◀️ Назад", callback_data="avatar_actions")])
     return InlineKeyboardMarkup(rows)
 
@@ -4962,46 +4958,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         return
 
-    if query.data == "avatar_delete_menu":
+    if query.data == "avatar_replace_menu":
         await query.message.reply_text(
-            "🗑 Управление аватарами\n\nВыбери, что удалить:",
-            reply_markup=avatar_delete_kb(user.id),
+            "🔄 Заменить фото\n\nВыбери тип — пришлёшь новое фото, оно перезапишет текущее:",
+            reply_markup=avatar_replace_kb(user.id),
         )
-        return
-
-    if query.data in {"delete_avatar", "delete_avatar_female", "delete_avatar_male", "delete_avatar_child"}:
-        if query.data == "delete_avatar":
-            clear_avatar_url(update.effective_user.id, "female")
-            clear_avatar_url(update.effective_user.id, "male")
-            clear_avatar_url(update.effective_user.id, "child")
-            await query.message.reply_text(
-                "Все аватары удалены.",
-                reply_markup=avatar_actions_kb(user.id),
-            )
-            return
-        kind_map = {
-            "delete_avatar_female": "female",
-            "delete_avatar_male": "male",
-            "delete_avatar_child": "child",
-        }
-        avatar_kind = kind_map.get(query.data, "female")
-        clear_avatar_url(update.effective_user.id, avatar_kind)
-        # После удаления показываем обновлённый экран управления (или меню, если пусто)
-        remaining = {}
-        try:
-            remaining = get_avatar_urls(update.effective_user.id)
-        except Exception:
-            pass
-        if any(remaining.values()):
-            await query.message.reply_text(
-                f"Удалён {avatar_kind_label(avatar_kind)} аватар.",
-                reply_markup=avatar_delete_kb(update.effective_user.id),
-            )
-        else:
-            await query.message.reply_text(
-                f"Удалён {avatar_kind_label(avatar_kind)} аватар. Аватаров больше нет.",
-                reply_markup=avatar_actions_kb(update.effective_user.id),
-            )
         return
 
 # ══════════════════════════════════════════════════════════════

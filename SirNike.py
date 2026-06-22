@@ -978,6 +978,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu")])
     rows.extend([
         # Служебные — на отдельных строках, понятнее
+        [InlineKeyboardButton("❓ Как пользоваться", callback_data="show_help")],
         [InlineKeyboardButton("🔄 Начать заново", callback_data="reset")],
         [InlineKeyboardButton("🚨 Сообщить о проблеме", callback_data="report_problem")],
     ])
@@ -1577,6 +1578,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception:
             logger.warning("Failed to notify referrer %s about bonus", referrer_id)
+    elif referrer_id and not is_new_user:
+        # Существующий пользователь перешёл по чужой реф-ссылке — бонус не положен
+        # (защита от абуза), но молчать не стоит: поясняем мягко.
+        try:
+            await update.message.reply_text(
+                "Ты уже зарегистрирован раньше, поэтому бонус за приглашение "
+                "не начисляется — он только для новичков.\n"
+                "Зато ты можешь сам приглашать друзей и получать изюминки: /ref"
+            )
+        except Exception:
+            logger.warning("Failed to send existing-user referral note to %s", user.id)
 
     bal = get_balance(user.id)
     free_date, free_count = get_free_info(user.id)
@@ -1588,11 +1600,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_new_user:
         bonus_photos = START_BONUS // BASE_GENERATION_COST
         free_photos_today = bonus_photos + FREE_GENERATIONS_PER_DAY
+        free_word = ru_plural(
+            FREE_GENERATIONS_PER_DAY,
+            "бесплатная генерация", "бесплатные генерации", "бесплатных генераций",
+        )
         text = (
             f"Привет! Я Сырник 🧀 — бот для создания AI-фото и видео.\n\n"
             f"🎁 Тебе доступно {free_photos_today} фото бесплатно уже сегодня:\n"
-            f"  • подарок на старте — {START_BONUS} изюминок ({bonus_photos} фото)\n"
-            f"  • ещё {FREE_GENERATIONS_PER_DAY} бесплатная генерация каждый день\n\n"
+            f"  • подарок на старте — {START_BONUS} изюминок ({bonus_photos} фото).\n"
+            f"    Изюминки — внутренняя валюта бота: 1 фото = {BASE_GENERATION_COST} изюминок\n"
+            f"  • ещё {FREE_GENERATIONS_PER_DAY} {free_word} каждый день\n\n"
             f"⚡ Попробуй прямо сейчас:\n"
             f"  Нажми «Библиотека стилей 📚» → выбери стиль → «Запустить генерацию ⚡»\n\n"
             f"🪄 Чтобы не загружать своё фото каждый раз — создай «Мой аватар», "
@@ -1610,13 +1627,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     await update.message.reply_text(text, reply_markup=main_menu_kb())
 
-    # Витрина для новичка: альбом примеров из библиотеки + кнопки "хочу так же"
+    # Витрина для новичка: альбом примеров из библиотеки + кнопки "хочу так же".
+    # Кнопки (callbacks shc_*) самодостаточны и не зависят от медиа, поэтому
+    # битый пример-URL не должен ронять весь экран — показываем кнопки всегда.
     if is_new_user:
         try:
             showcase = pick_showcase_items()
-            if showcase:
-                media = []
-                for _, _, item in showcase:
+        except Exception:
+            showcase = None
+            logger.warning("Failed to pick showcase for new user %s", user.id, exc_info=True)
+        if showcase:
+            media = []
+            for _, _, item in showcase:
+                try:
                     if _showcase_item_kind(item) == "video":
                         media.append(InputMediaVideo(
                             media=_safe_media_url(item.get("video_url")),
@@ -1626,28 +1649,44 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         media.append(InputMediaPhoto(
                             media=_safe_media_url(item.get("example_url")),
                         ))
+                except Exception:
+                    logger.warning("Skipping broken showcase item for user %s", user.id, exc_info=True)
+            album_sent = False
+            try:
                 if len(media) > 1:
                     await update.message.reply_media_group(media)
-                elif isinstance(media[0], InputMediaVideo):
+                    album_sent = True
+                elif len(media) == 1 and isinstance(media[0], InputMediaVideo):
                     await update.message.reply_video(media[0].media)
-                else:
+                    album_sent = True
+                elif len(media) == 1:
                     await update.message.reply_photo(media[0].media)
-                digits = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
-                buttons = [
-                    [InlineKeyboardButton(
-                        f"{digits[i]} {_showcase_item_label(item)}"
-                        + (" 🎬" if _showcase_item_kind(item) == "video" else ""),
-                        callback_data=f"shc_{cat_idx}_{item_idx}",
-                    )]
-                    for i, (cat_idx, item_idx, item) in enumerate(showcase)
-                ]
+                    album_sent = True
+            except Exception:
+                logger.warning("Failed to send showcase album to new user %s", user.id, exc_info=True)
+            digits = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
+            buttons = [
+                [InlineKeyboardButton(
+                    f"{digits[i]} {_showcase_item_label(item)}"
+                    + (" 🎬" if _showcase_item_kind(item) == "video" else ""),
+                    callback_data=f"shc_{cat_idx}_{item_idx}",
+                )]
+                for i, (cat_idx, item_idx, item) in enumerate(showcase)
+            ]
+            header = (
+                "Такие фото и видео делают пользователи Сырника 👆\n"
+                "Нравится стиль? Жми на него — я всё подготовлю:"
+            ) if album_sent else (
+                "Готовые стили пользователей Сырника 👇\n"
+                "Выбери понравившийся — я всё подготовлю:"
+            )
+            try:
                 await update.message.reply_text(
-                    "Такие фото и видео делают пользователи Сырника 👆\n"
-                    "Нравится стиль? Жми на него — я всё подготовлю:",
+                    header,
                     reply_markup=InlineKeyboardMarkup(buttons),
                 )
-        except Exception:
-            logger.warning("Failed to send showcase to new user %s", user.id, exc_info=True)
+            except Exception:
+                logger.warning("Failed to send showcase buttons to new user %s", user.id, exc_info=True)
 
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1670,7 +1709,7 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💰 Твой баланс\n\n"
         f"Изюминок: {bal} 🧀  (1 фото = {BASE_GENERATION_COST} изюминок)\n"
         f"Бесплатных генераций: {free_status}\n"
-        f"Следующий сброс: завтра в 0:00 по московскому времени",
+        f"Сброс бесплатных через ~{_hours_left}ч {_mins_left}мин (в 0:00 МСК)",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("💳 Купить изюминки", callback_data="show_buy")],
             [InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open_webapp")],
@@ -1704,6 +1743,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     create_user_if_not_exists(user.id, user.username, START_BONUS)
     bal = get_balance(user.id)
+    free_word = ru_plural(
+        FREE_GENERATIONS_PER_DAY,
+        "бесплатная генерация", "бесплатные генерации", "бесплатных генераций",
+    )
     await update.message.reply_text(
         "🧀 Сырник — бот для создания AI-фото и видео\n\n"
         "Как пользоваться:\n"
@@ -1713,7 +1756,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "3. Получи фото — готово!\n\n"
         "🪄 Аватар — загрузи свои фото, и бот поставит тебя в любой образ\n"
         "🎬 Видео — Seedance 2, Kling 3.0, Veo 3.1 (кнопка в меню)\n"
-        f"🆓 {FREE_GENERATIONS_PER_DAY} бесплатная генерация каждый день\n"
+        f"🆓 {FREE_GENERATIONS_PER_DAY} {free_word} каждый день\n"
         f"💰 Твой баланс: {bal} изюминок (1 фото = {BASE_GENERATION_COST} изюминок)\n\n"
         "Команды:\n"
         "/start — главное меню\n"
@@ -3897,7 +3940,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         if not PROMPT_WEBAPP_URL:
             await query.message.reply_text(
-                "WebApp пока не подключен. Используй встроенную библиотеку ниже.",
+                "Выбери стиль из библиотеки 👇",
                 reply_markup=prompt_library_menu_kb(),
             )
             return

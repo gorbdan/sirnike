@@ -1806,7 +1806,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         FREE_GENERATIONS_PER_DAY,
         "бесплатная генерация", "бесплатные генерации", "бесплатных генераций",
     )
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         "🧀 Сырник — бот для создания AI-фото и видео\n\n"
         "Как пользоваться:\n"
         "1. Напиши описание картинки (например: «девушка на фоне заката»)\n"
@@ -1817,6 +1817,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎬 Видео — Seedance 2, Kling 3.0, Veo 3.1 (кнопка в меню)\n"
         f"🆓 {FREE_GENERATIONS_PER_DAY} {free_word} каждый день\n"
         f"💰 Твой баланс: {bal} изюминок (1 фото = {BASE_GENERATION_COST} изюминок)\n\n"
+        "Изюминки — внутренняя валюта бота. Их можно купить или получить бесплатно, "
+        "пригласив друга.\n\n"
         "Команды:\n"
         "/start — главное меню\n"
         "/balance — баланс и бесплатные генерации\n"
@@ -4797,21 +4799,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "show_help":
-        user = update.effective_user
-        bal = get_balance(user.id)
-        await query.message.reply_text(
-            "🧀 Как пользоваться Сырником\n\n"
-            "1. Напиши описание картинки (например: «девушка на фоне заката»)\n"
-            "   или выбери готовый стиль из библиотеки 📚\n"
-            "2. Нажми «⚡ Создать фото»\n"
-            "3. Получи фото — готово!\n\n"
-            "🪄 Аватар — создай аватар по своим фото, и бот поставит тебя в любой образ\n"
-            "🎬 Видео — Seedance 2, Kling 3.0, Veo 3.1 (кнопка в меню)\n"
-            f"💰 Баланс: {bal} изюминок (1 фото = {BASE_GENERATION_COST} изюминок)\n\n"
-            "Изюминки — внутренняя валюта бота. Их можно купить или получить бесплатно, "
-            "пригласив друга: /ref",
-            reply_markup=main_menu_kb(),
-        )
+        # Единый источник справки — та же, что и команда /help.
+        await help_command(update, context)
         return
 
     if query.data == "report_problem":

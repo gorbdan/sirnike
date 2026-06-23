@@ -2463,6 +2463,53 @@ async def admin_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def set_avatar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Админ-команда: установить готовое фото как свой аватар.
+    Использование: ответить этой командой на сообщение с фото —
+    /set_avatar [female|male|child]. Только для админов (юзерам недоступно,
+    публичной загрузки аватара нет — монетизация не затрагивается).
+    """
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("У тебя нет доступа к этой команде.")
+        return
+
+    target = update.message.reply_to_message
+    if not target or not target.photo:
+        await update.message.reply_text(
+            "Ответь этой командой на сообщение с фото.\n"
+            "Пример: пришли фото, затем ответь на него «/set_avatar female»."
+        )
+        return
+
+    kind = (context.args[0].strip().lower() if context.args else "female")
+    if kind not in ("female", "male", "child"):
+        kind = "female"
+
+    try:
+        photo = target.photo[-1]
+        file = await context.bot.get_file(photo.file_id)
+        bio = io.BytesIO()
+        await file.download_to_memory(out=bio)
+        bio.seek(0)
+        direct_url = _cache_image(bio.read())
+        persistent_url = await _persist_image_ref(direct_url)
+    except Exception:
+        logger.exception("set_avatar_admin: failed to fetch/persist photo for user=%s", user.id)
+        await update.message.reply_text("Не удалось обработать фото. Попробуй ещё раз.")
+        return
+
+    if not persistent_url:
+        await update.message.reply_text("Не удалось залить фото на хостинг — попробуй ещё раз чуть позже.")
+        return
+
+    set_avatar_url(user.id, persistent_url, kind)
+    set_active_avatar_kind(user.id, kind)
+    await update.message.reply_text(
+        f"Готово — аватар ({avatar_kind_label(kind)}) установлен и сделан активным ✅"
+    )
+
+
 # ----------------------------
 # Input collection
 # ----------------------------
@@ -8452,6 +8499,7 @@ def main():
     app.add_handler(CommandHandler("ai", ai_chat))
     app.add_handler(CommandHandler("hide_keyboard", hide_keyboard))
     app.add_handler(CommandHandler("admin_add", admin_add))
+    app.add_handler(CommandHandler("set_avatar", set_avatar_admin))
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
     app.add_handler(CallbackQueryHandler(button_handler))

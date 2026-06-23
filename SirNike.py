@@ -1576,9 +1576,8 @@ def result_actions_kb(user_id: int = 0, bot_username: str = "") -> InlineKeyboar
     ]
     if user_id and SEEDANCE_ENABLED:
         rows.append([InlineKeyboardButton("🎬 Оживить (сделать видео)", callback_data="animate_last")])
-    if user_id and bot_username:
-        ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
-        rows.append([InlineKeyboardButton("🎁 Пригласить друга (+10 изюминок)", url=ref_link)])
+    pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
+    rows.append([InlineKeyboardButton("📚 Библиотека промтов", callback_data=pl_cb)])
     rows.append([InlineKeyboardButton("◀️ В меню", callback_data="reset")])
     return InlineKeyboardMarkup(rows)
 

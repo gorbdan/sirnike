@@ -1067,6 +1067,8 @@ def avatar_kind_label(kind: str) -> str:
 AVATAR_REFSHEET_PROMPT = (
     "Create a professional character turnaround sheet showing: full body front view, "
     "side view, back view, and portrait close-up. "
+    "Keep the SAME person from the reference photos — preserve their exact face, "
+    "facial features, hairstyle and hair color across all views. "
     "Style: ultra realistic 3D character render, cinematic soft lighting, neutral studio "
     "background, high detail skin and fabric, professional character design sheet."
 )

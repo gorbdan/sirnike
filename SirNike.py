@@ -958,7 +958,7 @@ def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int
                         f"Фото получены: {count} шт. ✅\n"
                         "Бот будет использовать их при генерации.\n\n"
                         "Теперь напиши описание картинки или выбери стиль из библиотеки 📚\n"
-                        "и нажми «Запустить генерацию ⚡»"
+                        "и нажми «⚡ Создать фото»"
                     ),
                     reply_markup=main_menu_kb()
                 )
@@ -1669,7 +1669,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"    Изюминки — внутренняя валюта бота: 1 фото = {BASE_GENERATION_COST} изюминок\n"
             f"  • ещё {FREE_GENERATIONS_PER_DAY} {free_word} каждый день\n\n"
             f"⚡ Попробуй прямо сейчас:\n"
-            f"  Нажми «Библиотека стилей 📚» → выбери стиль → «Запустить генерацию ⚡»\n\n"
+            f"  Нажми «Библиотека стилей 📚» → выбери стиль → «⚡ Создать фото»\n\n"
             f"🪄 Чтобы не загружать своё фото каждый раз — создай «Мой аватар», "
             f"и бот запомнит твою внешность.\n"
             f"❓ Подробнее: /help"
@@ -1761,7 +1761,7 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     free_status = (
         f"✅ осталось {free_count}/{FREE_GENERATIONS_PER_DAY}"
         if free_count > 0
-        else f"❌ исчерпаны (новые через ~{_hours_left}ч {_mins_left}мин)"
+        else "❌ исчерпаны"
     )
     await update.message.reply_text(
         f"💰 Твой баланс\n\n"
@@ -1811,9 +1811,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Как пользоваться:\n"
         "1. Напиши описание картинки (например: «девушка на фоне заката»)\n"
         "   или выбери готовый стиль из библиотеки 📚\n"
-        "2. Нажми «Запустить генерацию ⚡»\n"
+        "2. Нажми «⚡ Создать фото»\n"
         "3. Получи фото — готово!\n\n"
-        "🪄 Аватар — загрузи свои фото, и бот поставит тебя в любой образ\n"
+        "🪄 Аватар — создай аватар по своим фото, и бот поставит тебя в любой образ\n"
         "🎬 Видео — Seedance 2, Kling 3.0, Veo 3.1 (кнопка в меню)\n"
         f"🆓 {FREE_GENERATIONS_PER_DAY} {free_word} каждый день\n"
         f"💰 Твой баланс: {bal} изюминок (1 фото = {BASE_GENERATION_COST} изюминок)\n\n"
@@ -1843,12 +1843,12 @@ async def report_problem_command(update: Update, context: ContextTypes.DEFAULT_T
     create_user_if_not_exists(user.id, user.username, START_BONUS)
     state = get_or_init_state(context)
     state.waiting_for_problem_report = True
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         "📝 Опиши что не работает\n\n"
         "Примеры:\n"
         "• Генерация долго загружается\n"
         "• Фото выходит размытым\n"
-        "• Не могу загрузить аватар\n\n"
+        "• Не получается создать аватар\n\n"
         "Можешь добавить скриншот вторым сообщением.",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("❌ Отмена", callback_data="reset")
@@ -2642,7 +2642,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "Описание сохранено ✅\n"
-        "Теперь нажми «Запустить генерацию ⚡» или отправь своё фото, чтобы быть на картинке.",
+        "Теперь нажми «⚡ Создать фото» или отправь своё фото, чтобы быть на картинке.",
         reply_markup=main_menu_kb()
     )
 
@@ -2710,7 +2710,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"Аватар ({avatar_kind_label(avatar_kind)}) сохранён ✅\n"
                     "Это фото бот будет использовать как твою внешность.\n\n"
                     "ℹ️ По кнопке «Загрузить …» сохраняется одно фото. Если прислал "
-                    "несколько — взял первое. Чтобы собрать аватар из 3–10 кадров, "
+                    "несколько — взял первое. Чтобы собрать аватар из 3–8 кадров, "
                     "вернись в меню аватара и нажми «🎨 Сгенерировать аватар»."
                 )
             else:
@@ -2824,7 +2824,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await update.message.reply_text(
         f"Готово ✨\nСтиль «{title}» применён.\n"
-        "Нажми «Запустить генерацию ⚡» или отправь своё фото.",
+        "Нажми «⚡ Создать фото» или отправь своё фото.",
         reply_markup=main_menu_kb(),
     )
 
@@ -2862,7 +2862,7 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
             )
         else:
             await update.effective_message.reply_text(
-                f"Готово ✨\nСтиль «{title}» применён.\nНажми «Запустить генерацию ⚡».",
+                f"Готово ✨\nСтиль «{title}» применён.\nНажми «⚡ Создать фото».",
                 reply_markup=main_menu_kb(),
             )
     return True
@@ -3922,7 +3922,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(
                 f"Стиль «{title}» применён ✨\n"
                 "Хочешь себя на этом фото? Сначала пришли своё фото обычным сообщением.\n"
-                "А дальше жми «Запустить генерацию ⚡»",
+                "А дальше жми «⚡ Создать фото»",
                 reply_markup=main_menu_kb(),
             )
         return
@@ -4165,7 +4165,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.prompt = item["prompt"]
         await query.message.reply_text(
             f"Готово ✨\nСтиль «{_showcase_item_label(item)}» применён.\n"
-            "Нажми «Запустить генерацию ⚡» или отправь своё фото.",
+            "Нажми «⚡ Создать фото» или отправь своё фото.",
             reply_markup=main_menu_kb(),
         )
         return
@@ -4292,7 +4292,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         deactivate_video_session(state)
         if was_in_video and not state.prompt:
             await query.message.reply_text(
-                "Режим видео закрыт. Напиши описание и нажми «Запустить генерацию ⚡»."
+                "Режим видео закрыт. Напиши описание и нажми «⚡ Создать фото»."
             )
             return
         await run_generation(update, context)
@@ -4330,7 +4330,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saved_prompt = (last_generated_prompt.get(user_id) or "").strip()
         if not saved_prompt:
             await query.message.reply_text(
-                "Не нашла прошлое описание. Напиши новый текст и нажми «Запустить генерацию ⚡»."
+                "Не нашла прошлое описание. Напиши новый текст и нажми «⚡ Создать фото»."
             )
             return
 
@@ -4653,7 +4653,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "avatar_actions":
         await query.message.reply_text(
             "🪄 AI-аватар — это ты в любом образе\n\n"
-            "Загрузи 3–10 своих фото, и нейросеть запомнит твою внешность.\n"
+            "Пришли 3–8 своих фото, и нейросеть сгенерирует аватар и запомнит твою внешность.\n"
             "После этого в каждой генерации будешь появляться именно ты — "
             "хоть в образе киберпанк-воина, хоть на обложке журнала.\n\n"
             "Если загружено несколько аватаров (👩/👨/🧒) — кнопками ниже "
@@ -4782,8 +4782,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         await query.message.reply_text(
             "🪄 AI-аватар — это твоя внешность в боте.\n\n"
-            "Загрузи 3–10 своих фото лица с разных ракурсов → "
-            "бот запомнит как ты выглядишь → "
+            "Пришли 3–8 своих фото лица с разных ракурсов → "
+            "бот сгенерирует аватар и запомнит, как ты выглядишь → "
             "дальше ты будешь появляться в любом образе на каждой картинке.\n\n"
             "Аватар необязателен — без него тоже можно генерировать."
         )
@@ -4803,9 +4803,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🧀 Как пользоваться Сырником\n\n"
             "1. Напиши описание картинки (например: «девушка на фоне заката»)\n"
             "   или выбери готовый стиль из библиотеки 📚\n"
-            "2. Нажми «Запустить генерацию ⚡»\n"
+            "2. Нажми «⚡ Создать фото»\n"
             "3. Получи фото — готово!\n\n"
-            "🪄 Аватар — загрузи свои фото, и бот поставит тебя в любой образ\n"
+            "🪄 Аватар — создай аватар по своим фото, и бот поставит тебя в любой образ\n"
             "🎬 Видео — Seedance 2, Kling 3.0, Veo 3.1 (кнопка в меню)\n"
             f"💰 Баланс: {bal} изюминок (1 фото = {BASE_GENERATION_COST} изюминок)\n\n"
             "Изюминки — внутренняя валюта бота. Их можно купить или получить бесплатно, "
@@ -4815,13 +4815,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "report_problem":
-        state = get_or_init_state(context)
-        state.waiting_for_problem_report = True
-        await query.message.reply_text(
-            "Опиши проблему одним сообщением.\n"
-            "Я передам это в поддержку прямо сейчас.\n\n"
-            "Если передумала, отправь: отмена"
-        )
+        # Единая реализация с командой /report — один текст и один способ отмены.
+        await report_problem_command(update, context)
         return
 
     if query.data == "reset":
@@ -4859,7 +4854,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             "Готово ✨\n"
             "Стиль применён ✅\n\n"
-            "Нажми «Запустить генерацию ⚡» или отправь своё фото.",
+            "Нажми «⚡ Создать фото» или отправь своё фото.",
             reply_markup=main_menu_kb()
         )
         return
@@ -4912,7 +4907,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             f"Загрузи фото для аватара ({avatar_kind_label(avatar_kind)}) 📸\n\n"
             "Советы для лучшего результата:\n"
-            "• Загрузи 3–10 фото лица с разных ракурсов\n"
+            "• Загрузи 3–8 фото лица с разных ракурсов\n"
             "• Фото должны быть чёткими, лицо хорошо видно\n"
             "• Разное освещение и выражение лица — плюс\n\n"
             "После сохранения аватар будет автоматически добавляться в каждую генерацию.",

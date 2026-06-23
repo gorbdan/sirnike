@@ -1059,12 +1059,10 @@ def avatar_kind_label(kind: str) -> str:
     return "женский 👩"
 
 AVATAR_REFSHEET_PROMPT = (
-    "Create a professional character turnaround sheet showing: full body front view, "
-    "side view, back view, and portrait close-up. "
-    "Keep the SAME person from the reference photos — preserve their exact face, "
-    "facial features, hairstyle and hair color across all views. "
-    "Style: ultra realistic 3D character render, cinematic soft lighting, neutral studio "
-    "background, high detail skin and fabric, professional character design sheet."
+    "Create a character reference sheet on one white canvas. "
+    "Show the same person in 4 views: front face, 3/4 left, side profile, and full body shot. "
+    "Keep all facial features, hair color, skin tone, and clothing identical across all views. "
+    "Clean white background, studio lighting, photorealistic style."
 )
 
 def avatar_actions_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:

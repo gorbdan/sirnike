@@ -1059,10 +1059,21 @@ def avatar_kind_label(kind: str) -> str:
     return "женский 👩"
 
 AVATAR_REFSHEET_PROMPT = (
-    "Create a character reference sheet on one white canvas. "
-    "Show the same person in 4 views: front face, 3/4 left, side profile, and full body shot. "
-    "Keep all facial features, hair color, skin tone, and clothing identical across all views. "
-    "Clean white background, studio lighting, photorealistic style."
+    "Using the person in the reference photos, generate a single square image containing a 2x2 character reference sheet (4 cells in one image): "
+    "Top-left: FRONT VIEW (face straight at camera, neutral expression). "
+    "Top-right: SIDE PROFILE (90° left profile view). "
+    "Bottom-left: THREE-QUARTER VIEW (3/4 angle, slightly turned). "
+    "Bottom-right: FULL BODY (head to toe, same person, same clothing). "
+    "CRITICAL RULES: "
+    "- Keep the EXACT same person: same face shape, hair color/style, skin tone, clothing, body proportions. "
+    "- Each cell should have a clean, simple background (light gray or white). "
+    "- Professional character sheet layout — clear separation between cells. "
+    "- Realistic photographic style — looks like real studio photography. "
+    "- Natural skin textures, real lighting, no cartoon/illustration effects. "
+    "- Square output (1:1 aspect ratio). "
+    "- High quality, detailed rendering. "
+    "- Do NOT add any text labels, captions, or titles on the image. "
+    "Output exactly ONE square image."
 )
 
 def avatar_actions_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:

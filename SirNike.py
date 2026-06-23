@@ -260,7 +260,9 @@ MEDIA_GROUP_CACHE: "_collections.OrderedDict[Tuple[int, str], List[Dict[str, Any
 MAX_CACHED_MEDIA_GROUPS = 300
 _MEDIA_GROUP_LAST_TTL_CHECK: float = 0.0
 MAX_MEDIA_GROUP_CHUNK_SIZE = 10
-MAX_AVATAR_PHOTOS = 20
+# Совпадает с лимитом референсов, реально уходящих в генерацию (references[:8]),
+# чтобы лишние фото не собирались впустую и потом молча не отбрасывались.
+MAX_AVATAR_PHOTOS = 8
 # Окно (сек) после загрузки аватара, в течение которого остальные фото из
 # того же альбома игнорируются, а не утекают в референсы генерации.
 AVATAR_UPLOAD_ALBUM_WINDOW_SEC = 12
@@ -1063,12 +1065,16 @@ def avatar_kind_label(kind: str) -> str:
     return "женский 👩"
 
 AVATAR_REFSHEET_PROMPT = (
-    "Using the person in this reference photo, generate a single square image containing a 2x2 character reference sheet (4 cells in one image): "
+    "You are given MULTIPLE reference photos of the SAME single person (different angles, "
+    "lighting and moments). Study ALL of them together to capture this person's true likeness "
+    "— face shape, facial features, hair, skin tone and build — do not rely on just one photo. "
+    "Then generate a single square image containing a 2x2 character reference sheet (4 cells in one image): "
     "Top-left: FRONT VIEW (face straight at camera, neutral expression). "
     "Top-right: SIDE PROFILE (90° left profile view). "
     "Bottom-left: THREE-QUARTER VIEW (3/4 angle, slightly turned). "
     "Bottom-right: FULL BODY (head to toe, same person, same clothing). "
     "CRITICAL RULES: "
+    "- All four cells must depict the SAME single person from the reference photos — consistent identity. "
     "- Keep the EXACT same person: same face shape, hair color/style, skin tone, clothing, body proportions. "
     "- Each cell should have a clean, simple background (light gray or white). "
     "- Professional character sheet layout — clear separation between cells. "

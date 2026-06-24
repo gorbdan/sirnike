@@ -1337,7 +1337,7 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
         prefix = "● " if sec == selected_duration else ""
         duration_buttons.append(
             InlineKeyboardButton(
-                f"{prefix}{sec}с · {cost} 🧀",
+                f"{prefix}{sec}с · {cost} 🍇",
                 callback_data=f"video_duration_{sec}",
             )
         )
@@ -1711,7 +1711,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=referrer_id,
                 text=(
                     f"🎉 По твоей реферальной ссылке зарегистрировался новый пользователь!\n"
-                    f"Тебе начислено +{REFERRAL_BONUS_REFERRER} изюминок 🧀\n"
+                    f"Тебе начислено +{REFERRAL_BONUS_REFERRER} изюминок 🍇\n"
                     f"Твой баланс: {referrer_balance} изюминок"
                 ),
             )
@@ -1830,7 +1830,7 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bal = get_balance(user.id)
     await update.message.reply_text(
         f"💰 Твой баланс\n\n"
-        f"Изюминок: {bal} 🧀  (1 фото = {BASE_GENERATION_COST} изюминок)",
+        f"Изюминок: {bal} 🍇  (1 фото = {BASE_GENERATION_COST} изюминок)",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("💳 Купить изюминки", callback_data="show_buy")],
             [InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open_webapp")],
@@ -2109,7 +2109,7 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.effective_message.reply_text(
         f"💰 Пополнить баланс\n\n"
-        f"• 1 фото = {BASE_GENERATION_COST} изюминок 🧀 (≈ {_photo_rub} ₽)\n"
+        f"• 1 фото = {BASE_GENERATION_COST} изюминок 🍇 (≈ {_photo_rub} ₽)\n"
         f"• 1 видео 10 сек = {_video_10s_cost} изюминок 🎬 (≈ {_video_rub} ₽)\n"
         f"  (длиннее видео — дороже, короче — дешевле)\n\n"
         f"Чем больше пакет — тем дешевле каждый образ.\n"
@@ -2175,7 +2175,7 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
 
     await update.message.reply_text(
         f"Оплата прошла успешно ✅\n"
-        f"Начислено {count} изюминок 🧀\n"
+        f"Начислено {count} изюминок 🍇\n"
         f"Твой баланс: {new_balance} изюминок\n\n"
         f"Можешь запускать генерацию!",
         reply_markup=main_menu_kb(),
@@ -2204,7 +2204,7 @@ async def send_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE, count
 
     _invoice_kwargs = dict(
         chat_id=query.message.chat_id,
-        title="Покупка изюминок 🧀",
+        title="Покупка изюминок 🍇",
         description=description,
         payload=f"buy_{count}_{price}",
         provider_token=PROVIDER_TOKEN,

@@ -974,34 +974,22 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
     prompt_library_button = InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb)
 
-    video_label = "🎬 Создать видео" if SEEDANCE_ENABLED else "🎬 Создать видео 🚧"
+    video_label = "🎬 Видео для Reels" if SEEDANCE_ENABLED else "🎬 Видео для Reels 🚧"
     rows = [
-        # Главные действия — во всю ширину
-        [InlineKeyboardButton("⚡ Создать фото", callback_data="generate")],
+        # 3 продукта верхним уровнем — без технической каши настроек
+        [InlineKeyboardButton("✨ AI-фотосессия", callback_data="generate")],
         [InlineKeyboardButton(video_label, callback_data="video")],
-        # Контент
-        [
-            prompt_library_button,
-            InlineKeyboardButton("🪄 Мой аватар", callback_data="avatar_actions"),
-        ],
-        # Деньги и рост
+        [InlineKeyboardButton("🪄 Аватар", callback_data="avatar_actions")],
+        # Контент, деньги, рост
+        [prompt_library_button],
         [InlineKeyboardButton("💰 Баланс и пополнение", callback_data="show_buy")],
+        [InlineKeyboardButton("🎁 Пригласить друга", callback_data="open_ref")],
+        # Служебные — компактно в один ряд
+        [
+            InlineKeyboardButton("❓ Как пользоваться", callback_data="show_help"),
+            InlineKeyboardButton("🚨 Проблема", callback_data="report_problem"),
+        ],
     ]
-
-    referral_button = InlineKeyboardButton("🎁 Пригласить друга", callback_data="open_ref")
-    if GPT5_IMAGE_ENABLED:
-        rows.append([
-            referral_button,
-            InlineKeyboardButton("🧠 Модель", callback_data="image_model_menu"),
-        ])
-    else:
-        rows.append([referral_button])
-
-    # Служебные — компактно в один ряд
-    rows.append([
-        InlineKeyboardButton("❓ Как пользоваться", callback_data="show_help"),
-        InlineKeyboardButton("🚨 Проблема", callback_data="report_problem"),
-    ])
     return InlineKeyboardMarkup(rows)
 
 
@@ -1613,7 +1601,10 @@ def result_actions_kb(user_id: int = 0, bot_username: str = "") -> InlineKeyboar
         [InlineKeyboardButton("🔁 Повторить", callback_data="generate_again")],
     ]
     if user_id and SEEDANCE_ENABLED:
-        rows.append([InlineKeyboardButton("🎬 Оживить (сделать видео)", callback_data="animate_last")])
+        rows.append([InlineKeyboardButton("🎬 Оживить в видео", callback_data="animate_last")])
+    # «Модель картинок» — настройка внутри сценария генерации, не на главном экране
+    if GPT5_IMAGE_ENABLED:
+        rows.append([InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu")])
     pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
     rows.append([InlineKeyboardButton("📚 Библиотека промтов", callback_data=pl_cb)])
     rows.append([InlineKeyboardButton("◀️ В меню", callback_data="reset")])
@@ -2047,8 +2038,27 @@ async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Cost of one 5-second Seedance video (standard model)
+    # Cost of one 10-second Seedance video (standard model)
     _video_10s_cost = calc_seedance_cost(10, SEEDANCE_COST_PER_SECOND)
+
+    # Рублёвый эквивалент результата — по «честной середине» (пакет
+    # «Контент-неделя»; если его нет — средний пакет списка).
+    _mid_pack = next(
+        (p for p in BUY_PACKS if p.get("name") == "Контент-неделя"),
+        BUY_PACKS[len(BUY_PACKS) // 2] if BUY_PACKS else {"count": 1, "price": 0},
+    )
+    _rub_per_iz = _mid_pack["price"] / _mid_pack["count"] if _mid_pack["count"] else 0
+    _photo_rub = round(BASE_GENERATION_COST * _rub_per_iz)
+    _video_rub = round(_video_10s_cost * _rub_per_iz)
+
+    # Самый выгодный пакет (мин. цена за изюминку) и его скидка к самому
+    # дорогому за изюминку — считаем динамически из BUY_PACKS.
+    _ppi = [(p, p["price"] / p["count"]) for p in BUY_PACKS if p["count"]]
+    _best_pack = min(_ppi, key=lambda x: x[1])[0] if _ppi else None
+    _base_ppi = max((ppi for _, ppi in _ppi), default=0)
+    _best_ppi = min((ppi for _, ppi in _ppi), default=0)
+    _best_discount = round((1 - _best_ppi / _base_ppi) * 100) if _base_ppi else 0
+
     keyboard = []
     for pack in BUY_PACKS:
         photo_count = max(1, pack["count"] // BASE_GENERATION_COST)
@@ -2056,14 +2066,20 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photos_label = ru_plural(photo_count, "фото", "фото", "фото")
         if video_count > 0:
             videos_label = ru_plural(video_count, "видео", "видео", "видео")
-            hint = f"≈ {photo_count} {photos_label} / {video_count}+ {videos_label} (зависит от длины видео)"
+            hint = f"≈ {photo_count} {photos_label} / {video_count}+ {videos_label}"
         else:
             hint = f"≈ {photo_count} {photos_label}"
-        name_prefix = f"{pack['name']} · " if pack.get("name") else ""
+        parts = []
+        if pack.get("name"):
+            parts.append(pack["name"])
+        if pack is _best_pack and _best_discount > 0:
+            parts.append(f"−{_best_discount}% 🔥")
+        parts.append(f"{pack['count']} изюминок — {pack['price']} ₽")
+        parts.append(hint)
         keyboard.append([
             InlineKeyboardButton(
-                text=f"{name_prefix}{pack['count']} изюминок — {pack['price']} ₽ · {hint}",
-                callback_data=f"buy_{pack['count']}_{pack['price']}"
+                text=" · ".join(parts),
+                callback_data=f"buy_{pack['count']}_{pack['price']}",
             )
         ])
 
@@ -2071,10 +2087,11 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.effective_message.reply_text(
         f"💰 Пополнить баланс\n\n"
-        f"• 1 фото = {BASE_GENERATION_COST} изюминок 🧀\n"
-        f"• 1 видео 10 сек = {_video_10s_cost} изюминок 🎬\n"
+        f"• 1 фото = {BASE_GENERATION_COST} изюминок 🧀 (≈ {_photo_rub} ₽)\n"
+        f"• 1 видео 10 сек = {_video_10s_cost} изюминок 🎬 (≈ {_video_rub} ₽)\n"
         f"  (длиннее видео — дороже, короче — дешевле)\n\n"
-        f"Выбери пакет:",
+        f"Чем больше пакет — тем дешевле каждый образ.\n"
+        f"Выбери пакет 👇",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 

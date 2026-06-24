@@ -857,6 +857,42 @@ def calc_seedance_cost(duration_sec: int, cost_per_second: Optional[float] = Non
     return max(1, int(round(safe_duration * cps)))
 
 
+def classify_generation_error(error: object) -> str:
+    """Классифицировать ошибку провайдера для аналитики.
+
+    Возвращает один из: timeout / moderation / no_balance / provider_error /
+    download_error / unknown. Без чувствительных данных — только по тексту/типу.
+    """
+    if isinstance(error, asyncio.TimeoutError):
+        return "timeout"
+    text = (str(error) or "").lower()
+    if not text:
+        return "unknown"
+    if any(k in text for k in ("timeout", "timed out", "слишком долго", "время ожидания", "deadline")):
+        return "timeout"
+    if any(k in text for k in (
+        "moderation", "moderated", "модерац", "nsfw", "content filter", "content_filter",
+        "safety", "flagged", "blocked", "policy", "приватн", "privacy",
+    )):
+        return "moderation"
+    if any(k in text for k in (
+        "insufficient_funds", "insufficient funds", "no_balance", "no balance",
+        "недостаточно средств", "закончился баланс", "out of credits", "quota",
+    )):
+        return "no_balance"
+    if any(k in text for k in (
+        "download", "скачать изображение", "скачать видео", "не удалось скачать", "result_url пуст",
+        "url missing", "url пустой",
+    )):
+        return "download_error"
+    if any(k in text for k in (
+        "api", "provider", "server", "сервер", "генерац", "status", "5xx",
+        "500", "502", "503", "504", "bad gateway", "service unavailable",
+    )):
+        return "provider_error"
+    return "unknown"
+
+
 def build_mashagpt_url(base: str, path: str) -> str:
     b = (base or "").strip()
     p = "/" + path.strip("/")
@@ -1682,7 +1718,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning("Failed to send existing-user referral note to %s", user.id)
 
     bal = get_balance(user.id)
-    free_date, free_count = get_free_info(user.id)
     state = get_or_init_state(context)
     deactivate_video_session(state)
     avatar_urls = get_avatar_urls(user.id)
@@ -1690,17 +1725,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_new_user:
         bonus_photos = START_BONUS // BASE_GENERATION_COST
-        free_photos_today = bonus_photos + FREE_GENERATIONS_PER_DAY
-        free_word = ru_plural(
-            FREE_GENERATIONS_PER_DAY,
-            "бесплатная генерация", "бесплатные генерации", "бесплатных генераций",
-        )
         text = (
             f"Привет! Я Сырник 🧀 — бот для создания AI-фото и видео.\n\n"
-            f"🎁 Тебе доступно {free_photos_today} фото бесплатно уже сегодня:\n"
-            f"  • подарок на старте — {START_BONUS} изюминок ({bonus_photos} фото).\n"
-            f"    Изюминки — внутренняя валюта бота: 1 фото = {BASE_GENERATION_COST} изюминок\n"
-            f"  • ещё {FREE_GENERATIONS_PER_DAY} {free_word} каждый день\n\n"
+            f"🎁 Подарок на старте — {START_BONUS} изюминок (хватит на ~{bonus_photos} фото).\n"
+            f"   Изюминки — внутренняя валюта бота: 1 фото = {BASE_GENERATION_COST} изюминок\n\n"
             f"⚡ Попробуй прямо сейчас:\n"
             f"  Нажми «Библиотека стилей 📚» → выбери стиль → «⚡ Создать фото»\n\n"
             f"🪄 Чтобы не загружать своё фото каждый раз — создай «Мой аватар», "
@@ -1708,11 +1736,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❓ Подробнее: /help"
         )
     else:
-        free_left = max(0, FREE_GENERATIONS_PER_DAY - free_count)
         text = (
             f"С возвращением! 🧀\n\n"
             f"💰 Баланс: {bal} изюминок\n"
-            f"🆓 Бесплатных сегодня: {free_left}\n"
             f"🪄 Аватары: {avatar_status}\n\n"
             f"Напиши описание картинки или выбери стиль из библиотеки 📚"
         )
@@ -1790,23 +1816,9 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     create_user_if_not_exists(user.id, user.username, START_BONUS)
 
     bal = get_balance(user.id)
-    free_date, free_count = get_free_info(user.id)
-
-    from datetime import timedelta
-    _now_msk = datetime.utcnow() + timedelta(hours=3)
-    _next_reset = _now_msk.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-    _hours_left = int((_next_reset - _now_msk).total_seconds() / 3600)
-    _mins_left = int(((_next_reset - _now_msk).total_seconds() % 3600) / 60)
-    free_status = (
-        f"✅ осталось {free_count}/{FREE_GENERATIONS_PER_DAY}"
-        if free_count > 0
-        else "❌ исчерпаны"
-    )
     await update.message.reply_text(
         f"💰 Твой баланс\n\n"
-        f"Изюминок: {bal} 🧀  (1 фото = {BASE_GENERATION_COST} изюминок)\n"
-        f"Бесплатных генераций: {free_status}\n"
-        f"Сброс бесплатных через ~{_hours_left}ч {_mins_left}мин (в 0:00 МСК)",
+        f"Изюминок: {bal} 🧀  (1 фото = {BASE_GENERATION_COST} изюминок)",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("💳 Купить изюминки", callback_data="show_buy")],
             [InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open_webapp")],
@@ -1841,10 +1853,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     create_user_if_not_exists(user.id, user.username, START_BONUS)
     bal = get_balance(user.id)
-    free_word = ru_plural(
-        FREE_GENERATIONS_PER_DAY,
-        "бесплатная генерация", "бесплатные генерации", "бесплатных генераций",
-    )
     await update.effective_message.reply_text(
         "🧀 Сырник — бот для создания AI-фото и видео\n\n"
         "Как пользоваться:\n"
@@ -1854,13 +1862,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "3. Получи фото — готово!\n\n"
         "🪄 Аватар — создай аватар по своим фото, и бот поставит тебя в любой образ\n"
         "🎬 Видео — Seedance 2, Kling 3.0, Veo 3.1 (кнопка в меню)\n"
-        f"🆓 {FREE_GENERATIONS_PER_DAY} {free_word} каждый день\n"
         f"💰 Твой баланс: {bal} изюминок (1 фото = {BASE_GENERATION_COST} изюминок)\n\n"
-        "Изюминки — внутренняя валюта бота. Их можно купить или получить бесплатно, "
-        "пригласив друга.\n\n"
+        "Изюминки — внутренняя валюта бота. Их можно купить или получить "
+        "за приглашённых друзей.\n\n"
         "Команды:\n"
         "/start — главное меню\n"
-        "/balance — баланс и бесплатные генерации\n"
+        "/balance — твой баланс\n"
         "/buy — купить изюминки\n"
         "/ref — пригласить друга (+изюминки обоим)\n"
         "/report — сообщить о проблеме\n"
@@ -5716,13 +5723,13 @@ BOT_DESCRIPTION = (
     "🪄 AI-портреты и аватары из ваших фото\n"
     "📚 Библиотека готовых стилей в один тап\n"
     "\n"
-    "🎁 Бесплатные генерации каждый день и бонус новичку. Жми «Старт» 🚀"
+    "🎁 Бонус новичку на старте. Жми «Старт» 🚀"
 )
 
 # Краткое описание профиля (Telegram short description, лимит 120 символов).
 BOT_SHORT_DESCRIPTION = (
     "🧀 AI-фото и видео: генерация картинок, оживление фото, AI-портреты. "
-    "Бесплатные генерации каждый день 🎁"
+    "Бонус новичку на старте 🎁"
 )
 
 _worker_current_job = None  # tracks the job being processed right now
@@ -7357,6 +7364,12 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 references_count=len(video_images),
                 prompt=prompt_text[:500] if prompt_text else None,
                 username=user.username,
+                model=selected_model,
+                duration_sec=selected_duration,
+                aspect_ratio=getattr(state, "video_aspect_ratio", "16:9"),
+                charged_izyminki=selected_cost,
+                refunded_izyminki=0,
+                is_admin_test=1 if user.id in ADMIN_IDS else 0,
             )
             uname = f"@{user.username}" if user.username else f"id{user.id}"
             channel_caption = (
@@ -7388,6 +7401,14 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 cost=selected_cost,
                 was_free=False,
                 references_count=len(video_images),
+                model=selected_model,
+                duration_sec=selected_duration,
+                aspect_ratio=getattr(state, "video_aspect_ratio", "16:9"),
+                charged_izyminki=selected_cost,
+                refunded_izyminki=selected_cost,
+                error_type=classify_generation_error(e),
+                error_message=str(e),
+                is_admin_test=1 if user.id in ADMIN_IDS else 0,
             )
             error_text = str(e).lower()
             if is_seedance_privacy_moderation_error(error_text):
@@ -7580,10 +7601,7 @@ async def send_generation_result_by_url(
         _caption_parts.append("🧠 Модель: GPT-5 Image")
     if job:
         _cost = getattr(job, "cost", 0)
-        _was_free = getattr(job, "was_free", False)
-        if _was_free:
-            _caption_parts.append("🆓 Бесплатная генерация")
-        elif _cost:
+        if _cost:
             _caption_parts.append(f"💰 Потрачено: {_cost} изюминок")
     try:
         _bal = get_balance(user_id)
@@ -8015,6 +8033,11 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 result_url=image_url,
                 prompt=prompt[:500] if prompt else None,
                 username=getattr(job, "username", None),
+                model=getattr(job, "image_model", None),
+                aspect_ratio=getattr(job, "aspect_ratio", None),
+                charged_izyminki=getattr(job, "cost", 0),
+                refunded_izyminki=0,
+                is_admin_test=1 if user_id in ADMIN_IDS else 0,
             )
             if RESULTS_CHANNEL_ID and image_url:
                 uname = f"@{job.username}" if job.username else f"id{user_id}"
@@ -8082,6 +8105,13 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 cost=getattr(job, "cost", 0),
                 was_free=getattr(job, "was_free", False),
                 references_count=len(references or []),
+                model=getattr(job, "image_model", None),
+                aspect_ratio=getattr(job, "aspect_ratio", None),
+                charged_izyminki=getattr(job, "cost", 0),
+                refunded_izyminki=getattr(job, "cost", 0) if refunded else 0,
+                error_type=classify_generation_error(e),
+                error_message=last_error_text,
+                is_admin_test=1 if user_id in ADMIN_IDS else 0,
             )
             return
 
@@ -8298,6 +8328,11 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                                 cost=getattr(job, "cost", 0),
                                 was_free=getattr(job, "was_free", False),
                                 references_count=len(references or []),
+                                model=getattr(job, "image_model", None),
+                                aspect_ratio=getattr(job, "aspect_ratio", None),
+                                charged_izyminki=getattr(job, "cost", 0),
+                                refunded_izyminki=0,
+                                is_admin_test=1 if user_id in ADMIN_IDS else 0,
                             )
                             if RESULTS_CHANNEL_ID and image_url:
                                 uname = f"@{getattr(job, 'username', None)}" if getattr(job, "username", None) else f"id{user_id}"
@@ -8351,6 +8386,13 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 cost=getattr(job, "cost", 0),
                 was_free=getattr(job, "was_free", False),
                 references_count=len(references or []),
+                model=getattr(job, "image_model", None),
+                aspect_ratio=getattr(job, "aspect_ratio", None),
+                charged_izyminki=getattr(job, "cost", 0),
+                refunded_izyminki=getattr(job, "cost", 0) if refunded else 0,
+                error_type=classify_generation_error(e),
+                error_message=last_error_text,
+                is_admin_test=1 if user_id in ADMIN_IDS else 0,
             )
             return
 

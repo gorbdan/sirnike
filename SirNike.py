@@ -5185,7 +5185,8 @@ async def pnl_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 P&L за {r['days']} дн. (тесты админов исключены)",
         "",
         "💰 Выручка",
-        f"• Звёзд получено: {_money(r['revenue'])}",
+        f"• Выручка, ₽: {_money(r['revenue_rub'])}" + (" (оценка)" if r["revenue_estimated"] else ""),
+        f"• Изюминок продано: {_money(r['izyminki_sold'])}",
         f"• Платежей: {r['payments_count']} · платящих: {r['payers']}",
         "",
         "👥 Пользователи",
@@ -5230,7 +5231,7 @@ async def pnl_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if r["source_pay"]:
         for s in r["source_pay"]:
             lines.append(
-                f"• {s['source']}: {s['payments']} платежей / {s['payers']} платящих · {_money(s['revenue'])}"
+                f"• {s['source']}: {s['payments']} платежей / {s['payers']} платящих · {_money(s['revenue_rub'])} ₽"
             )
     else:
         lines.append("• нет оплат за период")
@@ -5242,7 +5243,9 @@ async def pnl_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         w = csv.writer(buf)
         w.writerow(["section", "key", "value", "extra1", "extra2", "extra3"])
         w.writerow(["summary", "days", r["days"], "", "", ""])
-        w.writerow(["summary", "revenue", r["revenue"], "", "", ""])
+        w.writerow(["summary", "revenue_rub", r["revenue_rub"], "estimated" if r["revenue_estimated"] else "exact", "", ""])
+        w.writerow(["summary", "revenue_rub_exact", r["revenue_rub_exact"], "", "", ""])
+        w.writerow(["summary", "izyminki_sold", r["izyminki_sold"], "", "", ""])
         w.writerow(["summary", "payments_count", r["payments_count"], "", "", ""])
         w.writerow(["summary", "payers", r["payers"], "", "", ""])
         w.writerow(["summary", "new_users", r["new_users"], "", "", ""])
@@ -5257,7 +5260,7 @@ async def pnl_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for s in r["source_new"]:
             w.writerow(["source_new", s["source"], s["new_users"], "", "", ""])
         for s in r["source_pay"]:
-            w.writerow(["source_pay", s["source"], s["payments"], s["payers"], s["revenue"], ""])
+            w.writerow(["source_pay", s["source"], s["payments"], s["payers"], s["revenue_rub"], "rub"])
 
         data = io.BytesIO(buf.getvalue().encode("utf-8-sig"))
         data.name = f"pnl_{r['days']}d.csv"

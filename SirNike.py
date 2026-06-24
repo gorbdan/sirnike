@@ -994,36 +994,38 @@ def main_menu_kb() -> InlineKeyboardMarkup:
 
 
 # Постоянная reply-клавиатура: всегда под полем ввода, не пропадает.
-MENU_BTN_PHOTOSHOOT = "📸 Фотосессии"
-MENU_BTN_VIDEO = "🎬 Видео"
-MENU_BTN_PROMPT = "✍️ Фото по описанию"
-MENU_BTN_AVATAR = "🪄 Мой аватар"
+# Названия продуктов синхронизированы с инлайн-меню (один бренд в обоих меню).
+MENU_BTN_PHOTO = "✨ AI-фотосессия"
+MENU_BTN_VIDEO = "🎬 Видео для Reels"
+MENU_BTN_AVATAR = "🪄 Аватар"
+MENU_BTN_LIBRARY = "📚 Библиотека стилей"
 MENU_BTN_BALANCE = "💰 Баланс"
 MENU_BTN_HELP = "❓ Помощь"
 PERSISTENT_MENU_BUTTONS = {
-    MENU_BTN_PHOTOSHOOT,
+    MENU_BTN_PHOTO,
     MENU_BTN_VIDEO,
-    MENU_BTN_PROMPT,
     MENU_BTN_AVATAR,
+    MENU_BTN_LIBRARY,
     MENU_BTN_BALANCE,
     MENU_BTN_HELP,
 }
 
 
 def persistent_menu_kb(user_id: Optional[int] = None) -> ReplyKeyboardMarkup:
-    # Если есть webapp-библиотека — делаем «Фотосессии» web_app-кнопкой, чтобы
-    # библиотека открывалась сразу, без промежуточного тапа «Открыть библиотеку».
+    # Если есть webapp-библиотека — делаем «Библиотека стилей» web_app-кнопкой,
+    # чтобы открывалась сразу, без промежуточного тапа «Открыть библиотеку».
     if PROMPT_WEBAPP_URL and user_id is not None:
-        photoshoot_btn = KeyboardButton(
-            MENU_BTN_PHOTOSHOOT,
+        library_btn = KeyboardButton(
+            MENU_BTN_LIBRARY,
             web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)),
         )
     else:
-        photoshoot_btn = KeyboardButton(MENU_BTN_PHOTOSHOOT)
+        library_btn = KeyboardButton(MENU_BTN_LIBRARY)
     return ReplyKeyboardMarkup(
         [
-            [photoshoot_btn, KeyboardButton(MENU_BTN_VIDEO)],
-            [KeyboardButton(MENU_BTN_PROMPT), KeyboardButton(MENU_BTN_AVATAR)],
+            # 3 продукта верхним уровнем — теми же словами, что инлайн-меню
+            [KeyboardButton(MENU_BTN_PHOTO), KeyboardButton(MENU_BTN_VIDEO)],
+            [KeyboardButton(MENU_BTN_AVATAR), library_btn],
             [KeyboardButton(MENU_BTN_BALANCE), KeyboardButton(MENU_BTN_HELP)],
         ],
         resize_keyboard=True,
@@ -2587,7 +2589,7 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return False
     user = update.effective_user
 
-    if text == MENU_BTN_PHOTOSHOOT:
+    if text == MENU_BTN_LIBRARY:
         if PROMPT_WEBAPP_URL:
             await update.message.reply_text(
                 "Открывай библиотеку по кнопке ниже:",
@@ -2621,7 +2623,7 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE,
         )
         return True
 
-    if text == MENU_BTN_PROMPT:
+    if text == MENU_BTN_PHOTO:
         state = get_or_init_state(context)
         deactivate_video_session(state)
         await update.message.reply_text(

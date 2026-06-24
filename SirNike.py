@@ -2015,9 +2015,10 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
             hint = f"≈ {photo_count} {photos_label} / {video_count}+ {videos_label} (зависит от длины видео)"
         else:
             hint = f"≈ {photo_count} {photos_label}"
+        name_prefix = f"{pack['name']} · " if pack.get("name") else ""
         keyboard.append([
             InlineKeyboardButton(
-                text=f"{pack['count']} изюминок — {pack['price']} ₽ · {hint}",
+                text=f"{name_prefix}{pack['count']} изюминок — {pack['price']} ₽ · {hint}",
                 callback_data=f"buy_{pack['count']}_{pack['price']}"
             )
         ])

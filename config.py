@@ -159,21 +159,25 @@ BASE_GENERATION_COST = int(os.getenv("BASE_GENERATION_COST", "5"))
 REFERENCE_COST = int(os.getenv("REFERENCE_COST", "0"))
 
 # GPT-5 Image (OpenAI) через Zveno — альтернатива Gemini для генерации картинок.
-# Закупка Zveno: 1.79/7.03 руб за 1k токенов (in/out) ≈ 12-30 руб за картинку —
-# при 5 изюминках маржа около нуля, поэтому дефолт 2x от базовой цены.
+# Закупка Zveno: 1.79/7.03 руб за 1k токенов (in/out) ≈ 12-30 руб за картинку.
+# При реализованной цене ~5 ₽/изюминку 10 изюминок (50 ₽) давали маржу около нуля
+# на дорогих картинках. Дефолт 25 изюминок (~125 ₽) = премиум-фото с нормальной маржой.
 GPT5_IMAGE_ENABLED = os.getenv("GPT5_IMAGE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
 ZVENO_GPT5_IMAGE_MODEL = os.getenv("ZVENO_GPT5_IMAGE_MODEL", "openai/gpt-5-image")
-GPT5_IMAGE_COST = int(os.getenv("GPT5_IMAGE_COST", str(BASE_GENERATION_COST * 2)))
+GPT5_IMAGE_COST = int(os.getenv("GPT5_IMAGE_COST", "25"))
 
 MAX_POLL_ATTEMPTS = int(os.getenv("MAX_POLL_ATTEMPTS", "30"))
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "60"))
 
+# Объёмная скидка: цена за изюминку падает 9→5 ₽ от мелкого пакета к крупному,
+# чтобы был стимул брать больше (растит средний чек). Видео остаётся прибыльным
+# на любом пакете: 8 изюм/сек × 5 ₽ = 40 ₽/сек выручки vs ~12 ₽/сек закупки = x3.3.
 BUY_PACKS = [
-    {"count": 10, "price": 60},
-    {"count": 20, "price": 100},
-    {"count": 50, "price": 250},
-    {"count": 120, "price": 600},
-    {"count": 300, "price": 1500},
+    {"count": 10, "price": 90, "name": "Проба"},
+    {"count": 30, "price": 240, "name": "Фотосессия"},
+    {"count": 70, "price": 490, "name": "Контент-неделя"},
+    {"count": 150, "price": 900, "name": "Про"},
+    {"count": 350, "price": 1750, "name": "Студия"},
 ]
 
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "320423776").split(",") if x.strip()]

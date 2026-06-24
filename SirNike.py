@@ -1022,10 +1022,19 @@ PERSISTENT_MENU_BUTTONS = {
 }
 
 
-def persistent_menu_kb() -> ReplyKeyboardMarkup:
+def persistent_menu_kb(user_id: Optional[int] = None) -> ReplyKeyboardMarkup:
+    # Если есть webapp-библиотека — делаем «Фотосессии» web_app-кнопкой, чтобы
+    # библиотека открывалась сразу, без промежуточного тапа «Открыть библиотеку».
+    if PROMPT_WEBAPP_URL and user_id is not None:
+        photoshoot_btn = KeyboardButton(
+            MENU_BTN_PHOTOSHOOT,
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)),
+        )
+    else:
+        photoshoot_btn = KeyboardButton(MENU_BTN_PHOTOSHOOT)
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton(MENU_BTN_PHOTOSHOOT), KeyboardButton(MENU_BTN_VIDEO)],
+            [photoshoot_btn, KeyboardButton(MENU_BTN_VIDEO)],
             [KeyboardButton(MENU_BTN_PROMPT), KeyboardButton(MENU_BTN_AVATAR)],
             [KeyboardButton(MENU_BTN_BALANCE), KeyboardButton(MENU_BTN_HELP)],
         ],
@@ -1719,7 +1728,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Постоянное нижнее меню — ставим один раз, дальше оно висит всегда.
     await update.message.reply_text(
         "📌 Меню всегда снизу — выбирай раздел в один тап.",
-        reply_markup=persistent_menu_kb(),
+        reply_markup=persistent_menu_kb(user.id),
     )
 
     # Витрина для новичка: альбом примеров из библиотеки + кнопки "хочу так же".

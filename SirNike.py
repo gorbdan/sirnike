@@ -1,6 +1,7 @@
 ﻿import asyncio
 import base64
 import collections as _collections
+import csv
 import io
 import json
 import logging
@@ -143,6 +144,7 @@ from db import (
     log_generation_event,
     count_success_image_generations,
     get_audience_overview,
+    get_pnl_report,
     add_generation_history,
     get_generation_history,
     get_generation_history_item,
@@ -1668,17 +1670,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
     referrer_id = None
+    source = None
     if context.args:
-        arg = context.args[0].strip()
-        if arg.startswith("ref_"):
-            try:
-                referrer_id = int(arg.replace("ref_", ""))
-                if referrer_id == user.id:
-                    referrer_id = None
-            except ValueError:
-                referrer_id = None
+        # payload может быть: ref_<id> | s_<tag> | комбинация ref_<id>-s_<tag>.
+        # Токены разделяются дефисом; теги санитизируются до [A-Za-z0-9_].
+        for token in context.args[0].strip().split("-"):
+            token = token.strip()
+            if token.startswith("ref_"):
+                try:
+                    rid = int(token[4:])
+                    if rid != user.id:
+                        referrer_id = rid
+                except ValueError:
+                    pass
+            elif token.startswith("s_"):
+                tag = re.sub(r"[^A-Za-z0-9_]", "", token[2:])[:32]
+                if tag:
+                    source = tag
 
-    is_new_user = create_user_if_not_exists(user.id, user.username, START_BONUS, referrer_id=referrer_id)
+    is_new_user = create_user_if_not_exists(
+        user.id, user.username, START_BONUS, referrer_id=referrer_id, source=source
+    )
 
     if referrer_id and is_new_user and mark_referral_bonus(user.id):
         try:
@@ -5148,6 +5160,119 @@ async def audience_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_long_text(update.message, text)
 
 
+async def pnl_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """P&L-сводка за период. Использование: /pnl [days=7] [csv]"""
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("У тебя нет доступа к этой команде.")
+        return
+
+    days = 7
+    want_csv = False
+    for arg in (context.args or []):
+        a = arg.strip().lower()
+        if a in ("csv", "-csv", "--csv"):
+            want_csv = True
+            continue
+        try:
+            days = max(1, min(int(a), 365))
+        except ValueError:
+            await update.message.reply_text("Использование: /pnl [дней=7] [csv]")
+            return
+
+    r = get_pnl_report(days=days, exclude_user_ids=list(ADMIN_IDS))
+
+    def _money(v):
+        return f"{v:,}".replace(",", " ")
+
+    lines = [
+        f"📊 P&L за {r['days']} дн. (тесты админов исключены)",
+        "",
+        "💰 Выручка",
+        f"• Звёзд получено: {_money(r['revenue'])}",
+        f"• Платежей: {r['payments_count']} · платящих: {r['payers']}",
+        "",
+        "👥 Пользователи",
+        f"• Новые: {r['new_users']} · активные: {r['active_users']}",
+        f"• CR в оплату (платящие/новые): {r['cr_payment']}%",
+        "",
+        "🎬 Генерации по продуктам и моделям",
+    ]
+    if r["products"]:
+        for p in r["products"]:
+            net = p["charged"] - p["refunded"]
+            api = f" · API ₽{p['api_cost_rub']}" if p["api_cost_rub"] else ""
+            lines.append(
+                f"• {p['kind']}/{p['model']}: ✅{p['success']} ❌{p['failed']} "
+                f"(SR {p['success_rate']}%) · списано {p['charged']} / возврат {p['refunded']} "
+                f"= {net}{api}"
+            )
+    else:
+        lines.append("• нет данных за период")
+
+    if r["video_models"]:
+        lines.append("")
+        lines.append("🎞 Success rate по видео-моделям")
+        for v in r["video_models"]:
+            lines.append(f"• {v['model']}: {v['success_rate']}% (✅{v['success']} / ❌{v['failed']})")
+
+    lines += [
+        "",
+        "🎁 Бесплатные генерации",
+        f"• Всего: {r['free_total']} · успешных: {r['free_success']}",
+        "",
+        "📈 Источники — новые юзеры",
+    ]
+    if r["source_new"]:
+        for s in r["source_new"]:
+            lines.append(f"• {s['source']}: {s['new_users']}")
+    else:
+        lines.append("• нет данных")
+
+    lines.append("")
+    lines.append("💳 Источники — оплаты")
+    if r["source_pay"]:
+        for s in r["source_pay"]:
+            lines.append(
+                f"• {s['source']}: {s['payments']} платежей / {s['payers']} платящих · {_money(s['revenue'])}"
+            )
+    else:
+        lines.append("• нет оплат за период")
+
+    await send_long_text(update.message, "\n".join(lines))
+
+    if want_csv:
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["section", "key", "value", "extra1", "extra2", "extra3"])
+        w.writerow(["summary", "days", r["days"], "", "", ""])
+        w.writerow(["summary", "revenue", r["revenue"], "", "", ""])
+        w.writerow(["summary", "payments_count", r["payments_count"], "", "", ""])
+        w.writerow(["summary", "payers", r["payers"], "", "", ""])
+        w.writerow(["summary", "new_users", r["new_users"], "", "", ""])
+        w.writerow(["summary", "active_users", r["active_users"], "", "", ""])
+        w.writerow(["summary", "cr_payment_pct", r["cr_payment"], "", "", ""])
+        w.writerow(["summary", "free_total", r["free_total"], r["free_success"], "", ""])
+        for p in r["products"]:
+            w.writerow([
+                "product", f"{p['kind']}/{p['model']}",
+                p["success"], p["failed"], p["charged"] - p["refunded"], p["api_cost_rub"],
+            ])
+        for s in r["source_new"]:
+            w.writerow(["source_new", s["source"], s["new_users"], "", "", ""])
+        for s in r["source_pay"]:
+            w.writerow(["source_pay", s["source"], s["payments"], s["payers"], s["revenue"], ""])
+
+        data = io.BytesIO(buf.getvalue().encode("utf-8-sig"))
+        data.name = f"pnl_{r['days']}d.csv"
+        await context.bot.send_document(
+            chat_id=update.effective_chat.id,
+            document=data,
+            filename=data.name,
+            caption=f"P&L CSV за {r['days']} дн.",
+        )
+
+
 async def prompt_library_save_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id):
@@ -8532,6 +8657,11 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                                     cost=getattr(job, "cost", 0),
                                     was_free=getattr(job, "was_free", False),
                                     references_count=len(references or []),
+                                    model=getattr(job, "image_model", None),
+                                    aspect_ratio=getattr(job, "aspect_ratio", None),
+                                    charged_izyminki=getattr(job, "cost", 0),
+                                    refunded_izyminki=0,
+                                    is_admin_test=1 if user_id in ADMIN_IDS else 0,
                                 )
                                 if RESULTS_CHANNEL_ID and jpg_bytes:
                                     uname = f"@{getattr(job, 'username', None)}" if getattr(job, "username", None) else f"id{user_id}"
@@ -8603,6 +8733,13 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
             cost=getattr(job, "cost", 0),
             was_free=getattr(job, "was_free", False),
             references_count=len(references or []),
+            model=getattr(job, "image_model", None),
+            aspect_ratio=getattr(job, "aspect_ratio", None),
+            charged_izyminki=getattr(job, "cost", 0),
+            refunded_izyminki=getattr(job, "cost", 0) if refunded else 0,
+            error_type=classify_generation_error(last_error_text),
+            error_message=last_error_text,
+            is_admin_test=1 if user_id in ADMIN_IDS else 0,
         )
     except Exception:
         logger.exception("Failed to send final generation error message")
@@ -8697,6 +8834,7 @@ def main():
     app.add_handler(CommandHandler("broadcast_text", broadcast_text))
     app.add_handler(CommandHandler("broadcast_hide_keyboard", broadcast_hide_keyboard))
     app.add_handler(CommandHandler("audience_stats", audience_stats))
+    app.add_handler(CommandHandler("pnl", pnl_report))
     app.add_handler(CommandHandler("pl_save", prompt_library_save_last))
     app.add_handler(CommandHandler("ps_save", prompt_library_save_last))
     app.add_handler(CommandHandler("pl_import", prompt_library_import_from_reply))

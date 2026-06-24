@@ -74,6 +74,9 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN avatar_child_url TEXT")
         if "active_avatar_kind" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN active_avatar_kind TEXT")
+        # UTM-источник перехода (s_<tag>), фиксируется один раз при создании пользователя
+        if "source" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN source TEXT")
 
         conn.commit()
 
@@ -134,6 +137,27 @@ def init_db():
             conn.execute("ALTER TABLE generation_events ADD COLUMN prompt TEXT")
         if "username" not in ev_cols:
             conn.execute("ALTER TABLE generation_events ADD COLUMN username TEXT")
+        # --- Финансовая аналитика видео/изображений (nullable, обратная совместимость) ---
+        # model: seedance2 / seedance2_fast / kling3 / veo31 / gpt5 / gemini
+        if "model" not in ev_cols:
+            conn.execute("ALTER TABLE generation_events ADD COLUMN model TEXT")
+        if "duration_sec" not in ev_cols:
+            conn.execute("ALTER TABLE generation_events ADD COLUMN duration_sec INTEGER")
+        if "aspect_ratio" not in ev_cols:
+            conn.execute("ALTER TABLE generation_events ADD COLUMN aspect_ratio TEXT")
+        if "api_cost_rub" not in ev_cols:
+            conn.execute("ALTER TABLE generation_events ADD COLUMN api_cost_rub REAL")
+        if "charged_izyminki" not in ev_cols:
+            conn.execute("ALTER TABLE generation_events ADD COLUMN charged_izyminki INTEGER")
+        if "refunded_izyminki" not in ev_cols:
+            conn.execute("ALTER TABLE generation_events ADD COLUMN refunded_izyminki INTEGER")
+        # error_type: timeout / moderation / no_balance / provider_error / download_error / unknown
+        if "error_type" not in ev_cols:
+            conn.execute("ALTER TABLE generation_events ADD COLUMN error_type TEXT")
+        if "error_message" not in ev_cols:
+            conn.execute("ALTER TABLE generation_events ADD COLUMN error_message TEXT")
+        if "is_admin_test" not in ev_cols:
+            conn.execute("ALTER TABLE generation_events ADD COLUMN is_admin_test INTEGER")
         conn.execute("""
         CREATE TABLE IF NOT EXISTS generation_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -153,18 +177,21 @@ def create_user_if_not_exists(
     user_id: int,
     username: Optional[str] = None,
     start_bonus: int = 5,
-    referrer_id: int = None
+    referrer_id: int = None,
+    source: Optional[str] = None,
 ):
     with get_conn() as conn:
         cur = conn.cursor()
-        # INSERT OR IGNORE is atomic — avoids SELECT+INSERT race on simultaneous /start
+        # INSERT OR IGNORE is atomic — avoids SELECT+INSERT race on simultaneous /start.
+        # source записывается только при первом создании; для существующих юзеров
+        # INSERT OR IGNORE ничего не делает, поэтому первый источник не перезатирается.
         cur.execute(
             """
             INSERT OR IGNORE INTO users (
-                user_id, username, balance, referrer_id, referral_bonus_given, created_at
-            ) VALUES (?, ?, ?, ?, 0, ?)
+                user_id, username, balance, referrer_id, referral_bonus_given, created_at, source
+            ) VALUES (?, ?, ?, ?, 0, ?, ?)
             """,
-            (user_id, username, start_bonus, referrer_id, datetime.utcnow().isoformat())
+            (user_id, username, start_bonus, referrer_id, datetime.utcnow().isoformat(), source)
         )
         is_new = cur.rowcount > 0
         conn.commit()
@@ -619,14 +646,25 @@ def log_generation_event(
     result_url: Optional[str] = None,
     prompt: Optional[str] = None,
     username: Optional[str] = None,
+    model: Optional[str] = None,
+    duration_sec: Optional[int] = None,
+    aspect_ratio: Optional[str] = None,
+    api_cost_rub: Optional[float] = None,
+    charged_izyminki: Optional[int] = None,
+    refunded_izyminki: Optional[int] = None,
+    error_type: Optional[str] = None,
+    error_message: Optional[str] = None,
+    is_admin_test: int = 0,
 ):
     with get_conn() as conn:
         conn.execute(
             """
             INSERT INTO generation_events (
                 user_id, kind, status, provider, cost, was_free, references_count, created_at,
-                result_url, prompt, username
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                result_url, prompt, username,
+                model, duration_sec, aspect_ratio, api_cost_rub,
+                charged_izyminki, refunded_izyminki, error_type, error_message, is_admin_test
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -640,6 +678,15 @@ def log_generation_event(
                 result_url,
                 prompt,
                 username,
+                model,
+                int(duration_sec) if duration_sec is not None else None,
+                aspect_ratio,
+                float(api_cost_rub) if api_cost_rub is not None else None,
+                int(charged_izyminki) if charged_izyminki is not None else None,
+                int(refunded_izyminki) if refunded_izyminki is not None else None,
+                error_type,
+                (error_message[:300] if error_message else None),
+                1 if is_admin_test else 0,
             ),
         )
         conn.commit()
@@ -742,6 +789,132 @@ def get_audience_overview(days: int = 30):
         "top_generators": [
             {"user_id": r[0], "username": r[1], "count": r[2]}
             for r in top_rows
+        ],
+    }
+
+
+def get_pnl_report(days: int = 7, exclude_user_ids=None):
+    """P&L-сводка за период. Генерации фильтруются по is_admin_test=0;
+    пользователи и платежи дополнительно исключают exclude_user_ids (админы).
+    """
+    now = datetime.utcnow()
+    since = (now - timedelta(days=days)).isoformat()
+
+    # Безопасно собираем NOT IN из целочисленных id (без подстановки строк).
+    ids = [int(x) for x in (exclude_user_ids or [])]
+    excl_users = f" AND user_id NOT IN ({','.join(str(i) for i in ids)})" if ids else ""
+    excl_p = f" AND p.user_id NOT IN ({','.join(str(i) for i in ids)})" if ids else ""
+
+    with get_conn() as conn:
+        cur = conn.cursor()
+
+        # --- Выручка ---
+        cur.execute(
+            f"SELECT COUNT(*), COUNT(DISTINCT user_id), COALESCE(SUM(amount),0) "
+            f"FROM payments WHERE created_at >= ?{excl_users}",
+            (since,),
+        )
+        payments_count, payers, revenue = cur.fetchone() or (0, 0, 0)
+
+        # --- Пользователи ---
+        cur.execute(
+            f"SELECT COUNT(*) FROM users WHERE created_at >= ?{excl_users}", (since,)
+        )
+        new_users = cur.fetchone()[0] or 0
+
+        cur.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM generation_events "
+            "WHERE created_at >= ? AND COALESCE(is_admin_test,0)=0",
+            (since,),
+        )
+        active_users = cur.fetchone()[0] or 0
+
+        # --- Генерации по продукту и модели ---
+        cur.execute(
+            """
+            SELECT kind,
+                   COALESCE(model, '—') AS model,
+                   SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS ok,
+                   SUM(CASE WHEN status='failed'  THEN 1 ELSE 0 END) AS fail,
+                   COALESCE(SUM(charged_izyminki),0),
+                   COALESCE(SUM(refunded_izyminki),0),
+                   COALESCE(SUM(api_cost_rub),0)
+            FROM generation_events
+            WHERE created_at >= ? AND COALESCE(is_admin_test,0)=0
+            GROUP BY kind, COALESCE(model, '—')
+            ORDER BY kind, ok DESC
+            """,
+            (since,),
+        )
+        gen_rows = cur.fetchall()
+
+        # --- Бесплатные генерации ---
+        cur.execute(
+            "SELECT COUNT(*), SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) "
+            "FROM generation_events "
+            "WHERE created_at >= ? AND COALESCE(is_admin_test,0)=0 AND was_free=1",
+            (since,),
+        )
+        free_row = cur.fetchone() or (0, 0)
+        free_total, free_success = free_row[0] or 0, free_row[1] or 0
+
+        # --- Разрез по источнику (source) ---
+        cur.execute(
+            f"SELECT COALESCE(source,'—'), COUNT(*) FROM users "
+            f"WHERE created_at >= ?{excl_users} GROUP BY COALESCE(source,'—') ORDER BY COUNT(*) DESC",
+            (since,),
+        )
+        source_new = cur.fetchall()
+
+        cur.execute(
+            f"""
+            SELECT COALESCE(u.source,'—'),
+                   COUNT(p.id),
+                   COUNT(DISTINCT p.user_id),
+                   COALESCE(SUM(p.amount),0)
+            FROM payments p JOIN users u ON u.user_id = p.user_id
+            WHERE p.created_at >= ?{excl_p}
+            GROUP BY COALESCE(u.source,'—')
+            ORDER BY COALESCE(SUM(p.amount),0) DESC
+            """,
+            (since,),
+        )
+        source_pay = cur.fetchall()
+
+    products = []
+    video_models = []
+    for kind, model, ok, fail, charged, refunded, api_cost in gen_rows:
+        total = (ok or 0) + (fail or 0)
+        sr = round((ok / total) * 100, 1) if total else 0.0
+        row = {
+            "kind": kind, "model": model,
+            "success": ok or 0, "failed": fail or 0,
+            "success_rate": sr,
+            "charged": charged or 0, "refunded": refunded or 0,
+            "api_cost_rub": round(api_cost or 0, 2),
+        }
+        products.append(row)
+        if kind == "video":
+            video_models.append(row)
+
+    cr = round((payers / new_users) * 100, 1) if new_users else 0.0
+
+    return {
+        "days": days,
+        "revenue": revenue or 0,
+        "payments_count": payments_count or 0,
+        "payers": payers or 0,
+        "new_users": new_users,
+        "active_users": active_users,
+        "cr_payment": cr,
+        "products": products,
+        "video_models": video_models,
+        "free_total": free_total,
+        "free_success": free_success,
+        "source_new": [{"source": s, "new_users": c} for s, c in source_new],
+        "source_pay": [
+            {"source": s, "payments": pc, "payers": pu, "revenue": rev}
+            for s, pc, pu, rev in source_pay
         ],
     }
 

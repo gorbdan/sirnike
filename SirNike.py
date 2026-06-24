@@ -2617,7 +2617,7 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return True
 
     if text == MENU_BTN_BALANCE:
-        await buy(update, context)
+        await balance(update, context)
         return True
 
     if text == MENU_BTN_HELP:

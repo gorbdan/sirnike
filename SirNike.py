@@ -1005,6 +1005,35 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+# Постоянная reply-клавиатура: всегда под полем ввода, не пропадает.
+MENU_BTN_PHOTOSHOOT = "📸 Фотосессии"
+MENU_BTN_VIDEO = "🎬 Видео"
+MENU_BTN_PROMPT = "✍️ Фото по описанию"
+MENU_BTN_AVATAR = "🪄 Мой аватар"
+MENU_BTN_BALANCE = "💰 Баланс"
+MENU_BTN_HELP = "❓ Помощь"
+PERSISTENT_MENU_BUTTONS = {
+    MENU_BTN_PHOTOSHOOT,
+    MENU_BTN_VIDEO,
+    MENU_BTN_PROMPT,
+    MENU_BTN_AVATAR,
+    MENU_BTN_BALANCE,
+    MENU_BTN_HELP,
+}
+
+
+def persistent_menu_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton(MENU_BTN_PHOTOSHOOT), KeyboardButton(MENU_BTN_VIDEO)],
+            [KeyboardButton(MENU_BTN_PROMPT), KeyboardButton(MENU_BTN_AVATAR)],
+            [KeyboardButton(MENU_BTN_BALANCE), KeyboardButton(MENU_BTN_HELP)],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
 def image_model_menu_kb(state: UserState) -> InlineKeyboardMarkup:
     selected = get_image_model(state)
     gemini_cost = calc_generation_cost(None, "gemini")
@@ -1686,6 +1715,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Напиши описание картинки или выбери стиль из библиотеки 📚"
         )
     await update.message.reply_text(text, reply_markup=main_menu_kb())
+
+    # Постоянное нижнее меню — ставим один раз, дальше оно висит всегда.
+    await update.message.reply_text(
+        "📌 Меню всегда снизу — выбирай раздел в один тап.",
+        reply_markup=persistent_menu_kb(),
+    )
 
     # Витрина для новичка: альбом примеров из библиотеки + кнопки "хочу так же".
     # Кнопки (callbacks shc_*) самодостаточны и не зависят от медиа, поэтому
@@ -2518,12 +2553,91 @@ async def set_avatar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ОБРАБОТЧИКИ СООБЩЕНИЙ: текст, фото, видео, webapp
 # ══════════════════════════════════════════════════════════════
 
+async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
+    """Постоянная reply-клавиатура шлёт обычный текст. Перехватываем ярлыки
+    разделов и открываем то же, что инлайн-кнопки. True — если это была
+    кнопка меню (как промпт обрабатывать уже не нужно)."""
+    if text not in PERSISTENT_MENU_BUTTONS:
+        return False
+    user = update.effective_user
+
+    if text == MENU_BTN_PHOTOSHOOT:
+        if PROMPT_WEBAPP_URL:
+            await update.message.reply_text(
+                "Открывай библиотеку по кнопке ниже:",
+                reply_markup=webapp_open_kb(user.id),
+            )
+        else:
+            await update.message.reply_text(
+                "Выбери категорию. Покажу лучшие стили с примерами 👇",
+                reply_markup=prompt_library_menu_kb(),
+            )
+        return True
+
+    if text == MENU_BTN_VIDEO:
+        if not SEEDANCE_ENABLED:
+            await update.message.reply_text(video_unavailable_text(), reply_markup=main_menu_kb())
+            return True
+        state = get_or_init_state(context)
+        state.video_session_active = True
+        state.waiting_for_video_prompt = False
+        state.waiting_for_video_image = True
+        state.waiting_for_motion_video = False
+        await update.message.reply_text(
+            "Режим видео включён 🎬\n"
+            "Можно сразу отправлять текст описания и фото без дополнительных кнопок.\n"
+            "Я сохраню всё в видео-буфер.\n\n"
+            "Дальше выбери модель, длительность/качество и нажми «Запустить ⚡».",
+        )
+        await update.message.reply_text(
+            video_status_text(state),
+            reply_markup=video_kb(state),
+        )
+        return True
+
+    if text == MENU_BTN_PROMPT:
+        state = get_or_init_state(context)
+        deactivate_video_session(state)
+        await update.message.reply_text(
+            "✍️ Напиши описание картинки одним сообщением — и я сгенерирую фото.\n\n"
+            "Например: «девушка на фоне заката», «кот в космосе», «портрет в стиле кино».\n"
+            "Можно приложить своё фото как референс.",
+        )
+        return True
+
+    if text == MENU_BTN_AVATAR:
+        await update.message.reply_text(
+            "🪄 AI-аватар — это ты в любом образе\n\n"
+            "Пришли 3–8 своих фото, и нейросеть сгенерирует аватар и запомнит твою внешность.\n"
+            "После этого в каждой генерации будешь появляться именно ты.\n\n"
+            "Если загружено несколько аватаров (👩/👨/🧒) — кнопками ниже "
+            "выбери, каким генерировать (● текущий).",
+            reply_markup=avatar_actions_kb(user.id),
+        )
+        return True
+
+    if text == MENU_BTN_BALANCE:
+        await buy(update, context)
+        return True
+
+    if text == MENU_BTN_HELP:
+        await help_command(update, context)
+        return True
+
+    return False
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     create_user_if_not_exists(user.id, user.username, START_BONUS)
 
     text = update.message.text.strip()
     if not text:
+        return
+
+    # Постоянное нижнее меню — обрабатываем до всего остального, чтобы тап
+    # по кнопке всегда открывал раздел, а не уходил в генерацию.
+    if await handle_menu_button(update, context, text):
         return
 
     # Fallback: sometimes WebApp payload can arrive as plain text.

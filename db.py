@@ -14,6 +14,10 @@ ALLOW_DB_SEED_COPY = os.getenv("ALLOW_DB_SEED_COPY", "0").strip().lower() in ("1
 
 logger = logging.getLogger(__name__)
 
+# Оценочный курс ₽/изюминка для исторических платежей без amount_rub
+# (соответствует текущей реализованной цене — самый крупный пакет 1750₽/350).
+LEGACY_RUB_PER_IZYMINKA = 5
+
 
 def _ensure_runtime_db():
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -89,6 +93,15 @@ def init_db():
             created_at TEXT NOT NULL
         )
         """)
+        conn.commit()
+
+        # amount хранит изюминки; amount_rub — фактическую выручку в ₽ (nullable).
+        # Старые строки получают NULL: в отчёте оцениваются как изюминки × LEGACY_RUB_PER_IZYMINKA.
+        cur_pay = conn.cursor()
+        cur_pay.execute("PRAGMA table_info(payments)")
+        pay_cols = {row[1] for row in cur_pay.fetchall()}
+        if "amount_rub" not in pay_cols:
+            conn.execute("ALTER TABLE payments ADD COLUMN amount_rub INTEGER")
 
         conn.execute("""
         CREATE TABLE IF NOT EXISTS promo_broadcasts (
@@ -495,18 +508,25 @@ def purge_stale_avatar_refs() -> int:
 
 
 
-def save_payment_once(user_id: int, payment_id: str, amount: int) -> bool:
+def save_payment_once(
+    user_id: int,
+    payment_id: str,
+    amount: int,
+    amount_rub: Optional[int] = None,
+) -> bool:
     """Record payment and credit coins atomically in a single transaction.
+    amount — начисленные изюминки; amount_rub — фактическая выручка в ₽ (опционально).
     Returns True if this is a new payment (coins credited), False if duplicate."""
     with get_conn() as conn:
         try:
             conn.execute("BEGIN")
             cur = conn.execute(
                 """
-                INSERT INTO payments (user_id, telegram_payment_id, amount, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO payments (user_id, telegram_payment_id, amount, created_at, amount_rub)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (user_id, payment_id, amount, datetime.utcnow().isoformat())
+                (user_id, payment_id, amount, datetime.utcnow().isoformat(),
+                 int(amount_rub) if amount_rub is not None else None)
             )
             if cur.rowcount == 0:
                 conn.rollback()
@@ -809,12 +829,23 @@ def get_pnl_report(days: int = 7, exclude_user_ids=None):
         cur = conn.cursor()
 
         # --- Выручка ---
+        # revenue_rub: фактические ₽ (amount_rub), для старых строк — оценка amount × курс.
+        # izyminki_sold: суммарно начислено изюминок. estimated: есть ли строки без amount_rub.
         cur.execute(
-            f"SELECT COUNT(*), COUNT(DISTINCT user_id), COALESCE(SUM(amount),0) "
-            f"FROM payments WHERE created_at >= ?{excl_users}",
+            f"""
+            SELECT COUNT(*),
+                   COUNT(DISTINCT user_id),
+                   COALESCE(SUM(amount_rub), 0),
+                   COALESCE(SUM(amount), 0),
+                   COALESCE(SUM(COALESCE(amount_rub, amount * {LEGACY_RUB_PER_IZYMINKA})), 0),
+                   SUM(CASE WHEN amount_rub IS NULL THEN 1 ELSE 0 END)
+            FROM payments WHERE created_at >= ?{excl_users}
+            """,
             (since,),
         )
-        payments_count, payers, revenue = cur.fetchone() or (0, 0, 0)
+        row = cur.fetchone() or (0, 0, 0, 0, 0, 0)
+        payments_count, payers, revenue_rub_exact, izyminki_sold, revenue_rub, missing_rub = row
+        revenue_estimated = bool(missing_rub)
 
         # --- Пользователи ---
         cur.execute(
@@ -871,11 +902,11 @@ def get_pnl_report(days: int = 7, exclude_user_ids=None):
             SELECT COALESCE(u.source,'—'),
                    COUNT(p.id),
                    COUNT(DISTINCT p.user_id),
-                   COALESCE(SUM(p.amount),0)
+                   COALESCE(SUM(COALESCE(p.amount_rub, p.amount * {LEGACY_RUB_PER_IZYMINKA})),0)
             FROM payments p JOIN users u ON u.user_id = p.user_id
             WHERE p.created_at >= ?{excl_p}
             GROUP BY COALESCE(u.source,'—')
-            ORDER BY COALESCE(SUM(p.amount),0) DESC
+            ORDER BY 4 DESC
             """,
             (since,),
         )
@@ -901,7 +932,10 @@ def get_pnl_report(days: int = 7, exclude_user_ids=None):
 
     return {
         "days": days,
-        "revenue": revenue or 0,
+        "revenue_rub": revenue_rub or 0,
+        "revenue_rub_exact": revenue_rub_exact or 0,
+        "revenue_estimated": revenue_estimated,
+        "izyminki_sold": izyminki_sold or 0,
         "payments_count": payments_count or 0,
         "payers": payers or 0,
         "new_users": new_users,
@@ -913,7 +947,7 @@ def get_pnl_report(days: int = 7, exclude_user_ids=None):
         "free_success": free_success,
         "source_new": [{"source": s, "new_users": c} for s, c in source_new],
         "source_pay": [
-            {"source": s, "payments": pc, "payers": pu, "revenue": rev}
+            {"source": s, "payments": pc, "payers": pu, "revenue_rub": rev}
             for s, pc, pu, rev in source_pay
         ],
     }

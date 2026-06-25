@@ -990,7 +990,7 @@ def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int
                         f"Фото получены: {count} шт. ✅\n"
                         "Бот будет использовать их при генерации.\n\n"
                         "Теперь напиши описание картинки или выбери стиль из библиотеки 📚\n"
-                        "и нажми «⚡ Создать фото»"
+                        "и нажми «✨ AI-фотосессия», чтобы создать фото"
                     ),
                     reply_markup=main_menu_kb()
                 )
@@ -1742,7 +1742,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🎁 Подарок на старте — {START_BONUS} изюминок (хватит на ~{bonus_photos} фото).\n"
             f"   Изюминки — внутренняя валюта бота: 1 фото = {BASE_GENERATION_COST} изюминок\n\n"
             f"⚡ Попробуй прямо сейчас:\n"
-            f"  Нажми «Библиотека стилей 📚» → выбери стиль → «⚡ Создать фото»\n\n"
+            f"  Нажми «Библиотека стилей 📚» → выбери стиль → «✨ AI-фотосессия»\n\n"
             f"🪄 Чтобы не загружать своё фото каждый раз — создай «Мой аватар», "
             f"и бот запомнит твою внешность.\n"
             f"❓ Подробнее: /help"
@@ -1870,7 +1870,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Как пользоваться:\n"
         "1. Напиши описание картинки (например: «девушка на фоне заката»)\n"
         "   или выбери готовый стиль из библиотеки 📚\n"
-        "2. Нажми «⚡ Создать фото»\n"
+        "2. Нажми «✨ AI-фотосессия»\n"
         "3. Получи фото — готово!\n\n"
         "🪄 Аватар — создай аватар по своим фото, и бот поставит тебя в любой образ\n"
         "🎬 Видео — Seedance 2, Kling 3.0, Veo 3.1 (кнопка в меню)\n"
@@ -2085,11 +2085,8 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo_count = max(1, pack["count"] // BASE_GENERATION_COST)
         video_count = pack["count"] // _video_10s_cost
         photos_label = ru_plural(photo_count, "фото", "фото", "фото")
-        if video_count > 0:
-            videos_label = ru_plural(video_count, "видео", "видео", "видео")
-            hint = f"≈ {photo_count} {photos_label} / {video_count}+ {videos_label}"
-        else:
-            hint = f"≈ {photo_count} {photos_label}"
+        # Только фото — короче, чтобы кнопка не обрезалась на узком экране
+        hint = f"≈ {photo_count} {photos_label}"
         # Порядок важен: цена идёт сразу после названия, чтобы при узком
         # экране Telegram обрезал необязательную подсказку (≈ N фото), а не
         # цену. Счётчик изюминок ужат до 🧀, чтобы строка влезала целиком.
@@ -2100,7 +2097,6 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if name:
             parts.append(name)
         parts.append(f"{pack['price']} ₽")
-        parts.append(f"{pack['count']} 🧀")
         parts.append(hint)
         keyboard.append([
             InlineKeyboardButton(
@@ -2170,7 +2166,7 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
         await update.message.reply_text("Ошибка: сумма платежа не совпадает. Обратись в поддержку.")
         return
 
-    if not save_payment_once(user.id, payment_id, count):
+    if not save_payment_once(user.id, payment_id, count, amount_rub=price):
         await update.message.reply_text("Платёж уже обработан.")
         return
 
@@ -2860,7 +2856,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "Описание сохранено ✅\n"
-        "Теперь нажми «⚡ Создать фото» или отправь своё фото, чтобы быть на картинке.",
+        "Нажми «✨ AI-фотосессия», чтобы создать фото, или отправь своё фото, чтобы быть на картинке.",
         reply_markup=main_menu_kb()
     )
 
@@ -3008,7 +3004,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await update.message.reply_text(
         f"Готово ✨\nСтиль «{title}» применён.\n"
-        "Нажми «⚡ Создать фото» или отправь своё фото.",
+        "Нажми «✨ AI-фотосессия» или отправь своё фото.",
         reply_markup=main_menu_kb(),
     )
 
@@ -3046,7 +3042,7 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
             )
         else:
             await update.effective_message.reply_text(
-                f"Готово ✨\nСтиль «{title}» применён.\nНажми «⚡ Создать фото».",
+                f"Готово ✨\nСтиль «{title}» применён.\nНажми «✨ AI-фотосессия».",
                 reply_markup=main_menu_kb(),
             )
     return True
@@ -4106,7 +4102,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(
                 f"Стиль «{title}» применён ✨\n"
                 "Хочешь себя на этом фото? Сначала пришли своё фото обычным сообщением.\n"
-                "А дальше жми «⚡ Создать фото»",
+                "А дальше жми «✨ AI-фотосессия»",
                 reply_markup=main_menu_kb(),
             )
         return
@@ -4349,7 +4345,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.prompt = item["prompt"]
         await query.message.reply_text(
             f"Готово ✨\nСтиль «{_showcase_item_label(item)}» применён.\n"
-            "Нажми «⚡ Создать фото» или отправь своё фото.",
+            "Нажми «✨ AI-фотосессия» или отправь своё фото.",
             reply_markup=main_menu_kb(),
         )
         return
@@ -4476,7 +4472,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         deactivate_video_session(state)
         if was_in_video and not state.prompt:
             await query.message.reply_text(
-                "Режим видео закрыт. Напиши описание и нажми «⚡ Создать фото»."
+                "Режим видео закрыт. Напиши описание и нажми «✨ AI-фотосессия», чтобы создать фото."
             )
             return
         await run_generation(update, context)
@@ -4514,7 +4510,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saved_prompt = (last_generated_prompt.get(user_id) or "").strip()
         if not saved_prompt:
             await query.message.reply_text(
-                "Не нашла прошлое описание. Напиши новый текст и нажми «⚡ Создать фото»."
+                "Не нашла прошлое описание. Напиши новый текст и нажми «✨ AI-фотосессия», чтобы создать фото."
             )
             return
 
@@ -5025,7 +5021,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             "Готово ✨\n"
             "Стиль применён ✅\n\n"
-            "Нажми «⚡ Создать фото» или отправь своё фото.",
+            "Нажми «✨ AI-фотосессия» или отправь своё фото.",
             reply_markup=main_menu_kb()
         )
         return
@@ -5189,7 +5185,8 @@ async def pnl_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 P&L за {r['days']} дн. (тесты админов исключены)",
         "",
         "💰 Выручка",
-        f"• Звёзд получено: {_money(r['revenue'])}",
+        f"• Выручка, ₽: {_money(r['revenue_rub'])}" + (" (оценка)" if r["revenue_estimated"] else ""),
+        f"• Изюминок продано: {_money(r['izyminki_sold'])}",
         f"• Платежей: {r['payments_count']} · платящих: {r['payers']}",
         "",
         "👥 Пользователи",
@@ -5234,7 +5231,7 @@ async def pnl_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if r["source_pay"]:
         for s in r["source_pay"]:
             lines.append(
-                f"• {s['source']}: {s['payments']} платежей / {s['payers']} платящих · {_money(s['revenue'])}"
+                f"• {s['source']}: {s['payments']} платежей / {s['payers']} платящих · {_money(s['revenue_rub'])} ₽"
             )
     else:
         lines.append("• нет оплат за период")
@@ -5246,7 +5243,9 @@ async def pnl_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         w = csv.writer(buf)
         w.writerow(["section", "key", "value", "extra1", "extra2", "extra3"])
         w.writerow(["summary", "days", r["days"], "", "", ""])
-        w.writerow(["summary", "revenue", r["revenue"], "", "", ""])
+        w.writerow(["summary", "revenue_rub", r["revenue_rub"], "estimated" if r["revenue_estimated"] else "exact", "", ""])
+        w.writerow(["summary", "revenue_rub_exact", r["revenue_rub_exact"], "", "", ""])
+        w.writerow(["summary", "izyminki_sold", r["izyminki_sold"], "", "", ""])
         w.writerow(["summary", "payments_count", r["payments_count"], "", "", ""])
         w.writerow(["summary", "payers", r["payers"], "", "", ""])
         w.writerow(["summary", "new_users", r["new_users"], "", "", ""])
@@ -5261,7 +5260,7 @@ async def pnl_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for s in r["source_new"]:
             w.writerow(["source_new", s["source"], s["new_users"], "", "", ""])
         for s in r["source_pay"]:
-            w.writerow(["source_pay", s["source"], s["payments"], s["payers"], s["revenue"], ""])
+            w.writerow(["source_pay", s["source"], s["payments"], s["payers"], s["revenue_rub"], "rub"])
 
         data = io.BytesIO(buf.getvalue().encode("utf-8-sig"))
         data.name = f"pnl_{r['days']}d.csv"

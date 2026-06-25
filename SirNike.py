@@ -2071,12 +2071,17 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
             hint = f"≈ {photo_count} {photos_label} / {video_count}+ {videos_label}"
         else:
             hint = f"≈ {photo_count} {photos_label}"
-        parts = []
-        if pack.get("name"):
-            parts.append(pack["name"])
+        # Порядок важен: цена идёт сразу после названия, чтобы при узком
+        # экране Telegram обрезал необязательную подсказку (≈ N фото), а не
+        # цену. Счётчик изюминок ужат до 🧀, чтобы строка влезала целиком.
+        name = pack.get("name") or ""
         if pack is _best_pack and _best_discount > 0:
-            parts.append(f"−{_best_discount}% 🔥")
-        parts.append(f"{pack['count']} изюминок — {pack['price']} ₽")
+            name = f"{name} −{_best_discount}% 🔥".strip()
+        parts = []
+        if name:
+            parts.append(name)
+        parts.append(f"{pack['price']} ₽")
+        parts.append(f"{pack['count']} 🧀")
         parts.append(hint)
         keyboard.append([
             InlineKeyboardButton(

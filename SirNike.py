@@ -2084,12 +2084,14 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for pack in BUY_PACKS:
         photo_count = max(1, pack["count"] // BASE_GENERATION_COST)
         video_count = pack["count"] // _video_10s_cost
-        photos_label = ru_plural(photo_count, "фото", "фото", "фото")
-        # Только фото — короче, чтобы кнопка не обрезалась на узком экране
-        hint = f"≈ {photo_count} {photos_label}"
+        # Акцент на видео: 🎬 первым, где пакета хватает на видео. Иконки
+        # компактнее слов — строка не обрезается на узком экране.
+        if video_count > 0:
+            hint = f"🎬 {video_count} · 📸 {photo_count}"
+        else:
+            hint = f"📸 {photo_count}"
         # Порядок важен: цена идёт сразу после названия, чтобы при узком
-        # экране Telegram обрезал необязательную подсказку (≈ N фото), а не
-        # цену. Счётчик изюминок ужат до 🧀, чтобы строка влезала целиком.
+        # экране Telegram обрезал необязательную подсказку, а не цену.
         name = pack.get("name") or ""
         if pack is _best_pack and _best_discount > 0:
             name = f"{name} −{_best_discount}% 🔥".strip()
@@ -2109,8 +2111,8 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.effective_message.reply_text(
         f"💰 Пополнить баланс\n\n"
-        f"• 1 фото = {BASE_GENERATION_COST} изюминок 🍇 (≈ {_photo_rub} ₽)\n"
-        f"• 1 видео 10 сек = {_video_10s_cost} изюминок 🎬 (≈ {_video_rub} ₽)\n"
+        f"• 📸 1 фото = {BASE_GENERATION_COST} изюминок 🍇 (≈ {_photo_rub} ₽)\n"
+        f"• 🎬 1 видео 10 сек = {_video_10s_cost} изюминок (≈ {_video_rub} ₽)\n"
         f"  (длиннее видео — дороже, короче — дешевле)\n\n"
         f"Чем больше пакет — тем дешевле каждый образ.\n"
         f"Выбери пакет 👇",

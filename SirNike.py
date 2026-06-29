@@ -990,7 +990,7 @@ def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int
                         f"Фото получены: {count} шт. ✅\n"
                         "Бот будет использовать их при генерации.\n\n"
                         "Теперь напиши описание картинки или выбери стиль из библиотеки 📚\n"
-                        "и нажми «✨ AI-фотосессия», чтобы создать фото"
+                        "и нажми «✨ Сгенерировать фото»"
                     ),
                     reply_markup=main_menu_kb()
                 )
@@ -1015,7 +1015,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     video_label = "🎬 Видео для Reels" if SEEDANCE_ENABLED else "🎬 Видео для Reels 🚧"
     rows = [
         # 3 продукта верхним уровнем — без технической каши настроек
-        [InlineKeyboardButton("✨ AI-фотосессия", callback_data="generate")],
+        [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
         [InlineKeyboardButton(video_label, callback_data="video")],
         [InlineKeyboardButton("🪄 Аватар", callback_data="avatar_actions")],
         # Контент, деньги, рост
@@ -1033,7 +1033,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
 
 # Постоянная reply-клавиатура: всегда под полем ввода, не пропадает.
 # Названия продуктов синхронизированы с инлайн-меню (один бренд в обоих меню).
-MENU_BTN_PHOTO = "✨ AI-фотосессия"
+MENU_BTN_PHOTO = "✨ Сгенерировать фото"
 MENU_BTN_VIDEO = "🎬 Видео для Reels"
 MENU_BTN_AVATAR = "🪄 Аватар"
 MENU_BTN_LIBRARY = "📚 Библиотека стилей"
@@ -1742,7 +1742,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🎁 Подарок на старте — {START_BONUS} изюминок (хватит на ~{bonus_photos} фото).\n"
             f"   Изюминки — внутренняя валюта бота: 1 фото = {BASE_GENERATION_COST} изюминок\n\n"
             f"⚡ Попробуй прямо сейчас:\n"
-            f"  Нажми «Библиотека стилей 📚» → выбери стиль → «✨ AI-фотосессия»\n\n"
+            f"  Нажми «Библиотека стилей 📚» → выбери стиль → «✨ Сгенерировать фото»\n\n"
             f"🪄 Чтобы не загружать своё фото каждый раз — создай «Мой аватар», "
             f"и бот запомнит твою внешность.\n"
             f"❓ Подробнее: /help"
@@ -1870,7 +1870,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Как пользоваться:\n"
         "1. Напиши описание картинки (например: «девушка на фоне заката»)\n"
         "   или выбери готовый стиль из библиотеки 📚\n"
-        "2. Нажми «✨ AI-фотосессия»\n"
+        "2. Нажми «✨ Сгенерировать фото»\n"
         "3. Получи фото — готово!\n\n"
         "🪄 Аватар — создай аватар по своим фото, и бот поставит тебя в любой образ\n"
         "🎬 Видео — Seedance 2, Kling 3.0, Veo 3.1 (кнопка в меню)\n"
@@ -2858,7 +2858,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "Описание сохранено ✅\n"
-        "Нажми «✨ AI-фотосессия», чтобы создать фото, или отправь своё фото, чтобы быть на картинке.",
+        "Нажми «✨ Сгенерировать фото» или отправь своё фото, чтобы быть на картинке.",
         reply_markup=main_menu_kb()
     )
 
@@ -3006,7 +3006,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await update.message.reply_text(
         f"Готово ✨\nСтиль «{title}» применён.\n"
-        "Нажми «✨ AI-фотосессия» или отправь своё фото.",
+        "Нажми «✨ Сгенерировать фото» или отправь своё фото.",
         reply_markup=main_menu_kb(),
     )
 
@@ -3044,7 +3044,7 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
             )
         else:
             await update.effective_message.reply_text(
-                f"Готово ✨\nСтиль «{title}» применён.\nНажми «✨ AI-фотосессия».",
+                f"Готово ✨\nСтиль «{title}» применён.\nНажми «✨ Сгенерировать фото».",
                 reply_markup=main_menu_kb(),
             )
     return True
@@ -4104,7 +4104,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(
                 f"Стиль «{title}» применён ✨\n"
                 "Хочешь себя на этом фото? Сначала пришли своё фото обычным сообщением.\n"
-                "А дальше жми «✨ AI-фотосессия»",
+                "А дальше жми «✨ Сгенерировать фото»",
                 reply_markup=main_menu_kb(),
             )
         return
@@ -4347,7 +4347,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.prompt = item["prompt"]
         await query.message.reply_text(
             f"Готово ✨\nСтиль «{_showcase_item_label(item)}» применён.\n"
-            "Нажми «✨ AI-фотосессия» или отправь своё фото.",
+            "Нажми «✨ Сгенерировать фото» или отправь своё фото.",
             reply_markup=main_menu_kb(),
         )
         return
@@ -4474,7 +4474,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         deactivate_video_session(state)
         if was_in_video and not state.prompt:
             await query.message.reply_text(
-                "Режим видео закрыт. Напиши описание и нажми «✨ AI-фотосессия», чтобы создать фото."
+                "Режим видео закрыт. Напиши описание и нажми «✨ Сгенерировать фото»."
             )
             return
         await run_generation(update, context)
@@ -4512,7 +4512,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saved_prompt = (last_generated_prompt.get(user_id) or "").strip()
         if not saved_prompt:
             await query.message.reply_text(
-                "Не нашла прошлое описание. Напиши новый текст и нажми «✨ AI-фотосессия», чтобы создать фото."
+                "Не нашла прошлое описание. Напиши новый текст и нажми «✨ Сгенерировать фото»."
             )
             return
 
@@ -5023,7 +5023,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             "Готово ✨\n"
             "Стиль применён ✅\n\n"
-            "Нажми «✨ AI-фотосессия» или отправь своё фото.",
+            "Нажми «✨ Сгенерировать фото» или отправь своё фото.",
             reply_markup=main_menu_kb()
         )
         return

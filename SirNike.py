@@ -1479,7 +1479,7 @@ def video_status_text(state: UserState) -> str:
         "1. Напиши описание видео (необязательно)\n"
         "2. Отправь фото (бот запомнит внешность)\n"
         "3. Выбери длительность и качество\n"
-        "4. Нажми «Запустить ⚡»\n\n"
+        "4. Нажми «⚡ Запустить видео»\n\n"
         f"Модель: {model_label}\n"
         f"Описание: {prompt_state}\n"
         f"Изображение: {image_state}\n"
@@ -2637,7 +2637,7 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE,
             "Режим видео включён 🎬\n"
             "Можно сразу отправлять текст описания и фото без дополнительных кнопок.\n"
             "Я сохраню всё в видео-буфер.\n\n"
-            "Дальше выбери модель, длительность/качество и нажми «Запустить ⚡».",
+            "Дальше выбери модель, длительность/качество и нажми «⚡ Запустить видео».",
         )
         await update.message.reply_text(
             video_status_text(state),
@@ -4558,7 +4558,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             "Картинка добавлена в видео-буфер 🎬\n"
             "Можешь описать, что должно происходить в кадре, выбрать модель и длительность — "
-            "или сразу жми «Запустить видео ⚡»."
+            "или сразу жми «⚡ Запустить видео»."
         )
         await query.message.reply_text(
             video_status_text(state),
@@ -4575,7 +4575,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not isinstance(params, dict) or not params.get("model"):
             await query.message.reply_text(
                 "Не нашла параметры прошлого видео — возможно, бот перезапускался.\n"
-                "Открой «Видео 🎬» и запусти заново.",
+                "Открой «🎬 Видео для Reels» и запусти заново.",
                 reply_markup=main_menu_kb(),
             )
             return
@@ -4583,7 +4583,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if any(_is_img_ref(r) and _resolve_image_bytes(r) is None for r in refs):
             await query.message.reply_text(
                 "Исходное фото устарело (бот перезапускался).\n"
-                "Открой «Видео 🎬», загрузи фото и запусти заново.",
+                "Открой «🎬 Видео для Reels», загрузи фото и запусти заново.",
                 reply_markup=main_menu_kb(),
             )
             return
@@ -4636,7 +4636,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Режим видео включён 🎬\n"
             "Можно сразу отправлять текст описания и фото без дополнительных кнопок.\n"
             "Я сохраню всё в видео-буфер.\n\n"
-            "Дальше выбери модель, длительность/качество и нажми «Запустить ⚡».",
+            "Дальше выбери модель, длительность/качество и нажми «⚡ Запустить видео».",
         )
         await query.message.reply_text(
             video_status_text(state),
@@ -4659,7 +4659,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Отправляй фото для Seedance (можно несколько подряд).\n"
             f"Лимит: до {MAX_SEEDANCE_IMAGE_REFERENCES} фото.\n"
             "Бот запомнит внешность с фото и перенесёт в видео.\n"
-            "Когда всё загрузишь, нажми «Запустить ⚡»."
+            "Когда всё загрузишь, нажми «⚡ Запустить видео»."
         )
         return
 

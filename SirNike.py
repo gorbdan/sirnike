@@ -1646,7 +1646,7 @@ def result_actions_kb(user_id: int = 0, bot_username: str = "") -> InlineKeyboar
     if GPT5_IMAGE_ENABLED:
         rows.append([InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu")])
     pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
-    rows.append([InlineKeyboardButton("📚 Библиотека промтов", callback_data=pl_cb)])
+    rows.append([InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb)])
     rows.append([InlineKeyboardButton("◀️ В меню", callback_data="reset")])
     return InlineKeyboardMarkup(rows)
 

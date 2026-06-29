@@ -676,40 +676,47 @@ def log_generation_event(
     error_message: Optional[str] = None,
     is_admin_test: int = 0,
 ):
-    with get_conn() as conn:
-        conn.execute(
-            """
-            INSERT INTO generation_events (
-                user_id, kind, status, provider, cost, was_free, references_count, created_at,
-                result_url, prompt, username,
-                model, duration_sec, aspect_ratio, api_cost_rub,
-                charged_izyminki, refunded_izyminki, error_type, error_message, is_admin_test
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                user_id,
-                kind,
-                status,
-                provider,
-                int(cost or 0),
-                1 if was_free else 0,
-                int(references_count or 0),
-                datetime.utcnow().isoformat(),
-                result_url,
-                prompt,
-                username,
-                model,
-                int(duration_sec) if duration_sec is not None else None,
-                aspect_ratio,
-                float(api_cost_rub) if api_cost_rub is not None else None,
-                int(charged_izyminki) if charged_izyminki is not None else None,
-                int(refunded_izyminki) if refunded_izyminki is not None else None,
-                error_type,
-                (error_message[:300] if error_message else None),
-                1 if is_admin_test else 0,
-            ),
-        )
-        conn.commit()
+    # Аналитика не должна влиять на поток генерации и тем более на деньги:
+    # если запись упадёт (например, «database is locked»), глотаем ошибку.
+    # Иначе исключение могло вылететь из фейл-ветки generate_image_by_job уже
+    # ПОСЛЕ возврата изюминок и спровоцировать повторный возврат в воркере.
+    try:
+        with get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO generation_events (
+                    user_id, kind, status, provider, cost, was_free, references_count, created_at,
+                    result_url, prompt, username,
+                    model, duration_sec, aspect_ratio, api_cost_rub,
+                    charged_izyminki, refunded_izyminki, error_type, error_message, is_admin_test
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    kind,
+                    status,
+                    provider,
+                    int(cost or 0),
+                    1 if was_free else 0,
+                    int(references_count or 0),
+                    datetime.utcnow().isoformat(),
+                    result_url,
+                    prompt,
+                    username,
+                    model,
+                    int(duration_sec) if duration_sec is not None else None,
+                    aspect_ratio,
+                    float(api_cost_rub) if api_cost_rub is not None else None,
+                    int(charged_izyminki) if charged_izyminki is not None else None,
+                    int(refunded_izyminki) if refunded_izyminki is not None else None,
+                    error_type,
+                    (error_message[:300] if error_message else None),
+                    1 if is_admin_test else 0,
+                ),
+            )
+            conn.commit()
+    except Exception:
+        logger.warning("log_generation_event failed (ignored): user_id=%s status=%s", user_id, status, exc_info=True)
 
 
 def count_success_image_generations(user_id: int) -> int:

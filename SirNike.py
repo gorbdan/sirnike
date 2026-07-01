@@ -1010,16 +1010,26 @@ def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int
 # КЛАВИАТУРЫ: кнопки и меню
 # ══════════════════════════════════════════════════════════════
 
+# Фиксированный промт для «Улучшить фото» — пользователь не редактирует
+# описание, просто присылает фото. Модель не меняем (nano banana = gemini),
+# черты лица должны остаться прежними.
+ENHANCE_PHOTO_PROMPT = (
+    "улучши качество фото, сделай так, будто бы кадр снимал профессиональный "
+    "фотограф. Черты лица не меняй совсем."
+)
+
+
 def main_menu_kb() -> InlineKeyboardMarkup:
     pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
     prompt_library_button = InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb)
 
     video_label = "🎬 Видео для Reels" if SEEDANCE_ENABLED else "🎬 Видео для Reels 🚧"
     rows = [
-        # 3 продукта верхним уровнем — без технической каши настроек
+        # 4 продукта верхним уровнем — без технической каши настроек
         [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
         [InlineKeyboardButton(video_label, callback_data="video")],
         [InlineKeyboardButton("🪄 Аватар", callback_data="avatar_actions")],
+        [InlineKeyboardButton("🖼️ Улучшить фото", callback_data="enhance_photo")],
         # Контент, деньги, рост
         [prompt_library_button],
         [InlineKeyboardButton("💰 Баланс и пополнение", callback_data="show_buy")],
@@ -4524,6 +4534,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         await run_generation(update, context)
+        return
+
+    if query.data == "enhance_photo":
+        state = get_or_init_state(context)
+        deactivate_video_session(state)
+        state.prompt = ENHANCE_PHOTO_PROMPT
+        state.image_prompt = ""
+        state.references = []  # старое фото не подмешиваем — нужно новое, для улучшения
+        state.image_model = "gemini"  # nano banana, фикс по требованию функции
+        await query.message.reply_text(
+            "Пришли фото, которое нужно улучшить 🖼️\n"
+            "Бот повысит качество и сделает его похожим на кадр от профессионального "
+            "фотографа — черты лица останутся прежними.\n\n"
+            "После загрузки жми «✨ Сгенерировать фото».",
+            reply_markup=main_menu_kb(),
+        )
         return
 
     if query.data == "image_model_menu":

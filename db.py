@@ -181,6 +181,20 @@ def init_db():
         )
         """)
 
+        # Учёт использования шаблонов из «Библиотеки стилей» (category/item_title —
+        # у items нет стабильного id, ключ по названию).
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS template_usage_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            category TEXT,
+            item_title TEXT NOT NULL,
+            item_kind TEXT,
+            created_at TEXT NOT NULL
+        )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_template_usage_item ON template_usage_events(category, item_title)")
+
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_referrer_id ON users(referrer_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_free_used_date ON users(free_used_date)")
         conn.commit()
@@ -717,6 +731,56 @@ def log_generation_event(
             conn.commit()
     except Exception:
         logger.warning("log_generation_event failed (ignored): user_id=%s status=%s", user_id, status, exc_info=True)
+
+
+def log_template_usage(
+    user_id: int,
+    item_title: str,
+    item_kind: str = "image",
+    category: Optional[str] = None,
+) -> None:
+    """Записать факт применения шаблона из «Библиотеки стилей».
+    Аналитика не должна ронять основной сценарий — ошибки глотаются (см. log_generation_event)."""
+    try:
+        with get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO template_usage_events (user_id, category, item_title, item_kind, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (user_id, category, item_title, item_kind, datetime.utcnow().isoformat()),
+            )
+            conn.commit()
+    except Exception:
+        logger.warning("log_template_usage failed (ignored): user_id=%s item=%s", user_id, item_title, exc_info=True)
+
+
+def get_template_usage_counts(days: Optional[int] = None):
+    """Кол-во применений каждого шаблона, сгруппировано по (category, item_title).
+    days=None — за всё время."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        if days is not None:
+            since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+            cur.execute(
+                """
+                SELECT COALESCE(category,'—'), item_title, COUNT(*)
+                FROM template_usage_events
+                WHERE created_at >= ?
+                GROUP BY COALESCE(category,'—'), item_title
+                """,
+                (since,),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT COALESCE(category,'—'), item_title, COUNT(*)
+                FROM template_usage_events
+                GROUP BY COALESCE(category,'—'), item_title
+                """
+            )
+        rows = cur.fetchall()
+    return {(cat, title): cnt for cat, title, cnt in rows}
 
 
 def count_success_image_generations(user_id: int) -> int:

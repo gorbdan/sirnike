@@ -995,15 +995,32 @@ def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int
                         [InlineKeyboardButton("🚀 Улучшить это фото", callback_data="generate")],
                     ])
                 else:
-                    msg_text = (
-                        f"Фото получены: {count} шт. ✅\n"
-                        "Бот будет использовать их при генерации.\n\n"
-                        "Напиши описание или выбери стиль из библиотеки — и запускай."
-                    )
-                    markup = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
-                        [InlineKeyboardButton("📚 Выбрать стиль", callback_data=_pl_cb)],
-                    ])
+                    # Просим описание только если его ещё нет — иначе бот зовёт
+                    # по кругу: «пришли фото» ↔ «напиши описание». Проверка идёт
+                    # в момент отправки (через 2с), так что текст, присланный
+                    # сразу после фото, тоже успевает учесться.
+                    saved_prompt = (state.prompt or "").strip() if isinstance(state, UserState) else ""
+                    if saved_prompt:
+                        preview = saved_prompt if len(saved_prompt) <= 50 else saved_prompt[:47] + "…"
+                        msg_text = (
+                            f"Фото получены: {count} шт. ✅\n"
+                            f"Описание уже есть: «{preview}»\n"
+                            "Всё готово — запускай!"
+                        )
+                        markup = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("🚀 Запустить генерацию", callback_data="generate")],
+                            [InlineKeyboardButton("📚 Выбрать другой стиль", callback_data=_pl_cb)],
+                        ])
+                    else:
+                        msg_text = (
+                            f"Фото получены: {count} шт. ✅\n"
+                            "Бот будет использовать их при генерации.\n\n"
+                            "Напиши описание или выбери стиль из библиотеки — и запускай."
+                        )
+                        markup = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
+                            [InlineKeyboardButton("📚 Выбрать стиль", callback_data=_pl_cb)],
+                        ])
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=msg_text,
@@ -2910,14 +2927,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state.prompt = text
 
     _pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
-    await update.message.reply_text(
-        "Описание сохранено ✅\n"
-        "Отправь своё фото, чтобы быть на картинке, или сразу запускай.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
-            [InlineKeyboardButton("📚 Выбрать стиль", callback_data=_pl_cb)],
-        ]),
-    )
+    # Зовём прислать фото только если референсов ещё нет — иначе бот зовёт
+    # по кругу: «напиши описание» ↔ «пришли фото».
+    ref_count = len(state.references)
+    if ref_count:
+        await update.message.reply_text(
+            "Описание сохранено ✅\n"
+            f"Фото на месте ({ref_count} шт.) — запускай!",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚀 Запустить генерацию", callback_data="generate")],
+                [InlineKeyboardButton("📚 Выбрать стиль", callback_data=_pl_cb)],
+            ]),
+        )
+    else:
+        await update.message.reply_text(
+            "Описание сохранено ✅\n"
+            "Отправь своё фото, чтобы быть на картинке, или сразу запускай.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
+                [InlineKeyboardButton("📚 Выбрать стиль", callback_data=_pl_cb)],
+            ]),
+        )
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):

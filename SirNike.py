@@ -1598,6 +1598,18 @@ def video_status_text(state: UserState) -> str:
     )
 
 
+async def update_video_panel(query, text: str, reply_markup: InlineKeyboardMarkup) -> None:
+    """Переключатели видео-панели (модель/формат/качество/длительность) правят
+    существующее сообщение, а не шлют новое — иначе каждый тап плодит спам
+    из отдельных сообщений с почти одинаковым текстом."""
+    try:
+        await query.message.edit_text(text, reply_markup=reply_markup)
+    except BadRequest as e:
+        if "message is not modified" in str(e).lower():
+            return
+        await query.message.reply_text(text, reply_markup=reply_markup)
+
+
 def video_upsell_kb(user_id: int) -> tuple:
     """Воронка под готовым видео: «Сделать длиннее» и апгрейд Fast → Seedance 2.
 
@@ -4877,9 +4889,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_video_image_urls(state, [])
         state.waiting_for_video_image = True
         state.video_session_active = True
-        await query.message.reply_text(
+        await update_video_panel(
+            query,
             "Фото очищены ✅\n\n" + video_status_text(state),
-            reply_markup=video_kb(state),
+            video_kb(state),
         )
         return
 
@@ -4889,10 +4902,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         picked_ar = video_cb.replace("video_aspect_", "", 1).replace("x", ":")
         if picked_ar in {"16:9", "9:16", "1:1"}:
             state.video_aspect_ratio = picked_ar
-        await query.message.reply_text(
-            video_status_text(state),
-            reply_markup=video_kb(state),
-        )
+        await update_video_panel(query, video_status_text(state), video_kb(state))
         return
 
     if video_cb.startswith("video_delimg_"):
@@ -4906,10 +4916,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             idx = -1
 
         if idx < 1 or idx > len(video_images):
-            await query.message.reply_text(
-                "Не нашла этот референс в буфере.",
-                reply_markup=video_kb(state),
-            )
+            await update_video_panel(query, "Не нашла этот референс в буфере.", video_kb(state))
             return
 
         removed_url = video_images.pop(idx - 1)
@@ -4917,9 +4924,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         removed_text = str(removed_url or "").strip()
         if len(removed_text) > 96:
             removed_text = f"{removed_text[:60]}...{removed_text[-28:]}"
-        await query.message.reply_text(
+        await update_video_panel(
+            query,
             f"Удалён референс #{idx} ✅\n{removed_text}\n\n{video_status_text(state)}",
-            reply_markup=video_kb(state),
+            video_kb(state),
         )
         return
 
@@ -4947,10 +4955,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state.video_model = "seedance2"
             if not state.video_mode:
                 state.video_mode = normalize_seedance_mode(SEEDANCE_MODE)
-        await query.message.reply_text(
-            video_status_text(state),
-            reply_markup=video_kb(state),
-        )
+        await update_video_panel(query, video_status_text(state), video_kb(state))
         return
 
     if video_cb.startswith("video_mode_"):
@@ -4959,19 +4964,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.waiting_for_video_image = True
         selected_model = get_video_model(state)
         if selected_model != "seedance2":
-            await query.message.reply_text(
-                video_status_text(state),
-                reply_markup=video_kb(state),
-            )
+            await update_video_panel(query, video_status_text(state), video_kb(state))
             return
         picked_mode = normalize_seedance_mode(video_cb.replace("video_mode_", "", 1))
         if picked_mode not in get_seedance_mode_options(selected_model):
             picked_mode = get_selected_seedance_mode(state)
         state.video_mode = picked_mode
-        await query.message.reply_text(
-            video_status_text(state),
-            reply_markup=video_kb(state),
-        )
+        await update_video_panel(query, video_status_text(state), video_kb(state))
         return
 
     if video_cb.startswith("video_duration_"):
@@ -4988,10 +4987,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             picked = get_selected_seedance_duration(state)
 
         state.video_duration = picked
-        await query.message.reply_text(
-            video_status_text(state),
-            reply_markup=video_kb(state),
-        )
+        await update_video_panel(query, video_status_text(state), video_kb(state))
         return
 
     if video_cb == "video_start":

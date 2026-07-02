@@ -3074,6 +3074,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 state.avatar_status_msg_id = sent.message_id
             return
 
+        caption = (update.message.caption or "").strip()
+
         if state.waiting_for_video_image:
             state.video_session_active = True
             current_refs = get_video_image_urls(state)
@@ -3085,13 +3087,17 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
             total_refs = add_video_image_url(state, direct_url)
+            if caption:
+                state.video_prompt = caption
             logger.info(
                 "handle_photo: added video image for user=%s, total=%s, animation_source_urls=%s",
                 user.id, total_refs, state.animation_source_urls,
             )
+            caption_line = f"Описание сохранено: «{caption}»\n" if caption else ""
             await update.message.reply_text(
                 f"Фото для видео добавлено ✅\n"
                 f"Сейчас загружено: {total_refs}/{MAX_SEEDANCE_IMAGE_REFERENCES}\n"
+                f"{caption_line}"
                 "Бот запомнит внешность с фото.\n"
                 "Можешь отправить ещё фото или запускать генерацию.",
                 reply_markup=video_kb(state),
@@ -3102,6 +3108,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(state.references) < 8:  # cap to max used in generation
             state.references.append(direct_url)
             state.references_updated_at = time.time()
+
+        # Фото и промт одним сообщением (caption) — та же логика, что и для
+        # отдельного текстового сообщения: описание сохраняется сразу, не
+        # нужно присылать его вторым сообщением. В режиме «Улучшить фото»
+        # state.prompt — служебный фиксированный промт, caption его не трогает.
+        if caption and state.prompt != ENHANCE_PHOTO_PROMPT:
+            deactivate_video_session(state)
+            state.prompt = caption
 
         chat_id = update.effective_chat.id
         photo_counts[chat_id] = photo_counts.get(chat_id, 0) + 1

@@ -177,9 +177,9 @@ S.SEEDANCE_ENABLED = _se
 
 mkb = S.main_menu_kb()
 mcbs = [b.callback_data for row in mkb.inline_keyboard for b in row if b.callback_data]
-check("3.14 главное меню: 4 продукта, без image_model_menu (переехала под результат)",
+check("3.14 главное меню: 4 продукта и кнопка image_model_menu",
       all(c in mcbs for c in ("generate", "video", "avatar_actions", "enhance_photo"))
-      and "image_model_menu" not in mcbs, str(mcbs))
+      and "image_model_menu" in mcbs, str(mcbs))
 
 # ════════════════ БЛОК 4: JPEG-конверсия кадров ════════════════
 print("Блок 4: JPEG-конверсия")

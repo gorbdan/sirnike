@@ -1055,11 +1055,12 @@ def main_menu_kb() -> InlineKeyboardMarkup:
 
     video_label = "🎬 Видео для Reels" if SEEDANCE_ENABLED else "🎬 Видео для Reels 🚧"
     rows = [
-        # 4 продукта верхним уровнем — без технической каши настроек
+        # 4 продукта верхним уровнем + одна важная настройка качества фото.
         [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
         [InlineKeyboardButton(video_label, callback_data="video")],
         [InlineKeyboardButton("🪄 Аватар", callback_data="avatar_actions")],
         [InlineKeyboardButton("🖼️ Улучшить фото", callback_data="enhance_photo")],
+        *([[InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu")]] if GPT5_IMAGE_ENABLED else []),
         # Контент, деньги, рост
         [prompt_library_button],
         [InlineKeyboardButton("💰 Баланс и пополнение", callback_data="show_buy")],
@@ -1711,7 +1712,7 @@ def result_actions_kb(user_id: int = 0, bot_username: str = "") -> InlineKeyboar
     ]
     if user_id and SEEDANCE_ENABLED:
         rows.append([InlineKeyboardButton("🎬 Оживить в видео", callback_data="animate_last")])
-    # «Модель картинок» — настройка внутри сценария генерации, не на главном экране
+    # Дублируем настройку под результатом, чтобы можно было быстро переключиться и повторить.
     if GPT5_IMAGE_ENABLED:
         rows.append([InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu")])
     pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"

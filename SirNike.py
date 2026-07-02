@@ -1264,6 +1264,8 @@ def _resolve_template_category(item_label: str, cat_idx: Optional[int] = None) -
 
 
 def _log_template_usage_safe(user_id: int, item_label: str, item_kind: str, cat_idx: Optional[int] = None) -> None:
+    if user_id in ADMIN_IDS:
+        return
     label = (item_label or "").strip()
     if not label:
         return

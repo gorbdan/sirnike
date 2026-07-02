@@ -19,9 +19,10 @@ Python-монолит: [SirNike.py](SirNike.py) (~8000 строк, python-telegr
 
 ## Локальная разработка
 
-- `.venv` — Python 3.9, а requirements.txt требует 3.10+ (Pillow 12, PTB 22.7).
-  В venv стоят совместимые аналоги (Pillow 11.3, PTB 22.5) — для тестов хватает.
-  Полноценная среда — только Docker (локально Docker не установлен).
+- `.venv` — Python 3.11 (Homebrew, `python@3.11`), requirements.txt ставится как есть
+  (Pillow 12, PTB 22.7 — без обходных версий). Пересоздать: `brew install python@3.11`
+  → `/opt/homebrew/bin/python3.11 -m venv .venv` → `.venv/bin/pip install -r requirements.txt`.
+  Полноценная прод-среда — Docker (локально Docker не установлен).
 - Тесты: `.venv/bin/python3 test_new_features.py` (без сети, мокает Telegram).
 - Компиляция: `python3 -m py_compile SirNike.py`.
 

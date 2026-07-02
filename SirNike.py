@@ -1062,9 +1062,18 @@ ENHANCE_PHOTO_PROMPT = (
 )
 
 
-def main_menu_kb() -> InlineKeyboardMarkup:
-    pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
-    prompt_library_button = InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb)
+def main_menu_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
+    # Если знаем user_id — вешаем webapp прямо на кнопку (открывается в 1 клик,
+    # без промежуточного «Открывай библиотеку по кнопке ниже»). Без user_id
+    # (не во всех местах он под рукой) — старый 2-кликовый путь через callback.
+    if PROMPT_WEBAPP_URL and user_id is not None:
+        prompt_library_button = InlineKeyboardButton(
+            "📚 Библиотека стилей",
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)),
+        )
+    else:
+        pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
+        prompt_library_button = InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb)
 
     video_label = "🎬 Видео для Reels" if SEEDANCE_ENABLED else "🎬 Видео для Reels 🚧"
     rows = [
@@ -1743,8 +1752,14 @@ def result_actions_kb(user_id: int = 0, bot_username: str = "") -> InlineKeyboar
     switchers = []
     if GPT5_IMAGE_ENABLED:
         switchers.append(InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu"))
-    pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
-    switchers.append(InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb))
+    if PROMPT_WEBAPP_URL and user_id:
+        switchers.append(InlineKeyboardButton(
+            "📚 Библиотека стилей",
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)),
+        ))
+    else:
+        pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
+        switchers.append(InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb))
     return InlineKeyboardMarkup([
         actions,
         switchers,
@@ -1855,7 +1870,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🪄 Аватары: {avatar_status}\n\n"
             f"Напиши описание картинки или выбери стиль из библиотеки 📚"
         )
-    await update.message.reply_text(text, reply_markup=main_menu_kb())
+    await update.message.reply_text(text, reply_markup=main_menu_kb(user.id))
 
     # Постоянное нижнее меню — ставим один раз, дальше оно висит всегда.
     await update.message.reply_text(
@@ -1985,7 +2000,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/ref — пригласить друга (+изюминки обоим)\n"
         "/report — сообщить о проблеме\n"
         "/help — эта справка",
-        reply_markup=main_menu_kb(),
+        reply_markup=main_menu_kb(user.id),
     )
 
 
@@ -2282,7 +2297,7 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
         f"Начислено {count} изюминок 🍇\n"
         f"Твой баланс: {new_balance} изюминок\n\n"
         f"Можешь запускать генерацию!",
-        reply_markup=main_menu_kb(),
+        reply_markup=main_menu_kb(user.id),
     )
 
 
@@ -2914,7 +2929,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state.waiting_for_problem_report = False
             await update.message.reply_text(
                 "Ок, отмена. Если что — кнопку «Сообщить о проблеме 🚨» можно нажать снова.",
-                reply_markup=main_menu_kb(),
+                reply_markup=main_menu_kb(user.id),
             )
             return
 
@@ -2947,13 +2962,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "Спасибо, отправила в поддержку ✅\n"
                 "Если хочешь, можешь добавить скриншот следующим сообщением.",
-                reply_markup=main_menu_kb(),
+                reply_markup=main_menu_kb(user.id),
             )
         else:
             await update.message.reply_text(
                 "Не получилось передать сообщение в поддержку прямо сейчас.\n"
                 "Попробуй еще раз через минуту.",
-                reply_markup=main_menu_kb(),
+                reply_markup=main_menu_kb(user.id),
             )
         return
 
@@ -5169,7 +5184,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "avatar_back_menu":
         await query.message.reply_text(
             "Главное меню:",
-            reply_markup=main_menu_kb(),
+            reply_markup=main_menu_kb(user.id),
         )
         return
 
@@ -5178,7 +5193,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         deactivate_video_session(state)
         await query.message.reply_text(
             "Главное меню:",
-            reply_markup=main_menu_kb(),
+            reply_markup=main_menu_kb(user.id),
         )
         return
 
@@ -5204,7 +5219,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             "Готово — текущее описание и фото очищены.\n"
             "Баланс и аватары на месте. Можно начинать заново!",
-            reply_markup=main_menu_kb(),
+            reply_markup=main_menu_kb(user.id),
         )
         return
     
@@ -8007,6 +8022,9 @@ async def send_generation_result_by_url(
         _caption_parts.append(f"Баланс: {_bal} изюминок")
     except Exception:
         pass
+    if GPT5_IMAGE_ENABLED:
+        _caption_parts.append("🧠 Другая модель — кнопкой «Модель картинок» ниже")
+    _caption_parts.append("📎 Файл в хорошем качестве — следующим сообщением")
     await app.bot.send_photo(
         chat_id=chat_id,
         photo=photo_buffer,
@@ -8017,7 +8035,6 @@ async def send_generation_result_by_url(
     await app.bot.send_document(
         chat_id=chat_id,
         document=doc_buffer,
-        caption="Файл изображения в хорошем качестве JPG."
     )
 
     if not (job and getattr(job, "save_as_avatar", False)):

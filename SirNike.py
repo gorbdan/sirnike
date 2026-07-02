@@ -1068,17 +1068,24 @@ def main_menu_kb() -> InlineKeyboardMarkup:
 
     video_label = "🎬 Видео для Reels" if SEEDANCE_ENABLED else "🎬 Видео для Reels 🚧"
     rows = [
-        # 4 продукта верхним уровнем + одна важная настройка качества фото.
-        [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
-        [InlineKeyboardButton(video_label, callback_data="video")],
-        [InlineKeyboardButton("🪄 Аватар", callback_data="avatar_actions")],
-        [InlineKeyboardButton("🖼️ Улучшить фото", callback_data="enhance_photo")],
-        *([[InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu")]] if GPT5_IMAGE_ENABLED else []),
-        # Контент, деньги, рост
+        # Сетка 2×N зеркалит нижнюю reply-клавиатуру (persistent_menu_kb) —
+        # у юзера одна карта расположения кнопок, а не две разные.
+        [
+            InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate"),
+            InlineKeyboardButton(video_label, callback_data="video"),
+        ],
+        [
+            InlineKeyboardButton("🖼️ Улучшить фото", callback_data="enhance_photo"),
+            InlineKeyboardButton("🪄 Аватар", callback_data="avatar_actions"),
+        ],
+        # Главная витрина — во всю ширину
         [prompt_library_button],
-        [InlineKeyboardButton("💰 Баланс", callback_data="show_buy")],
-        [InlineKeyboardButton("🎁 Пригласить друга", callback_data="open_ref")],
-        # Служебные — компактно в один ряд
+        [
+            InlineKeyboardButton("💰 Баланс", callback_data="show_buy"),
+            InlineKeyboardButton("🎁 Пригласить друга", callback_data="open_ref"),
+        ],
+        # Условная настройка — одна в ряду, чтобы сетка не дёргалась при выключении
+        *([[InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu")]] if GPT5_IMAGE_ENABLED else []),
         [
             InlineKeyboardButton("❓ Как пользоваться", callback_data="show_help"),
             InlineKeyboardButton("🚨 Проблема", callback_data="report_problem"),
@@ -1255,8 +1262,8 @@ def avatar_gen_kind_kb() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton("👩 Женский", callback_data="avatar_gen_kind_female"),
             InlineKeyboardButton("👨 Мужской", callback_data="avatar_gen_kind_male"),
+            InlineKeyboardButton("🧒 Детский", callback_data="avatar_gen_kind_child"),
         ],
-        [InlineKeyboardButton("🧒 Детский", callback_data="avatar_gen_kind_child")],
         [InlineKeyboardButton("◀️ Назад", callback_data="avatar_actions")],
     ])
 
@@ -1727,18 +1734,22 @@ def build_media_group_payload(items: List[Dict[str, Any]]) -> List[Any]:
 
 # Override label to keep retry wording consistent after failed image generation.
 def result_actions_kb(user_id: int = 0, bot_username: str = "") -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton("🔁 Повторить", callback_data="generate_again")],
-    ]
+    # Действия с результатом — одним рядом
+    actions = [InlineKeyboardButton("🔁 Повторить", callback_data="generate_again")]
     if user_id and SEEDANCE_ENABLED:
-        rows.append([InlineKeyboardButton("🎬 Оживить в видео", callback_data="animate_last")])
-    # Дублируем настройку под результатом, чтобы можно было быстро переключиться и повторить.
+        actions.append(InlineKeyboardButton("🎬 Оживить в видео", callback_data="animate_last"))
+    # «Поменять что-то» — вторым рядом; настройка модели дублируется под
+    # результатом, чтобы можно было быстро переключиться и повторить.
+    switchers = []
     if GPT5_IMAGE_ENABLED:
-        rows.append([InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu")])
+        switchers.append(InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu"))
     pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
-    rows.append([InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb)])
-    rows.append([InlineKeyboardButton("◀️ В меню", callback_data="reset")])
-    return InlineKeyboardMarkup(rows)
+    switchers.append(InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb))
+    return InlineKeyboardMarkup([
+        actions,
+        switchers,
+        [InlineKeyboardButton("◀️ В меню", callback_data="reset")],
+    ])
 
 
 # ══════════════════════════════════════════════════════════════

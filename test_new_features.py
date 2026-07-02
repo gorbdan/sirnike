@@ -81,7 +81,7 @@ check("1.11 меню: есть set_gemini и set_gpt5",
       "image_model_set_gemini" in cbs and "image_model_set_gpt5" in cbs, str(cbs))
 check("1.12 меню: маркер ● на выбранной gemini",
       any(t.startswith("● ") and "Nano Banana 2" in t for t in texts), str(texts))
-check("1.13 меню: цены в кнопках", any("5 изюминок" in t for t in texts) and any("25 изюминок" in t for t in texts), str(texts))
+check("1.13 меню: цены в кнопках", any("5 🍇" in t for t in texts) and any("25 🍇" in t for t in texts), str(texts))
 check("1.14 текст меню упоминает обе модели",
       "Nano Banana 2" in S.image_model_menu_text(st) and "GPT-5 Image" in S.image_model_menu_text(st))
 
@@ -489,9 +489,9 @@ btns = [b for row in kbu.inline_keyboard for b in row]
 cbs = [b.callback_data for b in btns]
 texts = [b.text for b in btns]
 check("8.1 fast 5с: есть «длиннее 10 сек»", "video_longer_10" in cbs, str(cbs))
-check("8.2 fast 5с: цена длиннее = 54 изюм", any("10 сек · 54 изюминок" in t for t in texts), str(texts))
+check("8.2 fast 5с: цена длиннее = 54 изюм", any("10с · 54 🍇" in t for t in texts), str(texts))
 check("8.3 fast 5с: есть апгрейд в Seedance 2", "video_upgrade_seedance2" in cbs)
-check("8.4 fast 5с: цена апгрейда = 34 изюм", any("Seedance 2 — 34 изюминок" in t for t in texts), str(texts))
+check("8.4 fast 5с: цена апгрейда = 34 изюм", any("Seedance 2 — 34 🍇" in t for t in texts), str(texts))
 check("8.5 fast 5с: has_upsell=True", has_up is True)
 check("8.6 есть кнопка «Ещё видео»", "video" in cbs)
 

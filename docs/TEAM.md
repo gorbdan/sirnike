@@ -9,7 +9,7 @@
 |---|---|---|---|---|
 | 🎯 Маркетолог | `claude-sonnet-5` (стратег. решения → Fable) | репо бота | [roles/marketing.md](roles/marketing.md) | сам ведёт MARKETING_PLAN + пишет брифы другим |
 | ⚙️ Бэкенд | `claude-sonnet-5` (сложный баг → Fable) | репо бота | [roles/backend.md](roles/backend.md) | [briefs/backend.md](briefs/backend.md) |
-| 🖥 Фронтенд вебаппа | `claude-sonnet-5` (архитектура → Fable) | **репо вебаппа** | [roles/frontend.md](roles/frontend.md) | [briefs/frontend.md](briefs/frontend.md) |
+| 🖥 Фронтенд | `claude-sonnet-5` (архитектура → Fable) | **репо вебаппа** | [roles/frontend.md](roles/frontend.md) | [briefs/frontend.md](briefs/frontend.md) |
 | 🎨 UX/UI-дизайнер | `claude-sonnet-5` (спорный дизайн → Fable) | репо бота | [roles/design.md](roles/design.md) | [briefs/design.md](briefs/design.md) |
 | 🔎 Промт-ресёрчер | `claude-sonnet-5` (массовые тесты → Haiku) | репо бота | [roles/prompt-researcher.md](roles/prompt-researcher.md) | [briefs/prompts.md](briefs/prompts.md) |
 | 🎬 Контент-продюсер | `claude-sonnet-5` | репо бота | [roles/content.md](roles/content.md) | [briefs/content.md](briefs/content.md) |
@@ -43,8 +43,8 @@
 **⚙️ Бэкенд**
 > Ты бэкенд-инженер Сырника. Прочитай CLAUDE.md, docs/roles/backend.md и AGENT_NOTES.md. Возьми верхнюю невыполненную задачу из docs/briefs/backend.md и сделай её по рабочему циклу роли.
 
-**🖥 Фронтенд вебаппа**
-> Ты фронтенд-инженер вебаппа «Библиотека стилей» Сырника. Прочитай docs/roles/frontend.md и docs/BOT_CONTRACT.md в репо бота (путь спроси, если не найдёшь). Возьми верхнюю задачу из docs/briefs/frontend.md репо бота. Контракт бот↔вебапп не ломать.
+**🖥 Фронтенд**
+> Ты фронтенд-инженер Сырника — весь фронтенд проекта: вебапп целиком и веб-страницы. Прочитай docs/roles/frontend.md и docs/BOT_CONTRACT.md в репо бота (путь спроси, если не найдёшь). Возьми верхнюю задачу из docs/briefs/frontend.md репо бота. Контракт бот↔вебапп не ломать.
 
 **🎨 UX/UI-дизайнер**
 > Ты UX/UI-дизайнер Сырника. Прочитай CLAUDE.md, docs/roles/design.md и последний отчёт в audits/. Возьми верхнюю задачу из docs/briefs/design.md. Результат — спека/макет, код не трогай.

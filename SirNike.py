@@ -284,6 +284,9 @@ SEEDANCE_VIDEO_REFERENCE_MODE = os.getenv("SEEDANCE_VIDEO_REFERENCE_MODE", "char
 class UserState:
     prompt: str = ""
     references: List[str] = field(default_factory=list)
+    # Когда последний раз обновлялись references — используется, чтобы не
+    # подмешивать в новую генерацию фото, забытые пользователем недели назад.
+    references_updated_at: float = 0.0
     animation_source_url: Optional[str] = None
     animation_source_urls: List[str] = field(default_factory=list)
     # Тип аватара (female/male/child), выбранный перед генерацией — читается в avatar_gen_start.
@@ -919,11 +922,21 @@ def build_zveno_url(base: str, path: str) -> str:
     return f"{b}{p}"
 
 
+# Сколько держим забытые reference-фото в state, прежде чем считать их
+# устаревшими. Без этого «Фото на месте (N шт.) — запускай!» может тихо
+# подмешать в генерацию фото, загруженные пользователем недели назад.
+STALE_REFERENCES_TTL_SECONDS = 6 * 3600
+
+
 def get_or_init_state(context: ContextTypes.DEFAULT_TYPE) -> UserState:
     state = context.user_data.get("state")
     if not isinstance(state, UserState):
         state = UserState()
         context.user_data["state"] = state
+    if state.references and state.references_updated_at:
+        if time.time() - state.references_updated_at > STALE_REFERENCES_TTL_SECONDS:
+            state.references = []
+            state.references_updated_at = 0.0
     return state
 
 
@@ -1075,19 +1088,27 @@ def main_menu_kb() -> InlineKeyboardMarkup:
 
 
 # Постоянная reply-клавиатура: всегда под полем ввода, не пропадает.
-# Названия продуктов синхронизированы с инлайн-меню (один бренд в обоих меню).
+# Названия и состав синхронизированы с инлайн-меню (main_menu_kb) — один
+# бренд в обоих меню, иначе часть разделов (были: «Улучшить фото», «Модель
+# картинок», «Пригласить друга») доступна только из /start.
 MENU_BTN_PHOTO = "✨ Сгенерировать фото"
 MENU_BTN_VIDEO = "🎬 Видео для Reels"
 MENU_BTN_AVATAR = "🪄 Аватар"
+MENU_BTN_ENHANCE = "🖼️ Улучшить фото"
+MENU_BTN_IMAGE_MODEL = "🧠 Модель картинок"
 MENU_BTN_LIBRARY = "📚 Библиотека стилей"
-MENU_BTN_BALANCE = "💰 Баланс"
-MENU_BTN_HELP = "❓ Помощь"
+MENU_BTN_BALANCE = "💰 Баланс и пополнение"
+MENU_BTN_REFERRAL = "🎁 Пригласить друга"
+MENU_BTN_HELP = "❓ Как пользоваться"
 PERSISTENT_MENU_BUTTONS = {
     MENU_BTN_PHOTO,
     MENU_BTN_VIDEO,
     MENU_BTN_AVATAR,
+    MENU_BTN_ENHANCE,
+    MENU_BTN_IMAGE_MODEL,
     MENU_BTN_LIBRARY,
     MENU_BTN_BALANCE,
+    MENU_BTN_REFERRAL,
     MENU_BTN_HELP,
 }
 
@@ -1102,13 +1123,19 @@ def persistent_menu_kb(user_id: Optional[int] = None) -> ReplyKeyboardMarkup:
         )
     else:
         library_btn = KeyboardButton(MENU_BTN_LIBRARY)
+    rows = [
+        # 4 продукта верхним уровнем — теми же словами, что инлайн-меню
+        [KeyboardButton(MENU_BTN_PHOTO), KeyboardButton(MENU_BTN_VIDEO)],
+        [KeyboardButton(MENU_BTN_AVATAR), KeyboardButton(MENU_BTN_ENHANCE)],
+    ]
+    if GPT5_IMAGE_ENABLED:
+        rows.append([library_btn, KeyboardButton(MENU_BTN_IMAGE_MODEL)])
+    else:
+        rows.append([library_btn])
+    rows.append([KeyboardButton(MENU_BTN_BALANCE), KeyboardButton(MENU_BTN_REFERRAL)])
+    rows.append([KeyboardButton(MENU_BTN_HELP)])
     return ReplyKeyboardMarkup(
-        [
-            # 3 продукта верхним уровнем — теми же словами, что инлайн-меню
-            [KeyboardButton(MENU_BTN_PHOTO), KeyboardButton(MENU_BTN_VIDEO)],
-            [KeyboardButton(MENU_BTN_AVATAR), library_btn],
-            [KeyboardButton(MENU_BTN_BALANCE), KeyboardButton(MENU_BTN_HELP)],
-        ],
+        rows,
         resize_keyboard=True,
         is_persistent=True,
     )
@@ -2737,6 +2764,32 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE,
         )
         return True
 
+    if text == MENU_BTN_ENHANCE:
+        state = get_or_init_state(context)
+        deactivate_video_session(state)
+        state.prompt = ENHANCE_PHOTO_PROMPT
+        state.image_prompt = ""
+        state.references = []  # старое фото не подмешиваем — нужно новое, для улучшения
+        state.image_model = "gemini"  # nano banana, фикс по требованию функции
+        await update.message.reply_text(
+            "Пришли фото, которое нужно улучшить 🖼️\n"
+            "Бот повысит качество и сделает его похожим на кадр от профессионального "
+            "фотографа — черты лица останутся прежними.",
+        )
+        return True
+
+    if text == MENU_BTN_IMAGE_MODEL:
+        state = get_or_init_state(context)
+        await update.message.reply_text(
+            image_model_menu_text(state),
+            reply_markup=image_model_menu_kb(state),
+        )
+        return True
+
+    if text == MENU_BTN_REFERRAL:
+        await referral(update, context)
+        return True
+
     if text == MENU_BTN_BALANCE:
         await balance(update, context)
         return True
@@ -3029,6 +3082,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.animation_source_url = direct_url
         if len(state.references) < 8:  # cap to max used in generation
             state.references.append(direct_url)
+            state.references_updated_at = time.time()
 
         chat_id = update.effective_chat.id
         photo_counts[chat_id] = photo_counts.get(chat_id, 0) + 1
@@ -3171,35 +3225,40 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
 
     image_prompt = str(payload.get("image_prompt") or "").strip()
 
-    # Fallback mode for oversized WebApp payload:
-    # app sends only (category,item) indices and bot resolves prompt locally.
+    # (category,item) indices let us resolve title/upload_hint from PROMPT_LIBRARY
+    # even when WebApp already sent the prompt inline — не только при переполнении
+    # payload. Многие фото-стили не имеют "title" (только description), так что без
+    # этого резолва title/upload_hint остаются пустыми в обычном (не fallback) пути.
     resolved_cat_idx = None
     resolved_upload_hint = ""
-    if not prompt:
-        try:
-            cat_idx = int(payload.get("cat_idx") if payload.get("cat_idx") is not None else payload.get("ci"))
-            item_idx = int(payload.get("item_idx") if payload.get("item_idx") is not None else payload.get("ii"))
-            if not (0 <= cat_idx < len(PROMPT_LIBRARY)):
-                raise ValueError(f"cat_idx out of range: {cat_idx}")
+    item = None
+    try:
+        cat_idx = int(payload.get("cat_idx") if payload.get("cat_idx") is not None else payload.get("ci"))
+        item_idx = int(payload.get("item_idx") if payload.get("item_idx") is not None else payload.get("ii"))
+        if 0 <= cat_idx < len(PROMPT_LIBRARY):
             cat_items = PROMPT_LIBRARY[cat_idx].get("items") or []
-            if not (0 <= item_idx < len(cat_items)):
-                raise ValueError(f"item_idx out of range: {item_idx}")
-            item = cat_items[item_idx]
-            resolved_title = str(item.get("title") or "").strip()
+            if 0 <= item_idx < len(cat_items):
+                item = cat_items[item_idx]
+                resolved_cat_idx = cat_idx
+    except Exception:
+        item = None
+
+    if item is not None:
+        resolved_title = str(item.get("title") or "").strip()
+        resolved_upload_hint = str(item.get("upload_hint") or "").strip()
+        # Лейбл для аналитики и для сообщения пользователю: у фото-стилей часто
+        # нет "title" (только description) — берём тот же fallback, что и в UI
+        # (_showcase_item_label), иначе выходит «Шаблон «шаблон»».
+        if not raw_title:
+            fallback_label = resolved_title or _showcase_item_label(item)
+            if fallback_label:
+                raw_title = fallback_label
+                title = fallback_label
+        if not prompt:
             resolved_prompt = str(item.get("prompt") or "").strip()
-            resolved_upload_hint = str(item.get("upload_hint") or "").strip()
-            # Лейбл для аналитики: у фото-стилей часто нет "title" (только description) —
-            # берём тот же fallback, что и в UI (_showcase_item_label), иначе они не попадут в статистику.
-            raw_title = resolved_title or _showcase_item_label(item)
-            # Тот же лейбл используем и в пользовательском сообщении — чтобы не было «Шаблон «шаблон»».
-            if raw_title:
-                title = raw_title
-            resolved_cat_idx = cat_idx
             prompt = resolved_prompt or resolved_title
             if not image_prompt:
                 image_prompt = str(item.get("image_prompt") or "").strip()
-        except Exception:
-            prompt = ""
 
     prompt = prompt or title
 
@@ -7474,8 +7533,6 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _saved_video_prompt = state.video_prompt
         _saved_image_prompt = state.image_prompt
 
-        state.video_session_active = False
-
         if not SEEDANCE_ENABLED:
             await reply_target.reply_text(video_unavailable_text(), reply_markup=main_menu_kb())
             return
@@ -7574,6 +7631,13 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not spend_izyminki(user.id, selected_cost):
             await reply_target.reply_text("Не удалось списать изюминки. Попробуй ещё раз.")
             return
+
+        # Only now, once every validation passed and izyminki are spent, are we
+        # actually committed to the generation — deactivate video mode so a later
+        # text message isn't mistaken for a new video prompt. Earlier early-returns
+        # (empty draft, missing ref, low balance) keep the user in video mode so
+        # they can fix the issue and retry without losing context.
+        state.video_session_active = False
 
         eta_min = max(2, int(selected_duration * 0.8))
         eta_max = max(eta_min + 1, int(selected_duration * 2.0))

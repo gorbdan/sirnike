@@ -3092,9 +3092,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
     state.prompt = prompt
 
     await update.message.reply_text(
-        f"Готово ✨\nСтиль «{title}» применён.\n"
-        "Нажми «✨ Сгенерировать фото» или отправь своё фото.",
-        reply_markup=main_menu_kb(),
+        f"Готово ✨\nСтиль «{title}» применён.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
+        ]),
     )
 
 
@@ -3136,8 +3137,10 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
             )
         else:
             await update.effective_message.reply_text(
-                f"Готово ✨\nСтиль «{title}» применён.\nНажми «✨ Сгенерировать фото».",
-                reply_markup=main_menu_kb(),
+                f"Готово ✨\nСтиль «{title}» применён.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
+                ]),
             )
     return True
 
@@ -4210,11 +4213,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             deactivate_video_session(state)
             state.prompt = prompt
+            _pl_cb_sc = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
             await query.message.reply_text(
                 f"Стиль «{title}» применён ✨\n"
-                "Хочешь себя на этом фото? Сначала пришли своё фото обычным сообщением.\n"
-                "А дальше жми «✨ Сгенерировать фото»",
-                reply_markup=main_menu_kb(),
+                "Хочешь себя на этом фото? Сначала пришли своё фото обычным сообщением.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
+                    [InlineKeyboardButton("📚 Другой стиль", callback_data=_pl_cb_sc)],
+                ]),
             )
         return
 
@@ -5156,10 +5162,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         register_promo_click(promo_id, update.effective_user.id)
 
         await query.message.reply_text(
-            "Готово ✨\n"
-            "Стиль применён ✅\n\n"
-            "Нажми «✨ Сгенерировать фото» или отправь своё фото.",
-            reply_markup=main_menu_kb()
+            "Готово ✨\nСтиль применён ✅",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
+            ]),
         )
         return
 

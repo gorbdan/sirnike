@@ -63,13 +63,13 @@ check("1.5 label gemini (env 3.1-flash) = Nano Banana 2",
       f"got={S.get_image_model_label('gemini')!r} env={S.ZVENO_IMAGE_MODEL}")
 
 check("1.6 базовая цена gemini", S.get_image_model_base_cost("gemini") == S.BASE_GENERATION_COST)
-check("1.7 базовая цена gpt5 = 10", S.get_image_model_base_cost("gpt5") == 10,
+check("1.7 базовая цена gpt5 = 25", S.get_image_model_base_cost("gpt5") == 25,
       f"got={S.get_image_model_base_cost('gpt5')}")
 check("1.8 calc_generation_cost gemini без рефов", S.calc_generation_cost(None, "gemini") == 5)
-check("1.9 calc_generation_cost gpt5 без рефов", S.calc_generation_cost(None, "gpt5") == 10)
+check("1.9 calc_generation_cost gpt5 без рефов", S.calc_generation_cost(None, "gpt5") == 25)
 _orig_ref_cost = S.REFERENCE_COST
 S.REFERENCE_COST = 2
-check("1.10 надбавка за рефы складывается", S.calc_generation_cost(["x"], "gpt5") == 12)
+check("1.10 надбавка за рефы складывается", S.calc_generation_cost(["x"], "gpt5") == 27)
 S.REFERENCE_COST = _orig_ref_cost
 
 st.image_model = "gemini"
@@ -81,7 +81,7 @@ check("1.11 меню: есть set_gemini и set_gpt5",
       "image_model_set_gemini" in cbs and "image_model_set_gpt5" in cbs, str(cbs))
 check("1.12 меню: маркер ● на выбранной gemini",
       any(t.startswith("● ") and "Nano Banana 2" in t for t in texts), str(texts))
-check("1.13 меню: цены в кнопках", any("5 изюминок" in t for t in texts) and any("10 изюминок" in t for t in texts), str(texts))
+check("1.13 меню: цены в кнопках", any("5 изюминок" in t for t in texts) and any("25 изюминок" in t for t in texts), str(texts))
 check("1.14 текст меню упоминает обе модели",
       "Nano Banana 2" in S.image_model_menu_text(st) and "GPT-5 Image" in S.image_model_menu_text(st))
 
@@ -90,24 +90,24 @@ print("Блок 2: видео-модели")
 st2 = S.UserState()
 for code, expected in [("seedance2", "seedance2"), ("seedance2_fast", "seedance2_fast"),
                        ("kling3", "kling3"), ("veo31", "veo31"), ("мусор", "seedance2")]:
-    st2.motion_model = code
-    check(f"2.1 get_motion_model({code})={expected}", S.get_motion_model(st2) == expected)
+    st2.video_model = code
+    check(f"2.1 get_video_model({code})={expected}", S.get_video_model(st2) == expected)
 
 _k, _v = S.KLING3_ENABLED, S.VEO31_ENABLED
 S.KLING3_ENABLED = False
-st2.motion_model = "kling3"
-check("2.2 kling3 при выключенном флаге -> seedance2", S.get_motion_model(st2) == "seedance2")
+st2.video_model = "kling3"
+check("2.2 kling3 при выключенном флаге -> seedance2", S.get_video_model(st2) == "seedance2")
 S.KLING3_ENABLED = _k
 S.VEO31_ENABLED = False
-st2.motion_model = "veo31"
-check("2.3 veo31 при выключенном флаге -> seedance2", S.get_motion_model(st2) == "seedance2")
+st2.video_model = "veo31"
+check("2.3 veo31 при выключенном флаге -> seedance2", S.get_video_model(st2) == "seedance2")
 S.VEO31_ENABLED = _v
 
-check("2.4 label kling3", S.get_motion_model_label("kling3") == "Kling 3.0 🆕")
-check("2.5 label veo31", S.get_motion_model_label("veo31") == "Veo 3.1 (Google) 🆕")
-check("2.6 цена kling3 = 8.0", S.get_motion_model_cost_per_second("kling3") == 8.0)
-check("2.7 цена veo31 = 8.0", S.get_motion_model_cost_per_second("veo31") == 8.0)
-check("2.8 цена seedance2 не сломана", S.get_motion_model_cost_per_second("seedance2") == S.SEEDANCE_COST_PER_SECOND)
+check("2.4 label kling3", S.get_video_model_label("kling3") == "Kling 3.0 🆕")
+check("2.5 label veo31", S.get_video_model_label("veo31") == "Veo 3.1 (Google) 🆕")
+check("2.6 цена kling3 = 8.0", S.get_video_model_cost_per_second("kling3") == 8.0)
+check("2.7 цена veo31 = 8.0", S.get_video_model_cost_per_second("veo31") == 8.0)
+check("2.8 цена seedance2 не сломана", S.get_video_model_cost_per_second("seedance2") == S.SEEDANCE_COST_PER_SECOND)
 
 check("2.9 bounds kling3=(3,15)", S.get_seedance_duration_bounds("kling3") == (3, 15))
 check("2.10 bounds veo31=(4,8)", S.get_seedance_duration_bounds("veo31") == (4, 8))
@@ -127,9 +127,9 @@ check("2.17 kling3 duration options валидны (3..15)", all(3 <= x <= 15 fo
 check("2.18 mode kling3 = [720p]", S.get_seedance_mode_options("kling3") == ["720p"])
 check("2.19 mode veo31 = [720p]", S.get_seedance_mode_options("veo31") == ["720p"])
 
-st3 = S.UserState(); st3.motion_model = "veo31"; st3.motion_mode = "480p"
+st3 = S.UserState(); st3.video_model = "veo31"; st3.video_mode = "480p"
 check("2.20 selected mode veo31 принудительно 720p", S.get_selected_seedance_mode(st3) == "720p")
-st3.motion_duration = 15
+st3.video_duration = 15
 check("2.21 selected duration veo31 при 15 -> из options", S.get_selected_seedance_duration(st3) in (4, 6, 8))
 
 check("2.22 стоимость 5с kling3 = 40 изюм", S.calc_seedance_cost(5, 8.0) == 40)
@@ -137,8 +137,8 @@ check("2.23 стоимость 8с veo31 = 64 изюм", S.calc_seedance_cost(8,
 
 # ════════════════ БЛОК 3: клавиатуры ════════════════
 print("Блок 3: клавиатуры")
-st4 = S.UserState(); st4.motion_model = "kling3"
-kb4 = S.video_control_kb(st4)
+st4 = S.UserState(); st4.video_model = "kling3"
+kb4 = S.video_kb(st4)
 flat4 = [b for row in kb4.inline_keyboard for b in row]
 cbs4 = [b.callback_data for b in flat4 if b.callback_data]
 check("3.1 есть кнопка video_model_kling3", "video_model_kling3" in cbs4)
@@ -147,22 +147,24 @@ check("3.3 маркер ● на Kling 3.0", any(b.text.startswith("● ") and "
 check("3.4 у kling3 нет кнопок качества video_mode_", not any(c.startswith("video_mode_") for c in cbs4), str(cbs4))
 check("3.5 у kling3 есть 1:1 аспект", any(c == "video_aspect_1x1" for c in cbs4))
 dur_btns = [b.text for b in flat4 if (b.callback_data or "").startswith("video_duration_")]
-check("3.6 цена в кнопке 5с = 40 изюминок", any("5с · 40 изюминок" in t for t in dur_btns), str(dur_btns))
+check("3.6 цена в кнопке 5с = 40 🍇", any("5с · 40 🍇" in t for t in dur_btns), str(dur_btns))
 
-st5 = S.UserState(); st5.motion_model = "veo31"
-kb5 = S.video_control_kb(st5)
+st5 = S.UserState(); st5.video_model = "veo31"
+kb5 = S.video_kb(st5)
 cbs5 = [b.callback_data for row in kb5.inline_keyboard for b in row if b.callback_data]
 check("3.7 у veo31 НЕТ 1:1 аспекта", "video_aspect_1x1" not in cbs5, str(cbs5))
 check("3.8 у veo31 есть 16:9 и 9:16", "video_aspect_16x9" in cbs5 and "video_aspect_9x16" in cbs5)
 durs5 = [c for c in cbs5 if c.startswith("video_duration_")]
 check("3.9 duration кнопки veo31 только 4/6/8", set(durs5) <= {"video_duration_4", "video_duration_6", "video_duration_8"}, str(durs5))
 
-stxt = S.video_control_status_text(st4)
+stxt = S.video_status_text(st4)
 check("3.10 статус-текст содержит Kling 3.0 и стоимость", "Kling 3.0" in stxt and "изюминок" in stxt)
 
 kb6 = S.result_actions_kb(user_id=123, bot_username="TestBot")
 cbs6 = [b.callback_data for row in kb6.inline_keyboard for b in row if b.callback_data]
 check("3.11 result_actions с user_id содержит animate_last", "animate_last" in cbs6, str(cbs6))
+check("3.11a result_actions содержит image_model_menu (настройка модели под результатом)",
+      "image_model_menu" in cbs6, str(cbs6))
 kb7 = S.result_actions_kb()
 cbs7 = [b.callback_data for row in kb7.inline_keyboard for b in row if b.callback_data]
 check("3.12 result_actions без user_id БЕЗ animate_last (фейл-кейс)", "animate_last" not in cbs7, str(cbs7))
@@ -175,7 +177,9 @@ S.SEEDANCE_ENABLED = _se
 
 mkb = S.main_menu_kb()
 mcbs = [b.callback_data for row in mkb.inline_keyboard for b in row if b.callback_data]
-check("3.14 в главном меню есть image_model_menu", "image_model_menu" in mcbs, str(mcbs))
+check("3.14 главное меню: 4 продукта, без image_model_menu (переехала под результат)",
+      all(c in mcbs for c in ("generate", "video", "avatar_actions", "enhance_photo"))
+      and "image_model_menu" not in mcbs, str(mcbs))
 
 # ════════════════ БЛОК 4: JPEG-конверсия кадров ════════════════
 print("Блок 4: JPEG-конверсия")
@@ -439,7 +443,7 @@ asyncio.run(S.button_handler(update, context))
 st7 = context.user_data.get("state")
 check("7.2 картинка попала в видео-буфер", st7 and st7.animation_source_urls == ["https://example.com/gen.png"],
       str(getattr(st7, "animation_source_urls", None)))
-check("7.3 видео-сессия активирована", st7 and st7.motion_session_active is True)
+check("7.3 видео-сессия активирована", st7 and st7.video_session_active is True)
 msgs = [c.args[0] for c in query.message.reply_text.await_args_list]
 check("7.4 показано видео-меню (статус-текст)", any("Модель:" in m for m in msgs), str(msgs)[:200])
 
@@ -454,14 +458,14 @@ check("7.5 стейлый __img__ -> мягкое сообщение", any("Не
 update, context, query = make_update_context("video_model_kling3", user_id=704)
 asyncio.run(S.button_handler(update, context))
 st8 = context.user_data.get("state")
-check("7.6 callback video_model_kling3 ставит модель", st8 and st8.motion_model == "kling3")
+check("7.6 callback video_model_kling3 ставит модель", st8 and st8.video_model == "kling3")
 
 update, context, query = make_update_context("video_model_veo31", user_id=705)
-context.user_data["state"] = S.UserState(motion_aspect_ratio="1:1")
+context.user_data["state"] = S.UserState(video_aspect_ratio="1:1")
 asyncio.run(S.button_handler(update, context))
 st9 = context.user_data["state"]
-check("7.7 veo31 сбрасывает аспект 1:1 -> 16:9", st9.motion_model == "veo31" and st9.motion_aspect_ratio == "16:9",
-      f"model={st9.motion_model} aspect={st9.motion_aspect_ratio}")
+check("7.7 veo31 сбрасывает аспект 1:1 -> 16:9", st9.video_model == "veo31" and st9.video_aspect_ratio == "16:9",
+      f"model={st9.video_model} aspect={st9.video_aspect_ratio}")
 
 # 7.8 выбор модели картинок через callback
 update, context, query = make_update_context("image_model_set_gpt5", user_id=706)
@@ -489,7 +493,7 @@ check("8.2 fast 5с: цена длиннее = 54 изюм", any("10 сек · 5
 check("8.3 fast 5с: есть апгрейд в Seedance 2", "video_upgrade_seedance2" in cbs)
 check("8.4 fast 5с: цена апгрейда = 34 изюм", any("Seedance 2 — 34 изюминок" in t for t in texts), str(texts))
 check("8.5 fast 5с: has_upsell=True", has_up is True)
-check("8.6 есть кнопка «Ещё видео»", "video_control" in cbs)
+check("8.6 есть кнопка «Ещё видео»", "video" in cbs)
 
 # 8.7 fast 10с -> длиннее 15с
 S.last_video_params[802] = {"model": "seedance2_fast", "duration": 10, "mode": "720p",
@@ -535,11 +539,11 @@ update, context, query = make_update_context("video_longer_10", user_id=806)
 context.application = types.SimpleNamespace(create_task=lambda c: (started.append("task"), c.close()))
 asyncio.run(S.button_handler(update, context))
 st11 = context.user_data.get("state")
-check("8.13 длиннее: duration=10", st11 and st11.motion_duration == 10,
-      f"dur={getattr(st11, 'motion_duration', None)}")
-check("8.14 длиннее: модель сохранена (fast)", st11.motion_model == "seedance2_fast")
+check("8.13 длиннее: duration=10", st11 and st11.video_duration == 10,
+      f"dur={getattr(st11, 'video_duration', None)}")
+check("8.14 длиннее: модель сохранена (fast)", st11.video_model == "seedance2_fast")
 check("8.15 длиннее: реф восстановлен", st11.animation_source_urls == ["https://example.com/cat.png"])
-check("8.16 длиннее: промт восстановлен", st11.motion_prompt == "кот танцует")
+check("8.16 длиннее: промт восстановлен", st11.video_prompt == "кот танцует")
 check("8.17 длиннее: генерация запущена", "task" in started, str(started))
 S.processing_user_ids.discard(806)
 
@@ -551,9 +555,9 @@ update, context, query = make_update_context("video_upgrade_seedance2", user_id=
 context.application = types.SimpleNamespace(create_task=lambda c: c.close())
 asyncio.run(S.button_handler(update, context))
 st12 = context.user_data.get("state")
-check("8.18 апгрейд: модель seedance2", st12 and st12.motion_model == "seedance2",
-      f"model={getattr(st12, 'motion_model', None)}")
-check("8.19 апгрейд: длительность сохранена (10)", st12.motion_duration == 10)
+check("8.18 апгрейд: модель seedance2", st12 and st12.video_model == "seedance2",
+      f"model={getattr(st12, 'video_model', None)}")
+check("8.19 апгрейд: длительность сохранена (10)", st12.video_duration == 10)
 check("8.20 апгрейд: реф восстановлен", st12.animation_source_urls == ["https://example.com/dog.png"])
 S.processing_user_ids.discard(807)
 

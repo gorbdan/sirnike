@@ -1,0 +1,53 @@
+# Контракт бот ↔ вебапп «Библиотека стилей»
+
+Вебапп живёт в отдельном репо (Cloudflare Pages, https://sirnike.pages.dev).
+Бот синкает `prompt_library.json` из вебаппа при старте — **source of truth = репо вебаппа**.
+Парсер на стороне бота: `apply_webapp_prompt_payload_v2` (SirNike.py, ~строка 3096).
+
+## prompt_library.json
+
+Массив категорий:
+
+```json
+[
+  {
+    "title": "Название категории",
+    "emoji": "🎬",
+    "items": [
+      {
+        "title": "Название стиля",        // у фото-стилей часто отсутствует!
+        "prompt": "полный промт",
+        "type": "video",                   // отсутствует = фото
+        "video_url": "...", "poster_url": "...",   // для видео
+        "example_url": "...",              // для фото
+        "image_prompt": "...",             // опц.: промт стилизации кадра перед видео
+        "description": "описание для карточки",
+        "upload_hint": "Фото лица + 5 фото одежды", // что загрузить юзеру
+        "added_at": "ISO-дата"
+      }
+    ]
+  }
+]
+```
+
+⚠️ Если у item нет `title`, бот берёт fallback-лейбл (`_showcase_item_label`) —
+но лучше всегда заполнять `title`, иначе страдают статистика и сообщения.
+
+## Payload web_app_data (вебапп → бот)
+
+JSON строкой. Полные и короткие ключи равнозначны:
+
+| Поле | Кратко | Значение |
+|---|---|---|
+| `action` | `a` | `set_prompt` \| `set_video_prompt` \| `set_prompt_ref` \| `set_video_prompt_ref` \| `topup` (+ алиасы `apply_prompt`, `use_prompt`, `apply_template`…) |
+| `title` | `t` | название стиля (показывается юзеру) |
+| `prompt` | `p` | полный промт |
+| `image_prompt` | — | опц., промт стилизации кадра для видео |
+| `cat_idx` | `ci` | fallback: индексы вместо промта, |
+| `item_idx` | `ii` | если payload не влезает — бот резолвит промт локально |
+
+Правила:
+- Payload > лимита Telegram → слать только `ci`/`ii` + `a`, без `p`.
+- `topup` открывает у бота экран пополнения.
+- Менять формат payload или структуру JSON — только синхронно с правкой парсера в боте
+  (бриф бэкенду в `docs/briefs/backend.md` в репо бота).

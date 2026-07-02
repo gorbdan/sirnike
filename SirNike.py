@@ -297,7 +297,7 @@ class UserState:
     video_duration: Optional[int] = None
     video_mode: Optional[str] = None
     video_model: str = "seedance2_fast"
-    video_aspect_ratio: str = "16:9"
+    video_aspect_ratio: str = "9:16"
     video_session_active: bool = False
     waiting_for_video_prompt: bool = False
     waiting_for_video_image: bool = False
@@ -986,15 +986,45 @@ def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int
             await asyncio.sleep(2.0)
             count = photo_counts.pop(chat_id, 0)
             if count > 0:
+                state = context.user_data.get("state")
+                in_enhance = isinstance(state, UserState) and state.prompt == ENHANCE_PHOTO_PROMPT
+                _pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
+                if in_enhance:
+                    msg_text = "Фото получено ✅\nМожно улучшать!"
+                    markup = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🚀 Улучшить это фото", callback_data="generate")],
+                    ])
+                else:
+                    # Просим описание только если его ещё нет — иначе бот зовёт
+                    # по кругу: «пришли фото» ↔ «напиши описание». Проверка идёт
+                    # в момент отправки (через 2с), так что текст, присланный
+                    # сразу после фото, тоже успевает учесться.
+                    saved_prompt = (state.prompt or "").strip() if isinstance(state, UserState) else ""
+                    if saved_prompt:
+                        preview = saved_prompt if len(saved_prompt) <= 50 else saved_prompt[:47] + "…"
+                        msg_text = (
+                            f"Фото получены: {count} шт. ✅\n"
+                            f"Описание уже есть: «{preview}»\n"
+                            "Всё готово — запускай!"
+                        )
+                        markup = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("🚀 Запустить генерацию", callback_data="generate")],
+                            [InlineKeyboardButton("📚 Выбрать другой стиль", callback_data=_pl_cb)],
+                        ])
+                    else:
+                        msg_text = (
+                            f"Фото получены: {count} шт. ✅\n"
+                            "Бот будет использовать их при генерации.\n\n"
+                            "Напиши описание или выбери стиль из библиотеки — и запускай."
+                        )
+                        markup = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
+                            [InlineKeyboardButton("📚 Выбрать стиль", callback_data=_pl_cb)],
+                        ])
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text=(
-                        f"Фото получены: {count} шт. ✅\n"
-                        "Бот будет использовать их при генерации.\n\n"
-                        "Теперь напиши описание картинки или выбери стиль из библиотеки 📚\n"
-                        "и нажми «✨ Сгенерировать фото»"
-                    ),
-                    reply_markup=main_menu_kb()
+                    text=msg_text,
+                    reply_markup=markup,
                 )
         except asyncio.CancelledError:
             pass
@@ -1469,7 +1499,7 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
         rows.append(duration_buttons[3:])
     # Запуск
     rows.append([InlineKeyboardButton("⚡ Запустить видео", callback_data="video_start")])
-    rows.append([InlineKeyboardButton("◀️ В меню", callback_data="reset")])
+    rows.append([InlineKeyboardButton("◀️ В меню", callback_data="menu_from_video")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -1491,9 +1521,9 @@ def video_status_text(state: UserState) -> str:
             ref_text = f"{ref_text[:60]}...{ref_text[-28:]}"
         refs_preview_lines.append(f"{idx}. {ref_text}")
     refs_preview_text = (
-        "Рефы в буфере:\n" + "\n".join(refs_preview_lines)
+        "Фото в буфере:\n" + "\n".join(refs_preview_lines)
         if refs_preview_lines
-        else "Рефы в буфере: —"
+        else ""
     )
     selected_duration = get_selected_seedance_duration(state)
     selected_model = get_video_model(state)
@@ -1509,19 +1539,20 @@ def video_status_text(state: UserState) -> str:
         if selected_model == "seedance2"
         else f"{seedance_mode_ui_label(selected_mode)} (фиксировано)"
     )
+    step3 = "3. Выбери длительность и качество" if selected_model == "seedance2" else "3. Выбери длительность"
+    refs_line = f"{refs_preview_text}\n" if refs_preview_text else ""
     return (
         f"{model_label}\n"
-        "Генерация видео с помощью нейросети.\n"
-        "Можно сразу отправлять текст и фото без дополнительных кнопок.\n"
-        "Фото фиксируют внешность персонажей в кадре.\n\n"
+        "Генерация видео с помощью нейросети.\n\n"
+        "Нужно хотя бы одно: описание ИЛИ фото.\n"
         "1. Напиши описание видео (необязательно)\n"
         "2. Отправь фото (бот запомнит внешность)\n"
-        "3. Выбери длительность и качество\n"
+        f"{step3}\n"
         "4. Нажми «⚡ Запустить видео»\n\n"
         f"Модель: {model_label}\n"
         f"Описание: {prompt_state}\n"
         f"Изображение: {image_state}\n"
-        f"{refs_preview_text}\n"
+        f"{refs_line}"
         f"Формат: {_aspect_label}\n"
         f"Качество: {quality_text}\n"
         f"Длительность: {selected_duration} сек (варианты: {options_text})\n"
@@ -1569,7 +1600,7 @@ def video_upsell_kb(user_id: int) -> tuple:
 def seedance_retry_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔁 Повторить", callback_data="seedance_retry")],
-        [InlineKeyboardButton("◀️ В меню", callback_data="reset")],
+        [InlineKeyboardButton("◀️ В меню", callback_data="menu_from_video")],
     ])
 
 
@@ -2097,8 +2128,9 @@ async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Cost of one 10-second Seedance video (standard model)
-    _video_10s_cost = calc_seedance_cost(10, SEEDANCE_COST_PER_SECOND)
+    # Cost of one 10-second video using the default model shown in the video panel (Fast).
+    _default_video_cps = SEEDANCE_FAST_COST_PER_SECOND if SEEDANCE_FAST_ENABLED else SEEDANCE_COST_PER_SECOND
+    _video_10s_cost = calc_seedance_cost(10, _default_video_cps)
 
     # Рублёвый эквивалент результата — по «честной середине» (пакет
     # «Контент-неделя»; если его нет — средний пакет списка).
@@ -2125,9 +2157,9 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Акцент на видео: 🎬 первым, где пакета хватает на видео. Иконки
         # компактнее слов — строка не обрезается на узком экране.
         if video_count > 0:
-            hint = f"🎬 {video_count} · 📸 {photo_count}"
+            hint = f"🎬 {video_count} · 📸 до {photo_count}"
         else:
-            hint = f"📸 {photo_count}"
+            hint = f"📸 до {photo_count}"
         # Порядок важен: цена идёт сразу после названия, чтобы при узком
         # экране Telegram обрезал необязательную подсказку, а не цену.
         name = pack.get("name") or ""
@@ -2894,11 +2926,28 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deactivate_video_session(state)
     state.prompt = text
 
-    await update.message.reply_text(
-        "Описание сохранено ✅\n"
-        "Нажми «✨ Сгенерировать фото» или отправь своё фото, чтобы быть на картинке.",
-        reply_markup=main_menu_kb()
-    )
+    _pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
+    # Зовём прислать фото только если референсов ещё нет — иначе бот зовёт
+    # по кругу: «напиши описание» ↔ «пришли фото».
+    ref_count = len(state.references)
+    if ref_count:
+        await update.message.reply_text(
+            "Описание сохранено ✅\n"
+            f"Фото на месте ({ref_count} шт.) — запускай!",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚀 Запустить генерацию", callback_data="generate")],
+                [InlineKeyboardButton("📚 Выбрать стиль", callback_data=_pl_cb)],
+            ]),
+        )
+    else:
+        await update.message.reply_text(
+            "Описание сохранено ✅\n"
+            "Отправь своё фото, чтобы быть на картинке, или сразу запускай.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
+                [InlineKeyboardButton("📚 Выбрать стиль", callback_data=_pl_cb)],
+            ]),
+        )
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3043,9 +3092,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
     state.prompt = prompt
 
     await update.message.reply_text(
-        f"Готово ✨\nСтиль «{title}» применён.\n"
-        "Нажми «✨ Сгенерировать фото» или отправь своё фото.",
-        reply_markup=main_menu_kb(),
+        f"Готово ✨\nСтиль «{title}» применён.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
+        ]),
     )
 
 
@@ -3087,8 +3137,10 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
             )
         else:
             await update.effective_message.reply_text(
-                f"Готово ✨\nСтиль «{title}» применён.\nНажми «✨ Сгенерировать фото».",
-                reply_markup=main_menu_kb(),
+                f"Готово ✨\nСтиль «{title}» применён.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
+                ]),
             )
     return True
 
@@ -3121,6 +3173,7 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
     # Fallback mode for oversized WebApp payload:
     # app sends only (category,item) indices and bot resolves prompt locally.
     resolved_cat_idx = None
+    resolved_upload_hint = ""
     if not prompt:
         try:
             cat_idx = int(payload.get("cat_idx") if payload.get("cat_idx") is not None else payload.get("ci"))
@@ -3133,11 +3186,13 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
             item = cat_items[item_idx]
             resolved_title = str(item.get("title") or "").strip()
             resolved_prompt = str(item.get("prompt") or "").strip()
-            if resolved_title:
-                title = resolved_title
+            resolved_upload_hint = str(item.get("upload_hint") or "").strip()
             # Лейбл для аналитики: у фото-стилей часто нет "title" (только description) —
             # берём тот же fallback, что и в UI (_showcase_item_label), иначе они не попадут в статистику.
             raw_title = resolved_title or _showcase_item_label(item)
+            # Тот же лейбл используем и в пользовательском сообщении — чтобы не было «Шаблон «шаблон»».
+            if raw_title:
+                title = raw_title
             resolved_cat_idx = cat_idx
             prompt = resolved_prompt or resolved_title
             if not image_prompt:
@@ -3178,13 +3233,17 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
                 reply_markup=video_kb(state),
             )
         else:
+            user_id_for_kb = update.effective_user.id if update.effective_user else None
+            upload_note = f"\n\n📎 Что загрузить: {resolved_upload_hint}" if resolved_upload_hint else ""
             await update.effective_message.reply_text(
-                f"Готово ✨\nШаблон «{title}» применен.\nТеперь можно запускать генерацию.",
-                reply_markup=ReplyKeyboardRemove(),
+                f"Готово ✨\nСтиль «{title}» применён.{upload_note}",
+                reply_markup=persistent_menu_kb(user_id_for_kb),
             )
             await update.effective_message.reply_text(
                 "Можно запускать:",
-                reply_markup=main_menu_kb(),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
+                ]),
             )
     return True
 
@@ -4154,11 +4213,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             deactivate_video_session(state)
             state.prompt = prompt
+            _pl_cb_sc = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
             await query.message.reply_text(
                 f"Стиль «{title}» применён ✨\n"
-                "Хочешь себя на этом фото? Сначала пришли своё фото обычным сообщением.\n"
-                "А дальше жми «✨ Сгенерировать фото»",
-                reply_markup=main_menu_kb(),
+                "Хочешь себя на этом фото? Сначала пришли своё фото обычным сообщением.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
+                    [InlineKeyboardButton("📚 Другой стиль", callback_data=_pl_cb_sc)],
+                ]),
             )
         return
 
@@ -4546,9 +4608,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             "Пришли фото, которое нужно улучшить 🖼️\n"
             "Бот повысит качество и сделает его похожим на кадр от профессионального "
-            "фотографа — черты лица останутся прежними.\n\n"
-            "После загрузки жми «✨ Сгенерировать фото».",
-            reply_markup=main_menu_kb(),
+            "фотографа — черты лица останутся прежними.",
         )
         return
 
@@ -5050,6 +5110,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if query.data == "menu_from_video":
+        state = get_or_init_state(context)
+        deactivate_video_session(state)
+        await query.message.reply_text(
+            "Главное меню:",
+            reply_markup=main_menu_kb(),
+        )
+        return
+
     if query.data == "show_help":
         # Единый источник справки — та же, что и команда /help.
         await help_command(update, context)
@@ -5093,10 +5162,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         register_promo_click(promo_id, update.effective_user.id)
 
         await query.message.reply_text(
-            "Готово ✨\n"
-            "Стиль применён ✅\n\n"
-            "Нажми «✨ Сгенерировать фото» или отправь своё фото.",
-            reply_markup=main_menu_kb()
+            "Готово ✨\nСтиль применён ✅",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
+            ]),
         )
         return
 
@@ -7430,7 +7499,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prompt_text = (state.video_prompt or "").strip()
         if not video_images and not prompt_text:
             await reply_target.reply_text(
-                "Для видео нужно фото и/или описание. Добавь и запусти снова."
+                "Для видео нужно хотя бы одно: описание или фото. Добавь и запусти снова."
             )
             return
 

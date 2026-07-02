@@ -145,6 +145,8 @@ from db import (
     count_success_image_generations,
     get_audience_overview,
     get_pnl_report,
+    log_template_usage,
+    get_template_usage_counts,
     add_generation_history,
     get_generation_history,
     get_generation_history_item,
@@ -1243,6 +1245,30 @@ def get_prompt_item_kind(item: dict) -> str:
     if str(item.get("video_url") or "").strip():
         return "video"
     return "image"
+
+
+def _resolve_template_category(item_label: str, cat_idx: Optional[int] = None) -> Optional[str]:
+    """Найти категорию шаблона по индексу (точно) или по отображаемому лейблу (best-effort —
+    у items нет стабильного id, поэтому webapp-путь без cat_idx ищет по лейблу).
+    Лейбл — как в _showcase_item_label: у фото-стилей часто нет "title", только description."""
+    if cat_idx is not None and 0 <= cat_idx < len(PROMPT_LIBRARY):
+        return str(PROMPT_LIBRARY[cat_idx].get("title") or "").strip() or None
+    label = (item_label or "").strip()
+    if not label:
+        return None
+    for cat in PROMPT_LIBRARY:
+        for it in cat.get("items") or []:
+            if _showcase_item_label(it) == label:
+                return str(cat.get("title") or "").strip() or None
+    return None
+
+
+def _log_template_usage_safe(user_id: int, item_label: str, item_kind: str, cat_idx: Optional[int] = None) -> None:
+    label = (item_label or "").strip()
+    if not label:
+        return
+    category = _resolve_template_category(label, cat_idx)
+    log_template_usage(user_id, label, item_kind or "image", category=category)
 
 
 def prompt_library_item_kb(cat_idx: int, item_idx: int, item_kind: str = "image") -> InlineKeyboardMarkup:
@@ -3025,6 +3051,11 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
             await update.effective_message.reply_text("В выбранном шаблоне нет описания.")
         return False
 
+    item_kind = "video" if action == "set_video_prompt" else "image"
+    raw_title = str(payload.get("title") or "").strip()
+    if raw_title and update.effective_user:
+        _log_template_usage_safe(update.effective_user.id, raw_title, item_kind)
+
     state = get_or_init_state(context)
     state.image_prompt = ""
     if action == "set_video_prompt":
@@ -3069,13 +3100,15 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
     if action and action not in {"set_prompt", "set_video_prompt", "set_prompt_ref", "set_video_prompt_ref"}:
         return False
 
-    title = str(payload.get("title") or payload.get("t") or "шаблон").strip() or "шаблон"
+    raw_title = str(payload.get("title") or payload.get("t") or "").strip()
+    title = raw_title or "шаблон"
     prompt = str(payload.get("prompt") or payload.get("p") or "").strip()
 
     image_prompt = str(payload.get("image_prompt") or "").strip()
 
     # Fallback mode for oversized WebApp payload:
     # app sends only (category,item) indices and bot resolves prompt locally.
+    resolved_cat_idx = None
     if not prompt:
         try:
             cat_idx = int(payload.get("cat_idx") if payload.get("cat_idx") is not None else payload.get("ci"))
@@ -3090,6 +3123,10 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
             resolved_prompt = str(item.get("prompt") or "").strip()
             if resolved_title:
                 title = resolved_title
+            # Лейбл для аналитики: у фото-стилей часто нет "title" (только description) —
+            # берём тот же fallback, что и в UI (_showcase_item_label), иначе они не попадут в статистику.
+            raw_title = resolved_title or _showcase_item_label(item)
+            resolved_cat_idx = cat_idx
             prompt = resolved_prompt or resolved_title
             if not image_prompt:
                 image_prompt = str(item.get("image_prompt") or "").strip()
@@ -3097,6 +3134,10 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
             prompt = ""
 
     prompt = prompt or title
+
+    item_kind = "video" if action in {"set_video_prompt", "set_video_prompt_ref"} else "image"
+    if raw_title and update.effective_user:
+        _log_template_usage_safe(update.effective_user.id, raw_title, item_kind, cat_idx=resolved_cat_idx)
 
     state = get_or_init_state(context)
     state.image_prompt = image_prompt
@@ -4326,6 +4367,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("Не удалось применить стиль. Попробуй ещё раз.")
             return
 
+        if update.effective_user:
+            _log_template_usage_safe(update.effective_user.id, _showcase_item_label(item), item_kind, cat_idx=cat_idx)
+
         state = get_or_init_state(context)
         state.image_prompt = str(item.get("image_prompt") or "").strip()
         if item_kind == "video":
@@ -5272,6 +5316,65 @@ async def pnl_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             filename=data.name,
             caption=f"P&L CSV за {r['days']} дн.",
         )
+
+
+async def template_stats_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Топ и наименее используемые шаблоны из «Библиотеки стилей».
+    Использование: /template_stats [дней] (по умолчанию — за всё время)."""
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("У тебя нет доступа к этой команде.")
+        return
+
+    days = None
+    if context.args:
+        try:
+            days = max(1, min(int(context.args[0]), 3650))
+        except ValueError:
+            await update.message.reply_text("Использование: /template_stats [дней]")
+            return
+
+    counts = get_template_usage_counts(days=days)
+
+    # Полный список шаблонов из библиотеки — чтобы никогда не использованные
+    # тоже попали в отчёт (счёт 0), а не просто выпали из выборки.
+    # Ключ — тот же лейбл, что в UI (_showcase_item_label): у фото-стилей часто
+    # нет "title", только description, иначе большинство шаблонов выпало бы из отчёта.
+    rows = []
+    for cat in PROMPT_LIBRARY:
+        cat_title = str(cat.get("title") or "—").strip() or "—"
+        for item in cat.get("items") or []:
+            item_label = _showcase_item_label(item)
+            if not item_label:
+                continue
+            kind = get_prompt_item_kind(item)
+            cnt = counts.get((cat_title, item_label), 0)
+            rows.append({"category": cat_title, "title": item_label, "kind": kind, "count": cnt})
+
+    if not rows:
+        await update.message.reply_text("Библиотека стилей пуста.")
+        return
+
+    period_label = f"за {days} дн." if days else "за всё время"
+    top = sorted(rows, key=lambda r: (-r["count"], r["title"]))[:10]
+    bottom = sorted(rows, key=lambda r: (r["count"], r["title"]))[:10]
+
+    def _fmt(r):
+        kind_icon = "🎬" if r["kind"] == "video" else "🖼"
+        return f"• {kind_icon} {r['category']} / {r['title']} — {r['count']}"
+
+    lines = [
+        f"📈 Использование шаблонов ({period_label})",
+        f"Всего шаблонов в библиотеке: {len(rows)}",
+        "",
+        "🔥 Топ-10 самых используемых",
+        *(_fmt(r) for r in top),
+        "",
+        "🧊 Топ-10 наименее используемых (включая никогда не использованные)",
+        *(_fmt(r) for r in bottom),
+    ]
+
+    await send_long_text(update.message, "\n".join(lines))
 
 
 async def prompt_library_save_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -8836,6 +8939,7 @@ def main():
     app.add_handler(CommandHandler("broadcast_hide_keyboard", broadcast_hide_keyboard))
     app.add_handler(CommandHandler("audience_stats", audience_stats))
     app.add_handler(CommandHandler("pnl", pnl_report))
+    app.add_handler(CommandHandler("template_stats", template_stats_report))
     app.add_handler(CommandHandler("pl_save", prompt_library_save_last))
     app.add_handler(CommandHandler("ps_save", prompt_library_save_last))
     app.add_handler(CommandHandler("pl_import", prompt_library_import_from_reply))

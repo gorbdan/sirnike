@@ -1076,7 +1076,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
         *([[InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu")]] if GPT5_IMAGE_ENABLED else []),
         # Контент, деньги, рост
         [prompt_library_button],
-        [InlineKeyboardButton("💰 Баланс и пополнение", callback_data="show_buy")],
+        [InlineKeyboardButton("💰 Баланс", callback_data="show_buy")],
         [InlineKeyboardButton("🎁 Пригласить друга", callback_data="open_ref")],
         # Служебные — компактно в один ряд
         [
@@ -1088,27 +1088,25 @@ def main_menu_kb() -> InlineKeyboardMarkup:
 
 
 # Постоянная reply-клавиатура: всегда под полем ввода, не пропадает.
-# Названия и состав синхронизированы с инлайн-меню (main_menu_kb) — один
-# бренд в обоих меню, иначе часть разделов (были: «Улучшить фото», «Модель
-# картинок», «Пригласить друга») доступна только из /start.
+# Единственная постоянная навигация (docs/specs/2026-07-02_navigatsiya.md) —
+# 7 кнопок, паритет с продуктами полного инлайн-меню (main_menu_kb), тексты
+# буква в букву совпадают с одноимёнными кнопками там. «Модель картинок» —
+# настройка, а не раздел, «Пригласить друга» — разовое действие: оба остаются
+# только в полном инлайн-меню, на постоянную клавиатуру не выносим.
 MENU_BTN_PHOTO = "✨ Сгенерировать фото"
 MENU_BTN_VIDEO = "🎬 Видео для Reels"
 MENU_BTN_AVATAR = "🪄 Аватар"
 MENU_BTN_ENHANCE = "🖼️ Улучшить фото"
-MENU_BTN_IMAGE_MODEL = "🧠 Модель картинок"
 MENU_BTN_LIBRARY = "📚 Библиотека стилей"
-MENU_BTN_BALANCE = "💰 Баланс и пополнение"
-MENU_BTN_REFERRAL = "🎁 Пригласить друга"
+MENU_BTN_BALANCE = "💰 Баланс"
 MENU_BTN_HELP = "❓ Как пользоваться"
 PERSISTENT_MENU_BUTTONS = {
     MENU_BTN_PHOTO,
     MENU_BTN_VIDEO,
     MENU_BTN_AVATAR,
     MENU_BTN_ENHANCE,
-    MENU_BTN_IMAGE_MODEL,
     MENU_BTN_LIBRARY,
     MENU_BTN_BALANCE,
-    MENU_BTN_REFERRAL,
     MENU_BTN_HELP,
 }
 
@@ -1124,16 +1122,11 @@ def persistent_menu_kb(user_id: Optional[int] = None) -> ReplyKeyboardMarkup:
     else:
         library_btn = KeyboardButton(MENU_BTN_LIBRARY)
     rows = [
-        # 4 продукта верхним уровнем — теми же словами, что инлайн-меню
         [KeyboardButton(MENU_BTN_PHOTO), KeyboardButton(MENU_BTN_VIDEO)],
-        [KeyboardButton(MENU_BTN_AVATAR), KeyboardButton(MENU_BTN_ENHANCE)],
+        [KeyboardButton(MENU_BTN_ENHANCE), KeyboardButton(MENU_BTN_AVATAR)],
+        [library_btn, KeyboardButton(MENU_BTN_BALANCE)],
+        [KeyboardButton(MENU_BTN_HELP)],
     ]
-    if GPT5_IMAGE_ENABLED:
-        rows.append([library_btn, KeyboardButton(MENU_BTN_IMAGE_MODEL)])
-    else:
-        rows.append([library_btn])
-    rows.append([KeyboardButton(MENU_BTN_BALANCE), KeyboardButton(MENU_BTN_REFERRAL)])
-    rows.append([KeyboardButton(MENU_BTN_HELP)])
     return ReplyKeyboardMarkup(
         rows,
         resize_keyboard=True,
@@ -2778,18 +2771,6 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE,
         )
         return True
 
-    if text == MENU_BTN_IMAGE_MODEL:
-        state = get_or_init_state(context)
-        await update.message.reply_text(
-            image_model_menu_text(state),
-            reply_markup=image_model_menu_kb(state),
-        )
-        return True
-
-    if text == MENU_BTN_REFERRAL:
-        await referral(update, context)
-        return True
-
     if text == MENU_BTN_BALANCE:
         await balance(update, context)
         return True
@@ -3210,9 +3191,10 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
         action = "set_video_prompt"
     if action == "topup":
         if update.effective_message:
+            user_id_for_kb = update.effective_user.id if update.effective_user else None
             await update.effective_message.reply_text(
                 "Открываю меню пополнения 💰",
-                reply_markup=ReplyKeyboardRemove(),
+                reply_markup=persistent_menu_kb(user_id_for_kb),
             )
             await buy(update, context)
         return True
@@ -3284,9 +3266,10 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
                     "Теперь отправь фото и запускай видео.\n"
                     "💡 Бот сначала стилизует фото через GPT Image, затем сгенерит видео."
                 )
+            user_id_for_kb = update.effective_user.id if update.effective_user else None
             await update.effective_message.reply_text(
                 f"Готово ✨\nСтиль «{title}» применён для видео.\n" + hint,
-                reply_markup=ReplyKeyboardRemove(),
+                reply_markup=persistent_menu_kb(user_id_for_kb),
             )
             await update.effective_message.reply_text(
                 "Параметры видео:",
@@ -4247,9 +4230,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise ValueError("showcase item has no prompt")
         except Exception as e:
             logger.warning("Showcase callback failed (%s): %s", query.data, e)
+            pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
             await query.message.reply_text(
-                "Этот стиль обновился — открой «Библиотека стилей 📚» и выбери оттуда.",
-                reply_markup=main_menu_kb(),
+                "Этот стиль обновился — открой «📚 Библиотека стилей» и выбери оттуда.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb)],
+                ]),
             )
             return
         title = _showcase_item_label(item)
@@ -4525,8 +4511,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.prompt = item["prompt"]
         await query.message.reply_text(
             f"Готово ✨\nСтиль «{_showcase_item_label(item)}» применён.\n"
-            "Нажми «✨ Сгенерировать фото» или отправь своё фото.",
-            reply_markup=main_menu_kb(),
+            "Нажми «🚀 Сгенерировать фото» или отправь своё фото.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚀 Сгенерировать фото", callback_data="generate")],
+            ]),
         )
         return
 
@@ -4764,11 +4752,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("Уже выполняется другая задача. Подожди.", show_alert=False)
             return
         params = last_video_params.get(user_u.id)
+        video_retry_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎬 Видео для Reels", callback_data="video")],
+        ])
         if not isinstance(params, dict) or not params.get("model"):
             await query.message.reply_text(
                 "Не нашла параметры прошлого видео — возможно, бот перезапускался.\n"
                 "Открой «🎬 Видео для Reels» и запусти заново.",
-                reply_markup=main_menu_kb(),
+                reply_markup=video_retry_kb,
             )
             return
         refs = [r for r in (params.get("refs") or []) if isinstance(r, str) and r.strip()]
@@ -4776,7 +4767,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(
                 "Исходное фото устарело (бот перезапускался).\n"
                 "Открой «🎬 Видео для Reels», загрузи фото и запусти заново.",
-                reply_markup=main_menu_kb(),
+                reply_markup=video_retry_kb,
             )
             return
         state = get_or_init_state(context)
@@ -4992,8 +4983,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if msg_date and msg_date.replace(tzinfo=None) < BOT_START_TIME:
                 await query.message.reply_text(
                     "Бот перезапускался и сессия сброшена.\n"
-                    "Открой Seedance заново, добавь фото и описание — и запускай.",
-                    reply_markup=main_menu_kb(),
+                    "Открой «🎬 Видео для Reels», добавь фото и описание — и запускай.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🎬 Видео для Reels", callback_data="video")],
+                    ]),
                 )
                 return
         state.waiting_for_video_image = False
@@ -5148,7 +5141,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = new_state
         await query.message.reply_text(
             f"Запускаю генерацию аватара по {len(photos)} фото… ✨",
-            reply_markup=main_menu_kb(),
         )
         return
 

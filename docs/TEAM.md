@@ -13,6 +13,7 @@
 | 🎨 UX/UI-дизайнер | `claude-sonnet-5` (спорный дизайн → Fable) | репо бота | [roles/design.md](roles/design.md) | [briefs/design.md](briefs/design.md) |
 | 🔎 Промт-ресёрчер | `claude-sonnet-5` (массовые тесты → Haiku) | репо бота | [roles/prompt-researcher.md](roles/prompt-researcher.md) | [briefs/prompts.md](briefs/prompts.md) |
 | 🎬 Контент-продюсер | `claude-sonnet-5` | репо бота | [roles/content.md](roles/content.md) | [briefs/content.md](briefs/content.md) |
+| 📣 СММ Telegram-канала | `claude-sonnet-5` | репо бота | [roles/smm-telegram.md](roles/smm-telegram.md) | [briefs/smm.md](briefs/smm.md) |
 | 🔍 QA-аудитор (раз в 1–2 нед.) | `claude-sonnet-5` | репо бота | [roles/qa.md](roles/qa.md) | пишет audits/, не чинит |
 
 Логика выбора модели: **по умолчанию везде Sonnet 5** — лимиты общие на все сессии,
@@ -54,6 +55,9 @@
 
 **🎬 Контент-продюсер**
 > Ты контент-продюсер Сырника. Прочитай CLAUDE.md и docs/roles/content.md. Возьми верхний бриф из docs/briefs/content.md и произведи материалы. Хук = контракт: число в хуке — ровно столько показать.
+
+**📣 СММ Telegram-канала**
+> Ты СММ Telegram-канала Сырника. Прочитай CLAUDE.md и docs/roles/smm-telegram.md. Возьми верхнюю задачу из docs/briefs/smm.md. Каждый текст — через humanizer-ru (tg-post), каждая ссылка на бота — с меткой. Промты не публиковать. Публикация — только после ок Ани.
 
 **🔍 QA-аудитор**
 > Ты QA-аудитор Сырника. Прочитай docs/roles/qa.md и последний отчёт в audits/. Прогони живой тест бота по методике роли и напиши новый отчёт в audits/ с датой. Не чини — только находи и сверяй с кодом.

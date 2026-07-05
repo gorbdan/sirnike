@@ -3951,18 +3951,22 @@ def _apply_grid_overlay(
     return out.getvalue()
 
 
-async def _process_single_grid_ref(session: aiohttp.ClientSession, url: str) -> str:
+async def _process_single_grid_ref(session: aiohttp.ClientSession, url: str) -> Optional[str]:
+    """None — сетку наложить не удалось. Оригинал наружу не отдаём: без сетки
+    реальное фото почти гарантированно режется модерацией Seedance, и со
+    стороны это выглядит как «у одних работает, у других нет» (реф протух
+    после рестарта бота / не скачался — и в Seedance молча уходило голое фото)."""
     try:
         if _is_img_ref(url) or url.startswith("data:"):
             image_bytes = _resolve_image_bytes(url)
             if image_bytes is None:
                 logger.warning("Grid overlay: image ref not found in cache: %s", url)
-                return url
+                return None
         else:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=60), allow_redirects=True) as resp:
                 if resp.status != 200:
                     logger.warning("Grid overlay: download failed status=%s url=%s", resp.status, url[:80])
-                    return url
+                    return None
                 image_bytes = await resp.read()
 
         # AI-portrait disabled: the hyperrealistic CGI render came out
@@ -3976,11 +3980,12 @@ async def _process_single_grid_ref(session: aiohttp.ClientSession, url: str) -> 
         logger.info("Grid overlay applied: %s", url[:60])
         return grid_ref
     except Exception:
-        logger.exception("Ref processing failed for url=%s, using original", url[:60])
-        return url
+        logger.exception("Ref processing failed for url=%s", url[:60])
+        return None
 
 
-async def apply_grid_overlay_to_refs(image_urls: List[str]) -> List[str]:
+async def apply_grid_overlay_to_refs(image_urls: List[str]) -> List[Optional[str]]:
+    """Поэлементно: обработанный реф или None, если сетка не наложилась."""
     async with aiohttp.ClientSession() as session:
         tasks = [_process_single_grid_ref(session, url) for url in image_urls]
         return list(await asyncio.gather(*tasks))
@@ -7654,7 +7659,28 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Обработка рефа (сетка) нужна только Seedance (реф внешности).
         # Kling/Veo используют картинку как первый кадр видео — обработка ломает кадр.
         if video_images and selected_model not in ("kling3", "veo31"):
-            video_images = await apply_grid_overlay_to_refs(video_images)
+            processed_refs = await apply_grid_overlay_to_refs(video_images)
+            failed_count = sum(1 for r in processed_refs if r is None)
+            if failed_count:
+                # Раньше тут молча уходил оригинал без сетки → модерация Seedance
+                # резала реальное фото, и пользователь получал непонятный отказ.
+                # Честнее остановиться до списания изюминок и попросить фото заново.
+                logger.warning(
+                    "run_seedance: %s/%s refs failed grid processing, user=%s — aborting before charge",
+                    failed_count, len(processed_refs), user.id,
+                )
+                await reply_target.reply_text(
+                    "Не получилось подготовить фото для видео 😔\n"
+                    + (
+                        "Скорее всего, бот перезапускался и загруженное фото устарело.\n"
+                        if failed_count == len(processed_refs)
+                        else f"Не обработалось {failed_count} из {len(processed_refs)} фото.\n"
+                    )
+                    + "Отправь фото ещё раз и запускай — изюминки не списаны.",
+                    reply_markup=video_kb(state),
+                )
+                return
+            video_images = processed_refs
 
         if not spend_izyminki(user.id, selected_cost):
             await reply_target.reply_text("Не удалось списать изюминки. Попробуй ещё раз.")
@@ -9080,9 +9106,15 @@ async def preview_refs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Ошибка при обработке рефов.")
         return
     for i, (orig, url) in enumerate(zip(video_images, processed), start=1):
-        # If the processed ref equals the original, both AI-portrait and grid
-        # fallback failed and the raw photo is being sent to Seedance as-is.
-        status = "⚠️ ОРИГИНАЛ (обработка не сработала!)" if url == orig else "✅ обработано"
+        if url is None:
+            # Grid failed — real generation would now stop before charging
+            # instead of silently sending the raw photo to Seedance.
+            await update.message.reply_text(
+                f"Реф {i}/{len(processed)} — ❌ сетка не наложилась "
+                "(генерация с таким рефом остановится до списания изюминок)"
+            )
+            continue
+        status = "✅ обработано"
         try:
             if url.startswith("data:") or _is_img_ref(url):
                 photo_bytes = _resolve_image_bytes(url)

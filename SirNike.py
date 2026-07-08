@@ -1063,17 +1063,14 @@ ENHANCE_PHOTO_PROMPT = (
 
 
 def main_menu_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
-    # Если знаем user_id — вешаем webapp прямо на кнопку (открывается в 1 клик,
-    # без промежуточного «Открывай библиотеку по кнопке ниже»). Без user_id
-    # (не во всех местах он под рукой) — старый 2-кликовый путь через callback.
-    if PROMPT_WEBAPP_URL and user_id is not None:
-        prompt_library_button = InlineKeyboardButton(
-            "📚 Библиотека стилей",
-            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)),
-        )
-    else:
-        pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
-        prompt_library_button = InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb)
+    # ВАЖНО: web_app НЕЛЬЗЯ вешать на InlineKeyboardButton — Telegram.WebApp.sendData()
+    # работает только из мини-аппа, открытого через KeyboardButton (reply-клавиатуру).
+    # С inline-кнопки «Использовать» в библиотеке молча теряет данные — бот не
+    # получает НИЧЕГО (живой аудит 2026-07-07). 1-клик остаётся только на нижней
+    # reply-клавиатуре (persistent_menu_kb); здесь — callback с промежуточным шагом.
+    # user_id принимается для симметрии вызовов, на клавиатуру не влияет.
+    pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
+    prompt_library_button = InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb)
 
     video_label = "🎬 Видео для Reels" if SEEDANCE_ENABLED else "🎬 Видео для Reels 🚧"
     rows = [
@@ -1764,14 +1761,10 @@ def result_actions_kb(user_id: int = 0, bot_username: str = "") -> InlineKeyboar
     switchers = []
     if GPT5_IMAGE_ENABLED:
         switchers.append(InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu"))
-    if PROMPT_WEBAPP_URL and user_id:
-        switchers.append(InlineKeyboardButton(
-            "📚 Библиотека стилей",
-            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)),
-        ))
-    else:
-        pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
-        switchers.append(InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb))
+    # web_app на inline-кнопке ломает «Использовать» (sendData не работает) —
+    # только callback, см. комментарий в main_menu_kb.
+    pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
+    switchers.append(InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb))
     return InlineKeyboardMarkup([
         actions,
         switchers,
@@ -3276,6 +3269,22 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
                 resolved_cat_idx = cat_idx
     except Exception:
         item = None
+
+    # Индексам можно верить только если они указывают на тот же стиль, что и
+    # присланный prompt. Вебапп при активном поиске/фильтре может прислать
+    # индексы относительно отфильтрованного списка — тогда item по этим индексам
+    # это ДРУГОЙ стиль, и его title/upload_hint вводят в заблуждение (живой аудит
+    # 2026-07-07: выбран «Полароид: детское фото», а бот ответил «Портреты» с
+    # подсказкой «фото партнёра»).
+    if item is not None and prompt:
+        item_prompt = str(item.get("prompt") or "").strip()
+        if item_prompt and item_prompt != prompt:
+            logger.warning(
+                "webapp payload index mismatch: prompt differs from PROMPT_LIBRARY[%s][%s] — ignoring indices",
+                payload.get("cat_idx", payload.get("ci")), payload.get("item_idx", payload.get("ii")),
+            )
+            item = None
+            resolved_cat_idx = None
 
     if item is not None:
         resolved_title = str(item.get("title") or "").strip()
@@ -4849,8 +4858,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if picked_longer not in longer_options:
                 picked_longer = max(longer_options)
             state.video_duration = picked_longer
-        state.waiting_for_video_image = False
-        state.video_session_active = False
+        # video_session_active гасит run_seedance после валидаций — см. video_start.
         logger.info(
             "video_upsell: user=%s action=%s model=%s duration=%s",
             user_u.id, video_cb, state.video_model, state.video_duration,
@@ -5030,8 +5038,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ]),
                 )
                 return
-        state.waiting_for_video_image = False
-        state.video_session_active = False
+        # НЕ гасим video_session_active/waiting_for_video_image здесь: run_seedance
+        # деактивирует видео-режим сам, ПОСЛЕ валидаций и списания. Если погасить
+        # до запуска, early-return («нужно описание или фото») оставляет флаги
+        # выключенными — следующее сообщение молча уходит в фото-флоу, хотя
+        # видео-панель на экране (регресс из audits/2026-07-02_qa_live_retest №2).
         # Add to processing_user_ids BEFORE create_task to close the race window
         processing_user_ids.add(user_vs.id)
         try:
@@ -5048,7 +5059,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("Уже выполняется другая задача. Подожди.", show_alert=False)
             return
         state = get_or_init_state(context)
-        state.video_session_active = False
+        # video_session_active гасит run_seedance после валидаций — см. video_start.
         processing_user_ids.add(user_r.id)
         try:
             context.application.create_task(run_seedance(update, context))
@@ -7690,8 +7701,12 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # actually committed to the generation — deactivate video mode so a later
         # text message isn't mistaken for a new video prompt. Earlier early-returns
         # (empty draft, missing ref, low balance) keep the user in video mode so
-        # they can fix the issue and retry without losing context.
+        # they can fix the issue and retry without losing context. Callers
+        # (video_start / seedance_retry / upsell) must NOT clear these flags
+        # themselves — this is the single deactivation point.
         state.video_session_active = False
+        state.waiting_for_video_prompt = False
+        state.waiting_for_video_image = False
 
         eta_min = max(2, int(selected_duration * 0.8))
         eta_max = max(eta_min + 1, int(selected_duration * 2.0))

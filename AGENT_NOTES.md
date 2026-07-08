@@ -26,6 +26,19 @@
 Что было исправлено и где.
 -->
 
+### [2026-07-08] Длительности видео (KLING3/VEO31/SEEDANCE_*_DURATION_OPTIONS) уже верны
+Проверено живым запросом `GET /v1/videos/models` к Zveno (с реальным
+ZVENO_API_KEY): текущие значения в config.py совпадают с provider-данными.
+`google/veo-3.1-fast` → supported_durations [4,6,8] (код: VEO31_DURATION_OPTIONS
+"4,6,8" — верно). `kwaivgi/kling-v3.0-std` → любое целое 3–15 (код: "5,10,15" —
+валидное подмножество, не баг). ЖЁСТКИЙ максимум за один вызов — 15 сек, и это
+у ЛЮБОГО провайдера на Zveno (Kling 3.0, Seedance 2.0/Fast, Grok Imagine — 15;
+Sora 2 — 12; Wan 2.7 — 10; Veo 3.1 — 8). Длиннее одним запросом не сделать
+никем — не чинить как «баг», для длинных видео нужна отдельная фича склейки
+клипов (см. docs/briefs/backend.md P1 «нейромультик»). Если понадобится
+перепроверить — дёрнуть тот же эндпоинт заново (модели/лимиты у Zveno могут
+поменяться), ключ только в панели BotHost.
+
 ### [2026-07-07] ⚠️ ГРАБЛИ: web_app НЕЛЬЗЯ вешать на InlineKeyboardButton
 Telegram.WebApp.sendData() работает только из мини-аппа, открытого через
 KeyboardButton (reply-клавиатуру). С InlineKeyboardButton(web_app=…) вебапп

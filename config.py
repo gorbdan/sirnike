@@ -147,6 +147,14 @@ VEO31_MODEL = os.getenv("VEO31_MODEL", "google/veo-3.1-fast")
 VEO31_COST_PER_SECOND = float(os.getenv("VEO31_COST_PER_SECOND", "8.0"))
 VEO31_DURATION_OPTIONS = os.getenv("VEO31_DURATION_OPTIONS", "4,6,8")
 
+# Wan 2.7 (Alibaba) через Zveno Videos API — text-to-video и image/reference-to-video,
+# 2-10 секунд, 480p/720p, 16:9 или 9:16 (проверено GET /v1/videos/models, 2026-07-08).
+# Закупка Zveno: 16.21 руб/сек — тариф 10.0 изюм/сек, маржа ~x3.3 как у Kling/Veo.
+WAN27_ENABLED = os.getenv("WAN27_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+WAN27_MODEL = os.getenv("WAN27_MODEL", "alibaba/wan-2.7")
+WAN27_COST_PER_SECOND = float(os.getenv("WAN27_COST_PER_SECOND", "10.0"))
+WAN27_DURATION_OPTIONS = os.getenv("WAN27_DURATION_OPTIONS", "5,10")
+
 if AI_PROVIDER == "ZVENO" and not ZVENO_API_KEY:
     raise RuntimeError("Missing required environment variable for ZVENO: ZVENO_API_KEY")
 

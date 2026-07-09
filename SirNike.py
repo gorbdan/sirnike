@@ -109,6 +109,10 @@ from config import (
     VEO31_MODEL,
     VEO31_COST_PER_SECOND,
     VEO31_DURATION_OPTIONS,
+    WAN27_ENABLED,
+    WAN27_MODEL,
+    WAN27_COST_PER_SECOND,
+    WAN27_DURATION_OPTIONS,
     GPT5_IMAGE_ENABLED,
     ZVENO_GPT5_IMAGE_MODEL,
     GPT5_IMAGE_COST,
@@ -679,6 +683,8 @@ def get_seedance_duration_bounds(model_code: Optional[str] = None) -> tuple[int,
         return 4, 8
     if model_code == "kling3":
         return 3, 15
+    if model_code == "wan27":
+        return 2, 10
     return 5, 15
 
 
@@ -744,6 +750,8 @@ def get_seedance_duration_options(model_code: Optional[str] = None) -> List[int]
         raw_options = KLING3_DURATION_OPTIONS
     elif model_code == "veo31":
         raw_options = VEO31_DURATION_OPTIONS
+    elif model_code == "wan27":
+        raw_options = WAN27_DURATION_OPTIONS
     elif model_code == "seedance2_fast":
         raw_options = SEEDANCE_FAST_DURATION_OPTIONS
     else:
@@ -832,6 +840,8 @@ def get_video_model(state: UserState) -> str:
         return "kling3"
     if state.video_model == "veo31" and VEO31_ENABLED:
         return "veo31"
+    if state.video_model == "wan27" and WAN27_ENABLED:
+        return "wan27"
     return "seedance2"
 
 
@@ -841,6 +851,7 @@ def get_video_model_label(model_code: str) -> str:
         "seedance2": "Seedance 2",
         "kling3": "Kling 3.0 🆕",
         "veo31": "Veo 3.1 (Google) 🆕",
+        "wan27": "Wan 2.7 (Alibaba) 🆕",
     }
     return labels.get(model_code, "Seedance 2")
 
@@ -852,6 +863,8 @@ def get_video_model_cost_per_second(model_code: str) -> float:
         return max(KLING3_COST_PER_SECOND, 0.01)
     if model_code == "veo31":
         return max(VEO31_COST_PER_SECOND, 0.01)
+    if model_code == "wan27":
+        return max(WAN27_COST_PER_SECOND, 0.01)
     return max(SEEDANCE_COST_PER_SECOND, 0.01)
 
 
@@ -1472,6 +1485,13 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
                 callback_data="video_model_veo31",
             )
         )
+    if WAN27_ENABLED:
+        model_buttons_extra.append(
+            InlineKeyboardButton(
+                ("● " if selected_model == "wan27" else "") + "Wan 2.7 🆕",
+                callback_data="video_model_wan27",
+            )
+        )
 
     prompt_done = bool(str(getattr(state, "video_prompt", "") or "").strip())
     rows = [
@@ -1500,7 +1520,7 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
     if model_buttons_extra:
         rows.append(model_buttons_extra)
     # Режим качества
-    if selected_model == "seedance2":
+    if selected_model in ("seedance2", "wan27"):
         mode_buttons = []
         for mode in get_seedance_mode_options(selected_model):
             prefix = "● " if mode == selected_mode else ""
@@ -1515,8 +1535,8 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
     # Формат (aspect ratio)
     selected_aspect = getattr(state, "video_aspect_ratio", "16:9")
     aspect_options = [("16:9", "📺 16:9"), ("9:16", "📱 9:16"), ("1:1", "⬛ 1:1")]
-    if selected_model == "veo31":
-        # Veo 3.1 не поддерживает квадрат.
+    if selected_model in ("veo31", "wan27"):
+        # Veo 3.1 и Wan 2.7 не поддерживают квадрат.
         aspect_options = [(ar, label) for ar, label in aspect_options if ar != "1:1"]
     aspect_buttons = [
         InlineKeyboardButton(
@@ -1994,7 +2014,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "2. Нажми «✨ Сгенерировать фото»\n"
         "3. Получи фото — готово!\n\n"
         "🪄 Аватар — создай аватар по своим фото, и бот поставит тебя в любой образ\n"
-        "🎬 Видео — Seedance 2, Kling 3.0, Veo 3.1 (кнопка в меню)\n"
+        "🎬 Видео — Seedance 2, Kling 3.0, Veo 3.1, Wan 2.7 (кнопка в меню)\n"
         f"💰 Твой баланс: {bal} изюминок (1 фото = {BASE_GENERATION_COST} изюминок)\n\n"
         "Изюминки — внутренняя валюта бота. Их можно купить или получить "
         "за приглашённых друзей.\n\n"
@@ -4978,6 +4998,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state.video_mode = "720p"
             if state.video_aspect_ratio == "1:1":
                 state.video_aspect_ratio = "16:9"
+        elif picked_model == "wan27" and WAN27_ENABLED:
+            state.video_model = "wan27"
+            if not state.video_mode:
+                state.video_mode = normalize_seedance_mode(SEEDANCE_MODE)
+            if state.video_aspect_ratio == "1:1":
+                state.video_aspect_ratio = "16:9"
         else:
             state.video_model = "seedance2"
             if not state.video_mode:
@@ -6154,7 +6180,7 @@ BOT_DESCRIPTION = (
     "🧀 Сырник — бот для AI-фото и видео.\n"
     "\n"
     "🎨 Генерация изображений по тексту и фото — Nano Banana, GPT Image\n"
-    "🎬 Оживление фото в видео — Seedance 2, Kling, Veo\n"
+    "🎬 Оживление фото в видео — Seedance 2, Kling, Veo, Wan\n"
     "🪄 AI-портреты и аватары из ваших фото\n"
     "📚 Библиотека готовых стилей в один тап\n"
     "\n"
@@ -6821,11 +6847,14 @@ async def start_seedance_task(
     elif model_code == "veo31":
         model_value = VEO31_MODEL
         model_value_lower = model_value.lower()
+    elif model_code == "wan27":
+        model_value = WAN27_MODEL
+        model_value_lower = model_value.lower()
     duration = normalize_seedance_duration(
         int(duration if duration is not None else SEEDANCE_DURATION),
         model_code,
     )
-    if model_code == "veo31" and aspect_ratio not in ("16:9", "9:16"):
+    if model_code in ("veo31", "wan27") and aspect_ratio not in ("16:9", "9:16"):
         aspect_ratio = "16:9"
     is_wan_model = "wan-2.7" in model_value_lower or model_value_lower.startswith("alibaba/wan")
     is_seedance2_model = model_value_lower in ("bytedance/seedance-2.0", "bytedance/seedance-2.0-fast")
@@ -7066,8 +7095,8 @@ async def start_seedance_task(
         or "insufficient funds" in last_error.lower()
         or "no available" in last_error.lower()
     )
-    if FAL_API_KEY and zveno_retriable and not privacy_blocked and model_code not in ("kling3", "veo31"):
-        # fal-фоллбэк замаплен только на Seedance-слаги — Kling/Veo не подменяем.
+    if FAL_API_KEY and zveno_retriable and not privacy_blocked and model_code not in ("kling3", "veo31", "wan27"):
+        # fal-фоллбэк замаплен только на Seedance-слаги — Kling/Veo/Wan не подменяем.
         logger.info("Zveno.ai unavailable (%s), falling back to fal.ai Seedance", last_error[:80])
         return await _start_seedance_task_fal(
             prompt=prompt,
@@ -7625,12 +7654,14 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             selected_model_slug = KLING3_MODEL
         elif selected_model == "veo31":
             selected_model_slug = VEO31_MODEL
+        elif selected_model == "wan27":
+            selected_model_slug = WAN27_MODEL
         elif selected_model == "seedance2_fast":
             selected_model_slug = SEEDANCE_FAST_MODEL
         else:
             selected_model_slug = SEEDANCE_MODEL
 
-        # Seedance работает только от фото; Kling 3.0 и Veo 3.1 умеют text-to-video.
+        # Seedance работает только от фото; Kling 3.0, Veo 3.1 и Wan 2.7 умеют text-to-video.
         if selected_model in {"seedance2", "seedance2_fast"} and len(video_images) < 1:
             await reply_target.reply_text(
                 "Загрузи хотя бы 1 фото-ференс и запусти снова.",
@@ -7668,8 +7699,9 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
         # Обработка рефа (сетка) нужна только Seedance (реф внешности).
-        # Kling/Veo используют картинку как первый кадр видео — обработка ломает кадр.
-        if video_images and selected_model not in ("kling3", "veo31"):
+        # Kling/Veo/Wan используют картинку как первый кадр или референс-стиль —
+        # обработка ломает кадр, да и детектор реальных лиц у них не ByteDance-овский.
+        if video_images and selected_model not in ("kling3", "veo31", "wan27"):
             processed_refs = await apply_grid_overlay_to_refs(video_images)
             failed_count = sum(1 for r in processed_refs if r is None)
             if failed_count:

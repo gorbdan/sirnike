@@ -26,6 +26,22 @@
 Что было исправлено и где.
 -->
 
+### [2026-07-09] Добавлена 4-я видео-модель — Wan 2.7 (Alibaba) через Zveno
+`WAN27_*` в config.py (mode: `alibaba/wan-2.7`, 10.0 изюм/сек, длительности
+5/10 — API реально поддерживает 2–10 любым целым, проверено `GET
+/v1/videos/models`). Заведена в SirNike.py по образцу Kling3/Veo31:
+`get_video_model`/`get_video_model_label`/`get_video_model_cost_per_second`/
+`get_seedance_duration_bounds`/`get_seedance_duration_options`, кнопка модели
+в `video_kb()` (не квадрат — только 16:9/9:16, как у Veo), качество 480/720
+переключаемое (в отличие от Kling/Veo, у которых зашито 720p — Wan реально
+поддерживает оба). В `start_seedance_task` payload-билдер для Wan уже был
+частично готов (`is_wan_model`, отдельные варианты payload с
+`input_references`/`image_urls`/reference-sheet) — не трогала, только добавила
+маппинг `model_code == "wan27" → WAN27_MODEL`. Исключена из grid-overlay
+(не ByteDance-детектор) и из fal.ai-фолбэка (там только Seedance-слаги),
+как Kling/Veo. Text-to-video работает без фото (не входит в список
+«обязательно фото» вместе с seedance2/seedance2_fast).
+
 ### [2026-07-08] Длительности видео (KLING3/VEO31/SEEDANCE_*_DURATION_OPTIONS) уже верны
 Проверено живым запросом `GET /v1/videos/models` к Zveno (с реальным
 ZVENO_API_KEY): текущие значения в config.py совпадают с provider-данными.

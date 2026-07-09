@@ -250,7 +250,7 @@ def run_start(model_code, images, aspect="16:9", duration=5):
 task = run_start("kling3", [rgba_url])
 p = captured[0]["payload"]
 check("5.1 kling3: модель в payload", p.get("model") == S.KLING3_MODEL, str(p.get("model")))
-check("5.2 kling3: generate_audio=False", p.get("generate_audio") is False)
+check("5.2 kling3: generate_audio=True", p.get("generate_audio") is True)
 check("5.3 kling3: первый вариант — чистый frame_images",
       "frame_images" in p and "input_references" not in p and "image_urls" not in p, str(list(p.keys())))
 check("5.4 kling3: frame_type=first_frame", p["frame_images"][0].get("frame_type") == "first_frame")
@@ -272,7 +272,7 @@ check("5.10 veo31: аспект 1:1 заменён на 16:9", p.get("aspect_rat
 check("5.11 veo31: только first frame (без last)",
       [f.get("frame_type") for f in p.get("frame_images", [])] == ["first_frame"])
 check("5.12 veo31: duration снэпнут к 4/6/8", p.get("duration") in (4, 6, 8), str(p.get("duration")))
-check("5.13 veo31: generate_audio=False", p.get("generate_audio") is False)
+check("5.13 veo31: generate_audio=True", p.get("generate_audio") is True)
 
 # 5.14 seedance2: старое поведение не сломано
 run_start("seedance2", [png_data_url("RGB")])

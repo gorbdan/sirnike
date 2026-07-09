@@ -6965,9 +6965,12 @@ async def start_seedance_task(
             "aspect_ratio": aspect_ratio,
         }
         if model_code in ("kling3", "veo31"):
-            # Модели умеют звук, но держим его выключенным: дешевле и совпадает
-            # с safety-промтом "silent video" в run_seedance.
-            payload_base["generate_audio"] = False
+            # Обе модели реально умеют нативный синхронный звук (диалоги/эффекты/
+            # фон по содержанию промта), и Zveno не берёт за это доплату — включаем
+            # всегда. Раньше было принудительно False + safety-суффикс "silent
+            # video" в run_seedance, который теперь применяется только при
+            # авто-рестарте после реального отказа модерации по аудио.
+            payload_base["generate_audio"] = True
     payload_variants = []
     if combined_image_urls:
         primary_image_url = combined_image_urls[0]

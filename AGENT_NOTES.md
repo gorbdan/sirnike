@@ -26,6 +26,19 @@
 Что было исправлено и где.
 -->
 
+### [2026-07-09] Kling 3.0 / Veo 3.1 — включён generate_audio (было принудительно False)
+Обе модели реально умеют нативный синхронный звук (диалоги/эффекты/фон по
+содержанию промта) по `GET /v1/videos/models`, и Zveno не берёт за это
+доплату (прайс не зависит от generate_audio). Раньше в start_seedance_task
+стояло `generate_audio: False` + safety-суффикс "silent video" в run_seedance
+на КАЖДОЙ попытке — теперь `generate_audio: True` по умолчанию для kling3/
+veo31, а safety-суффикс остался только как fallback при реальном отказе
+модерации по аудио (retry-ветка `sensitive_audio_like` в run_seedance — её
+не трогала, она и так срабатывает только post-hoc). Wan 2.7 и Seedance
+(2.0/Fast) звук не поддерживают вообще — `generate_audio: false` у них
+жёстко на стороне провайдера, это не настройка бота. Тесты 5.2/5.13 в
+test_new_features.py обновлены под generate_audio=True.
+
 ### [2026-07-09] Добавлена 4-я видео-модель — Wan 2.7 (Alibaba) через Zveno
 `WAN27_*` в config.py (mode: `alibaba/wan-2.7`, 10.0 изюм/сек, длительности
 5/10 — API реально поддерживает 2–10 любым целым, проверено `GET

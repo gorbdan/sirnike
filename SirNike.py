@@ -308,6 +308,7 @@ class UserState:
     video_session_active: bool = False
     waiting_for_video_prompt: bool = False
     waiting_for_video_image: bool = False
+    waiting_for_video_duration: bool = False
     waiting_for_motion_video: bool = False
     image_model: str = "gemini"  # gemini | gpt5
     image_prompt: str = ""
@@ -788,7 +789,14 @@ def get_selected_seedance_duration(state: UserState) -> int:
     default_sec = options[0] if options else normalize_seedance_duration(int(SEEDANCE_DURATION), model_code)
     selected = normalize_seedance_duration(state.video_duration, model_code) if isinstance(state.video_duration, int) else default_sec
     if selected not in options:
-        selected = default_sec
+        # Wan 2.7 принимает любое целое в границах модели (см. video_set_duration) —
+        # значение, введённое вручную, не обязано входить в кнопки-пресеты.
+        if model_code == "wan27":
+            dur_min, dur_max = get_seedance_duration_bounds(model_code)
+            if not (dur_min <= selected <= dur_max):
+                selected = default_sec
+        else:
+            selected = default_sec
     return selected
 
 
@@ -830,6 +838,7 @@ def deactivate_video_session(state: UserState) -> None:
     state.waiting_for_video_prompt = False
     state.waiting_for_video_image = False
     state.waiting_for_motion_video = False
+    state.waiting_for_video_duration = False
     state.image_prompt = ""
 
 
@@ -1551,6 +1560,19 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
         rows.append(duration_buttons[:3])
     if len(duration_buttons) > 3:
         rows.append(duration_buttons[3:])
+    if selected_model == "wan27":
+        # У Wan 2.7 провайдер реально принимает любое целое 2–10, а не только
+        # кнопки 5/10 — даём ввести точное число, не раздувая сетку кнопок.
+        dur_min, dur_max = get_seedance_duration_bounds(selected_model)
+        is_custom = selected_duration not in get_seedance_duration_options(selected_model)
+        custom_label = (
+            f"● ✏️ {selected_duration}с · {calc_seedance_cost(selected_duration, cps)} 🍇"
+            if is_custom
+            else f"✏️ Своя длительность ({dur_min}–{dur_max}с)"
+        )
+        rows.append([
+            InlineKeyboardButton(custom_label, callback_data="video_set_duration"),
+        ])
     # Запуск
     rows.append([InlineKeyboardButton("🚀 Запустить видео", callback_data="video_start")])
     rows.append([InlineKeyboardButton("◀️ В меню", callback_data="menu_from_video")])
@@ -2995,6 +3017,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Попробуй еще раз через минуту.",
                 reply_markup=main_menu_kb(user.id),
             )
+        return
+
+    if state.waiting_for_video_duration:
+        state.waiting_for_video_duration = False
+        model_code = get_video_model(state)
+        dur_min, dur_max = get_seedance_duration_bounds(model_code)
+        digits = "".join(ch for ch in text if ch.isdigit())
+        try:
+            picked = int(digits) if digits else int(text.strip())
+        except ValueError:
+            picked = None
+        if picked is None or not (dur_min <= picked <= dur_max):
+            await update.message.reply_text(
+                f"Не поняла число секунд. Напиши целое от {dur_min} до {dur_max}.",
+                reply_markup=video_kb(state),
+            )
+            return
+        state.video_duration = normalize_seedance_duration(picked, model_code)
+        state.video_session_active = True
+        await update.message.reply_text(
+            f"Длительность: {state.video_duration} сек ✅",
+            reply_markup=video_kb(state),
+        )
         return
 
     if state.waiting_for_video_prompt or state.video_session_active:
@@ -4980,6 +5025,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if video_cb == "video_set_video":
         await query.message.reply_text("Для этой модели этот шаг не нужен.")
+        return
+
+    if video_cb == "video_set_duration":
+        state = get_or_init_state(context)
+        state.video_session_active = True
+        state.waiting_for_video_duration = True
+        dur_min, dur_max = get_seedance_duration_bounds(get_video_model(state))
+        await query.message.reply_text(
+            f"Напиши число секунд от {dur_min} до {dur_max} одним сообщением."
+        )
         return
 
     if video_cb.startswith("video_model_"):

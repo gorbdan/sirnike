@@ -138,7 +138,7 @@ SEEDANCE_FAST_COST_PER_SECOND = float(
 KLING3_ENABLED = os.getenv("KLING3_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
 KLING3_MODEL = os.getenv("KLING3_MODEL", "kwaivgi/kling-v3.0-std")
 KLING3_COST_PER_SECOND = float(os.getenv("KLING3_COST_PER_SECOND", "8.0"))
-KLING3_DURATION_OPTIONS = os.getenv("KLING3_DURATION_OPTIONS", "5,10,15")
+KLING3_DURATION_OPTIONS = os.getenv("KLING3_DURATION_OPTIONS", "3,5,10,15")
 
 # Veo 3.1 Fast (Google) через Zveno Videos API. Только 4/6/8 секунд, 720p, 16:9 или 9:16.
 # Закупка Zveno: 12.21 руб/сек (без аудио) — тариф 8.0 изюм/сек, маржа ~x3.3.

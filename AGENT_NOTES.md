@@ -26,6 +26,21 @@
 Что было исправлено и где.
 -->
 
+### [2026-07-12] Генерация фото падала на fallback-моделях: max_completion_tokens=256 душил reasoning
+Прод-лог: `Zveno response without image URL`, content пустой, `reasoning_details`
+полон текста вроде "Crafting the Portrait Scene... woman... beach..." —
+модель обрывалась на середине рассуждения, не дойдя до картинки. Причина —
+`strict_payload` (3-я попытка, та же модель) и payload финальной
+fallback-модели (`ZVENO_IMAGE_FALLBACK_MODEL`, по умолчанию
+`google/gemini-3-pro-image-preview`, 4-я попытка) резали
+`max_completion_tokens: 256`. У reasoning-моделей (Gemini 3 Pro Image) сам
+токен-бюджет ДЕЛИТСЯ между "раздумьями" и финальным image-выводом — 256 не
+хватало даже на reasoning, до картинки очередь не доходила. Поднято до 1024
+в обоих местах (generate_image_by_job, SirNike.py). `reasoning_effort: "low"`
+уже стоял у strict_payload, добавлен и у fallback-модели (раньше отсутствовал).
+Если снова увидишь эту ошибку с непустым `reasoning_details` и обрубленным
+текстом — сначала проверяй токен-бюджет, а не считай багом самого Zveno/Gemini.
+
 ### [2026-07-09] Kling 3.0 / Veo 3.1 — включён generate_audio (было принудительно False)
 Обе модели реально умеют нативный синхронный звук (диалоги/эффекты/фон по
 содержанию промта) по `GET /v1/videos/models`, и Zveno не берёт за это

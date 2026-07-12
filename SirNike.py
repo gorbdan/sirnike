@@ -8481,7 +8481,12 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 ],
                 "modalities": ["image"],
                 "image_config": {"aspect_ratio": "9:16"},
-                "max_completion_tokens": 256,
+                # 256 токенов душило reasoning-модели: они тратят бюджет на
+                # внутренние "раздумья" ДО картинки и обрывались на середине
+                # рассуждения, так и не дойдя до image-вывода (см. AGENT_NOTES,
+                # gemini-3-pro-image-preview, 2026-07-12). 1024 оставляет запас
+                # на reasoning + сам результат.
+                "max_completion_tokens": 1024,
                 "temperature": 0,
                 "reasoning_effort": "low",
             }
@@ -8507,8 +8512,11 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                         ],
                         "modalities": ["image"],
                         "image_config": {"aspect_ratio": "9:16"},
-                        "max_completion_tokens": 256,
+                        # Тот же фикс, что и strict_payload — этой модели реально
+                        # не хватало 256 токенов на reasoning + картинку.
+                        "max_completion_tokens": 1024,
                         "temperature": 0,
+                        "reasoning_effort": "low",
                     }
                 )
 

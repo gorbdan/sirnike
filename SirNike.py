@@ -8526,6 +8526,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
             response_data = None
             image_url = None
             blocked_models: set = set()
+            moderation_blocked = False
             async with aiohttp.ClientSession() as session:
                 for attempt_idx, payload in enumerate(payload_variants, start=1):
                     if payload.get("model") in blocked_models:
@@ -8602,10 +8603,26 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                         # Контент-фильтр: повторять ту же модель бессмысленно, но
                         # fallback-модель (Pro) часто пропускает то, что флагает flash.
                         blocked_models.add(payload.get("model"))
+                        # Запоминаем факт блокировки — иначе если fallback-модель
+                        # потом молча откажет БЕЗ явного кода (finish_reason=stop,
+                        # пустой content, как у gemini-3-pro-image-preview), итоговая
+                        # ошибка потеряет настоящую причину и покажет бесполезное
+                        # "Zveno response without image URL" вместо "фильтр
+                        # безопасности отклонил фото/промт".
+                        moderation_blocked = True
                         continue
                     if attempt_idx < len(payload_variants):
                         await asyncio.sleep(0.7)
             if not image_url:
+                if moderation_blocked:
+                    # Формулировка специально содержит "content_filter" — под это
+                    # ключевое слово classify_generation_error() заводит событие в
+                    # категорию moderation в статистике (см. log_generation_event ниже).
+                    raise Exception(
+                        "Запрос отклонён фильтром безопасности модели "
+                        "(content_filter/IMAGE_PROHIBITED_CONTENT). "
+                        "Измени описание и/или замени фото."
+                    )
                 raise Exception(extract_zveno_error_text(response_data))
 
             logger.info("Zveno image success: user=%s image_ref=%s", user_id, str(image_url)[:60])
@@ -8693,10 +8710,25 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                     restore_free_generation(job.user_id)
                     refunded = True
 
+            error_type = classify_generation_error(e)
+            if error_type == "moderation":
+                # Раньше юзер видел только общее "что-то пошло не так" — не
+                # понимал, что дело в фото/промте, и просто жал "Повторить" на
+                # той же комбинации (бессмысленно, отказ повторится). Явно
+                # называем причину, чтобы было ясно, что менять.
+                failure_text = (
+                    "Модель отклонила запрос фильтром безопасности 🚫\n"
+                    "Попробуй другое фото и/или измени описание." + (
+                        "\n\n✅ Изюминки не списаны (или возвращены) — баланс не пострадал."
+                        if refunded else ""
+                    )
+                )
+            else:
+                failure_text = generation_failure_user_text(refunded)
             try:
                 await app.bot.send_message(
                     chat_id=chat_id,
-                    text=generation_failure_user_text(refunded),
+                    text=failure_text,
                     reply_markup=result_actions_kb(),
                 )
             except Exception:
@@ -8713,7 +8745,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 aspect_ratio=getattr(job, "aspect_ratio", None),
                 charged_izyminki=getattr(job, "cost", 0),
                 refunded_izyminki=getattr(job, "cost", 0) if refunded else 0,
-                error_type=classify_generation_error(e),
+                error_type=error_type,
                 error_message=last_error_text,
                 is_admin_test=1 if user_id in ADMIN_IDS else 0,
             )

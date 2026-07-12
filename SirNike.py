@@ -154,6 +154,7 @@ from db import (
     add_generation_history,
     get_generation_history,
     get_generation_history_item,
+    delete_user_for_test,
 )
 
 # ══════════════════════════════════════════════════════════════
@@ -5441,6 +5442,44 @@ async def promo_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def test_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Админ-команда: удалить тестовый аккаунт из базы, чтобы его следующий
+    /start прошёл как новичок (проверка онбординга глазами нового юзера)."""
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("У тебя нет доступа к этой команде.")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "Использование: /test_reset <user_id>\n"
+            "Удаляет тестовый аккаунт из базы — его следующий /start пройдёт "
+            "как у нового пользователя (подарок, витрина, онбординг).\n"
+            "Аккаунты с платежами не удаляются."
+        )
+        return
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("user_id должен быть числом. Использование: /test_reset <user_id>")
+        return
+
+    result = delete_user_for_test(target_id)
+    if result == "deleted":
+        last_generated_image_url.pop(target_id, None)
+        last_video_params.pop(target_id, None)
+        await update.message.reply_text(
+            f"Готово: {target_id} удалён из базы.\n"
+            f"Его следующий /start пройдёт как у нового пользователя."
+        )
+    elif result == "has_payments":
+        await update.message.reply_text(
+            f"Отказ: у {target_id} есть платежи — это реальный клиент, не удаляю."
+        )
+    else:
+        await update.message.reply_text(f"Пользователь {target_id} не найден в базе.")
+
+
 async def audience_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id):
@@ -9267,6 +9306,7 @@ def main():
     app.add_handler(CommandHandler("broadcast_text", broadcast_text))
     app.add_handler(CommandHandler("broadcast_hide_keyboard", broadcast_hide_keyboard))
     app.add_handler(CommandHandler("audience_stats", audience_stats))
+    app.add_handler(CommandHandler("test_reset", test_reset))
     app.add_handler(CommandHandler("pnl", pnl_report))
     app.add_handler(CommandHandler("template_stats", template_stats_report))
     app.add_handler(CommandHandler("pl_save", prompt_library_save_last))

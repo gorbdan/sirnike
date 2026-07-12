@@ -240,6 +240,27 @@ def user_exists(user_id: int) -> bool:
         return cur.fetchone() is not None
 
 
+def delete_user_for_test(user_id: int) -> str:
+    """Удаляет юзера и его события, чтобы следующий /start прошёл как новичок
+    (тест онбординга). Аккаунты с платежами не трогаем — это реальные клиенты.
+    Returns: 'deleted' | 'not_found' | 'has_payments'."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
+        if cur.fetchone() is None:
+            return "not_found"
+        cur.execute("SELECT 1 FROM payments WHERE user_id = ? LIMIT 1", (user_id,))
+        if cur.fetchone() is not None:
+            return "has_payments"
+        conn.execute("BEGIN")
+        for table in ("generation_events", "generation_history",
+                      "template_usage_events", "promo_clicks"):
+            conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+        conn.commit()
+        return "deleted"
+
+
 def get_balance(user_id: int) -> int:
     with get_conn() as conn:
         cur = conn.cursor()

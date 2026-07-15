@@ -3394,8 +3394,9 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
                     "💡 Бот сначала стилизует фото через GPT Image, затем сгенерит видео."
                 )
             user_id_for_kb = update.effective_user.id if update.effective_user else None
+            upload_note = f"\n📎 Что загрузить: {resolved_upload_hint}" if resolved_upload_hint else ""
             await update.effective_message.reply_text(
-                f"Готово ✨\nСтиль «{title}» применён для видео.\n" + hint,
+                f"Готово ✨\nСтиль «{title}» применён для видео.{upload_note}\n" + hint,
                 reply_markup=persistent_menu_kb(user_id_for_kb),
             )
             await update.effective_message.reply_text(
@@ -4392,8 +4393,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             deactivate_video_session(state)
             state.prompt = prompt
             _pl_cb_sc = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
+            _hint_sc = str(item.get("upload_hint") or "").strip()
+            _upload_note_sc = f"\n📎 Что загрузить: {_hint_sc}" if _hint_sc else ""
             await query.message.reply_text(
-                f"Стиль «{title}» применён ✨\n"
+                f"Стиль «{title}» применён ✨{_upload_note_sc}\n"
                 "Хочешь себя на этом фото? Сначала пришли своё фото обычным сообщением.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
@@ -4624,6 +4627,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         state = get_or_init_state(context)
         state.image_prompt = str(item.get("image_prompt") or "").strip()
+        upload_hint = str(item.get("upload_hint") or "").strip()
         if item_kind == "video":
             state.video_prompt = str(item.get("prompt") or item.get("title") or "").strip()
             state.video_session_active = True
@@ -4634,15 +4638,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "Теперь отправь фото и запускай видео.\n"
                     "💡 Бот сначала стилизует фото через GPT Image, затем сгенерит видео."
                 )
+            # Дублируем "что загрузить" здесь же, в чате — карточка с этой
+            # инструкцией остаётся в WebApp, который закрылся после тапа
+            # «Использовать», и юзер её больше не видит.
+            upload_note = f"\n📎 Что загрузить: {upload_hint}" if upload_hint else ""
             await query.message.reply_text(
-                f"Готово ✨\nСтиль «{_showcase_item_label(item)}» применён для видео.\n" + hint,
+                f"Готово ✨\nСтиль «{_showcase_item_label(item)}» применён для видео.{upload_note}\n" + hint,
                 reply_markup=video_kb(state),
             )
             return
         deactivate_video_session(state)
         state.prompt = item["prompt"]
+        upload_note = f"\n📎 Что загрузить: {upload_hint}" if upload_hint else ""
         await query.message.reply_text(
-            f"Готово ✨\nСтиль «{_showcase_item_label(item)}» применён.\n"
+            f"Готово ✨\nСтиль «{_showcase_item_label(item)}» применён.{upload_note}\n"
             "Нажми «✨ Сгенерировать фото» или отправь своё фото.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],

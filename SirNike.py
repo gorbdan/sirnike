@@ -637,11 +637,30 @@ def _resolve_prompt_style_label(prompt: str) -> str:
     return ""
 
 
-def photo_draft_text(state: "UserState") -> str:
+_AVATAR_KIND_EMOJI = {"male": "👨", "child": "🧒", "female": "👩"}
+
+
+def photo_draft_text(state: "UserState", user_id: Optional[int] = None) -> str:
     """Экран «✨ Сгенерировать фото»: статус черновика (макет утверждён Аней 2026-07-15)."""
     prompt = (state.prompt or "").strip()
     refs = len(state.references)
-    photo_line = f"Твоё фото: {refs} шт. ✅" if refs else "Твоё фото: пока нет (не обязательно)"
+    if refs:
+        photo_line = f"Твоё фото: {refs} шт. ✅"
+    else:
+        # Без своего фото генерация молча подставляет сохранённый аватар
+        # (run_generation) — юзер должен знать об этом ДО запуска, не только
+        # догадываться по результату.
+        avatar_line = None
+        if user_id is not None:
+            try:
+                avatars = get_avatar_urls(user_id)
+                active_kind = get_active_avatar_kind(user_id)
+                kind = next((k for k in ([active_kind] if active_kind else []) + ["female", "male", "child"] if avatars.get(k)), None)
+                if kind:
+                    avatar_line = f"Твоё фото: не нужно — возьму твой аватар {_AVATAR_KIND_EMOJI.get(kind, '👤')} (или пришли новое)"
+            except Exception:
+                avatar_line = None
+        photo_line = avatar_line or "Твоё фото: пока нет (не обязательно)"
     lines = ["✨ Сгенерировать фото", ""]
     if prompt:
         style_label = _resolve_prompt_style_label(prompt)
@@ -1133,8 +1152,8 @@ def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int
                     # отправки (через 2с), так что текст, присланный сразу после
                     # фото, тоже успевает учесться в статусе.
                     draft_state = state if isinstance(state, UserState) else UserState()
-                    msg_text = photo_draft_text(draft_state)
                     # chat_id == user_id в личных чатах (единственный сценарий этого бота).
+                    msg_text = photo_draft_text(draft_state, chat_id)
                     markup = photo_draft_kb(draft_state, chat_id)
                 await context.bot.send_message(
                     chat_id=chat_id,
@@ -3201,7 +3220,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state.prompt = text
 
     # Единый экран фото: статусы черновика + только осмысленные кнопки.
-    await update.message.reply_text(photo_draft_text(state), reply_markup=photo_draft_kb(state, user.id))
+    await update.message.reply_text(photo_draft_text(state, user.id), reply_markup=photo_draft_kb(state, user.id))
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3544,7 +3563,7 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
                 reply_markup=persistent_menu_kb(user_id_for_kb),
             )
             await update.effective_message.reply_text(
-                photo_draft_text(state),
+                photo_draft_text(state, user_id_for_kb),
                 reply_markup=photo_draft_kb(state, user_id_for_kb),
             )
     return True
@@ -4238,7 +4257,7 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Пустой черновик: вместо выговора — экран фото со статусом и только
         # осмысленными кнопками (кнопки запуска тут нет — запускать нечего).
         queued_user_ids.discard(user.id)
-        await reply_target.reply_text(photo_draft_text(state), reply_markup=photo_draft_kb(state, user.id))
+        await reply_target.reply_text(photo_draft_text(state, user.id), reply_markup=photo_draft_kb(state, user.id))
         return
 
     references = list(state.references)
@@ -4937,7 +4956,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         deactivate_video_session(state)
         state.prompt = pending_text
-        await query.message.reply_text(photo_draft_text(state), reply_markup=photo_draft_kb(state, user.id))
+        await query.message.reply_text(photo_draft_text(state, user.id), reply_markup=photo_draft_kb(state, user.id))
         return
 
     if query.data == "image_model_menu":

@@ -662,17 +662,27 @@ def photo_draft_text(state: "UserState") -> str:
     return "\n".join(lines)
 
 
-def photo_draft_kb(state: "UserState") -> InlineKeyboardMarkup:
+def photo_draft_kb(state: "UserState", user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     """Кнопки экрана фото. Правило UI_STYLE: кнопка есть ⇔ действие сейчас возможно,
     поэтому «🚀 Запустить генерацию» существует только при заполненном стиле/описании."""
     prompt = (state.prompt or "").strip()
-    pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
+    if PROMPT_WEBAPP_URL and user_id is not None:
+        library_button = InlineKeyboardButton(
+            "📚 Выбрать другой стиль" if prompt else "📚 Выбрать стиль",
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)),
+        )
+    else:
+        pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
+        library_button = InlineKeyboardButton(
+            "📚 Выбрать другой стиль" if prompt else "📚 Выбрать стиль",
+            callback_data=pl_cb,
+        )
     rows = []
     if prompt:
         rows.append([InlineKeyboardButton("🚀 Запустить генерацию", callback_data="generate")])
-        rows.append([InlineKeyboardButton("📚 Выбрать другой стиль", callback_data=pl_cb)])
+        rows.append([library_button])
     else:
-        rows.append([InlineKeyboardButton("📚 Выбрать стиль", callback_data=pl_cb)])
+        rows.append([library_button])
     rows.append([InlineKeyboardButton("◀️ В меню", callback_data="reset")])
     return InlineKeyboardMarkup(rows)
 
@@ -1122,7 +1132,8 @@ def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int
                     # фото, тоже успевает учесться в статусе.
                     draft_state = state if isinstance(state, UserState) else UserState()
                     msg_text = photo_draft_text(draft_state)
-                    markup = photo_draft_kb(draft_state)
+                    # chat_id == user_id в личных чатах (единственный сценарий этого бота).
+                    markup = photo_draft_kb(draft_state, chat_id)
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=msg_text,
@@ -1158,14 +1169,20 @@ ENHANCE_WAITING_KB = InlineKeyboardMarkup([
 
 
 def main_menu_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
-    # ВАЖНО: web_app НЕЛЬЗЯ вешать на InlineKeyboardButton — Telegram.WebApp.sendData()
-    # работает только из мини-аппа, открытого через KeyboardButton (reply-клавиатуру).
-    # С inline-кнопки «Использовать» в библиотеке молча теряет данные — бот не
-    # получает НИЧЕГО (живой аудит 2026-07-07). 1-клик остаётся только на нижней
-    # reply-клавиатуре (persistent_menu_kb); здесь — callback с промежуточным шагом.
-    # user_id принимается для симметрии вызовов, на клавиатуру не влияет.
-    pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
-    prompt_library_button = InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb)
+    # web_app на инлайн-кнопке безопасен с 2026-07-16: вебапп отличает открытие
+    # с инлайн-кнопки по query_id в initData и шлёт выбор через Cloudflare
+    # Function → answerWebAppQuery → pl_use_{cat_idx}_{item_idx} (обычный
+    # callback, обрабатывается ниже) вместо sendData (который для инлайн-кнопок
+    # молча терял данные — живой аудит 2026-07-07, поэтому раньше был откат на
+    # callback_data=pl_open_webapp). Без user_id — старый 2-кликовый fallback.
+    if PROMPT_WEBAPP_URL and user_id is not None:
+        prompt_library_button = InlineKeyboardButton(
+            "📚 Библиотека стилей",
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)),
+        )
+    else:
+        pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
+        prompt_library_button = InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb)
 
     video_label = "🎬 Видео для Reels" if SEEDANCE_ENABLED else "🎬 Видео для Reels 🚧"
     rows = [
@@ -1271,9 +1288,14 @@ def image_model_menu_text(state: UserState) -> str:
         f"Сейчас выбрана: {get_image_model_label(selected)}"
     )
 
-def promo_try_kb(promo_id: str) -> InlineKeyboardMarkup:
+def promo_try_kb(promo_id: str, user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton("✨ Хочу так же", callback_data=f"promo_try_{promo_id}")]]
-    if PROMPT_WEBAPP_URL:
+    if PROMPT_WEBAPP_URL and user_id is not None:
+        rows.append([InlineKeyboardButton(
+            "📚 Библиотека стилей",
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)),
+        )])
+    elif PROMPT_WEBAPP_URL:
         rows.append([InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open_webapp")])
     else:
         rows.append([InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open")])
@@ -1769,7 +1791,14 @@ def seedance_retry_kb() -> InlineKeyboardMarkup:
     ])
 
 
-def broadcast_library_kb() -> InlineKeyboardMarkup:
+def broadcast_library_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
+    if PROMPT_WEBAPP_URL and user_id is not None:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                "📚 Библиотека стилей",
+                web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)),
+            )]
+        ])
     if PROMPT_WEBAPP_URL:
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open_webapp")]
@@ -1880,10 +1909,16 @@ def result_actions_kb(user_id: int = 0, bot_username: str = "") -> InlineKeyboar
     switchers = []
     if GPT5_IMAGE_ENABLED:
         switchers.append(InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu"))
-    # web_app на inline-кнопке ломает «Использовать» (sendData не работает) —
-    # только callback, см. комментарий в main_menu_kb.
-    pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
-    switchers.append(InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb))
+    # web_app на инлайн-кнопке безопасен с 2026-07-16 (answerWebAppQuery),
+    # см. комментарий в main_menu_kb.
+    if PROMPT_WEBAPP_URL and user_id:
+        switchers.append(InlineKeyboardButton(
+            "📚 Библиотека стилей",
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)),
+        ))
+    else:
+        pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
+        switchers.append(InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb))
     return InlineKeyboardMarkup([
         actions,
         switchers,
@@ -2068,12 +2103,19 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     create_user_if_not_exists(user.id, user.username, START_BONUS)
 
     bal = get_balance(user.id)
+    if PROMPT_WEBAPP_URL:
+        library_button = InlineKeyboardButton(
+            "📚 Библиотека стилей",
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user.id)),
+        )
+    else:
+        library_button = InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open")
     await update.message.reply_text(
         f"💰 Твой баланс\n\n"
         f"Изюминок: {bal} 🍇  (1 фото = {BASE_GENERATION_COST} изюминок)",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("💳 Купить изюминки", callback_data="show_buy")],
-            [InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open_webapp")],
+            [library_button],
         ])
     )
 
@@ -2529,7 +2571,7 @@ async def broadcast_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     chat_id=target_user_id,
                     photo=photo.file_id,
                     caption=caption_text,
-                    reply_markup=promo_try_kb(promo_id),
+                    reply_markup=promo_try_kb(promo_id, target_user_id),
                 )
                 sent += 1
                 await asyncio.sleep(0.05)
@@ -2540,7 +2582,7 @@ async def broadcast_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         chat_id=target_user_id,
                         photo=photo.file_id,
                         caption=caption_text,
-                        reply_markup=promo_try_kb(promo_id),
+                        reply_markup=promo_try_kb(promo_id, target_user_id),
                     )
                     sent += 1
                 except Exception:
@@ -2606,7 +2648,6 @@ async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users = get_all_user_ids()
         sent = 0
         failed = 0
-        library_kb = broadcast_library_kb()
         source_group_items: List[Dict[str, Any]] = []
         if source_message and getattr(source_message, "media_group_id", None):
             source_group_items = get_cached_media_group(
@@ -2622,6 +2663,7 @@ async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for target_user_id in users:
             try:
+                library_kb = broadcast_library_kb(target_user_id)
                 if source_message:
                     if source_group_items:
                         for start_idx in range(0, len(source_group_items), MAX_MEDIA_GROUP_CHUNK_SIZE):
@@ -3151,7 +3193,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state.prompt = text
 
     # Единый экран фото: статусы черновика + только осмысленные кнопки.
-    await update.message.reply_text(photo_draft_text(state), reply_markup=photo_draft_kb(state))
+    await update.message.reply_text(photo_draft_text(state), reply_markup=photo_draft_kb(state, user.id))
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3312,7 +3354,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await update.message.reply_text(
         f"Готово ✨\nСтиль «{title}» применён.",
-        reply_markup=photo_draft_kb(state),
+        reply_markup=photo_draft_kb(state, user.id),
     )
 
 
@@ -3353,9 +3395,10 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
                 reply_markup=video_kb(state),
             )
         else:
+            _uid = update.effective_user.id if update.effective_user else None
             await update.effective_message.reply_text(
                 f"Готово ✨\nСтиль «{title}» применён.",
-                reply_markup=photo_draft_kb(state),
+                reply_markup=photo_draft_kb(state, _uid),
             )
     return True
 
@@ -3491,7 +3534,7 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
             )
             await update.effective_message.reply_text(
                 photo_draft_text(state),
-                reply_markup=photo_draft_kb(state),
+                reply_markup=photo_draft_kb(state, user_id_for_kb),
             )
     return True
 
@@ -4184,7 +4227,7 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Пустой черновик: вместо выговора — экран фото со статусом и только
         # осмысленными кнопками (кнопки запуска тут нет — запускать нечего).
         queued_user_ids.discard(user.id)
-        await reply_target.reply_text(photo_draft_text(state), reply_markup=photo_draft_kb(state))
+        await reply_target.reply_text(photo_draft_text(state), reply_markup=photo_draft_kb(state, user.id))
         return
 
     references = list(state.references)
@@ -4444,12 +4487,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise ValueError("showcase item has no prompt")
         except Exception as e:
             logger.warning("Showcase callback failed (%s): %s", query.data, e)
-            pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
+            if PROMPT_WEBAPP_URL:
+                retry_btn = InlineKeyboardButton(
+                    "📚 Библиотека стилей",
+                    web_app=WebAppInfo(url=get_prompt_webapp_url(user.id)),
+                )
+            else:
+                retry_btn = InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open")
             await query.message.reply_text(
                 "Этот стиль обновился — открой «📚 Библиотека стилей» и выбери оттуда.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb)],
-                ]),
+                reply_markup=InlineKeyboardMarkup([[retry_btn]]),
             )
             return
         title = _showcase_item_label(item)
@@ -4473,13 +4520,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             deactivate_video_session(state)
             state.prompt = prompt
-            _pl_cb_sc = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
             _hint_sc = str(item.get("upload_hint") or "").strip()
             _upload_note_sc = f"\n📎 Что загрузить: {_hint_sc}" if _hint_sc else ""
             await query.message.reply_text(
                 f"Стиль «{title}» применён ✨{_upload_note_sc}\n"
                 "Хочешь себя на этом фото? Сначала пришли своё фото обычным сообщением.",
-                reply_markup=photo_draft_kb(state),
+                reply_markup=photo_draft_kb(state, user.id),
             )
         return
 
@@ -4725,7 +4771,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             style_applied_message(_showcase_item_label(item), item, "image") + "\n"
             "Пришли своё фото — или запускай сразу.",
-            reply_markup=photo_draft_kb(state),
+            reply_markup=photo_draft_kb(state, user.id),
         )
         return
 
@@ -4880,7 +4926,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         deactivate_video_session(state)
         state.prompt = pending_text
-        await query.message.reply_text(photo_draft_text(state), reply_markup=photo_draft_kb(state))
+        await query.message.reply_text(photo_draft_text(state), reply_markup=photo_draft_kb(state, user.id))
         return
 
     if query.data == "image_model_menu":
@@ -5452,7 +5498,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.message.reply_text(
             "Готово ✨\nСтиль применён ✅",
-            reply_markup=photo_draft_kb(state),
+            reply_markup=photo_draft_kb(state, update.effective_user.id),
         )
         return
 

@@ -622,6 +622,61 @@ def style_applied_message(label: str, item: Optional[dict], kind: str) -> str:
     return "\n".join(lines)
 
 
+def _resolve_prompt_style_label(prompt: str) -> str:
+    """Лейбл применённого стиля по тексту промта — state хранит только промт,
+    а в панели черновика хочется показывать «Стиль: Пикник ✅», а не простыню."""
+    p = (prompt or "").strip()
+    if not p:
+        return ""
+    for cat in PROMPT_LIBRARY:
+        for it in cat.get("items") or []:
+            if str(it.get("prompt") or "").strip() == p:
+                return _showcase_item_label(it)
+    return ""
+
+
+def photo_draft_text(state: "UserState") -> str:
+    """Экран «✨ Сгенерировать фото»: статус черновика (макет утверждён Аней 2026-07-15)."""
+    prompt = (state.prompt or "").strip()
+    refs = len(state.references)
+    photo_line = f"Твоё фото: {refs} шт. ✅" if refs else "Твоё фото: пока нет (не обязательно)"
+    lines = ["✨ Сгенерировать фото", ""]
+    if prompt:
+        style_label = _resolve_prompt_style_label(prompt)
+        if style_label:
+            lines.append(f"Стиль: {style_label} ✅")
+        else:
+            preview = prompt if len(prompt) <= 50 else prompt[:47] + "…"
+            lines.append(f"Описание: «{preview}» ✅")
+        lines.append(photo_line)
+        model = get_image_model(state)
+        lines.append(f"Модель: {get_image_model_label(model)} · {calc_generation_cost(None, model)} 🍇")
+    else:
+        lines.append("Стиль или описание: пока нет 👇")
+        lines.append(photo_line)
+        lines.append("")
+        lines.append(
+            "Выбери стиль из библиотеки — или просто напиши сообщением, что хочешь увидеть. "
+            "Хочешь себя на картинке — пришли своё фото."
+        )
+    return "\n".join(lines)
+
+
+def photo_draft_kb(state: "UserState") -> InlineKeyboardMarkup:
+    """Кнопки экрана фото. Правило UI_STYLE: кнопка есть ⇔ действие сейчас возможно,
+    поэтому «🚀 Запустить генерацию» существует только при заполненном стиле/описании."""
+    prompt = (state.prompt or "").strip()
+    pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
+    rows = []
+    if prompt:
+        rows.append([InlineKeyboardButton("🚀 Запустить генерацию", callback_data="generate")])
+        rows.append([InlineKeyboardButton("📚 Выбрать другой стиль", callback_data=pl_cb)])
+    else:
+        rows.append([InlineKeyboardButton("📚 Выбрать стиль", callback_data=pl_cb)])
+    rows.append([InlineKeyboardButton("◀️ В меню", callback_data="reset")])
+    return InlineKeyboardMarkup(rows)
+
+
 def pick_showcase_items(limit_images: int = 2, limit_videos: int = 2) -> list:
     """Свежие стили с превью для витрины новичка: (cat_idx, item_idx, item).
     Фото-стили — по example_url, видео-стили — по video_url. Сначала фото, потом видео."""
@@ -1042,39 +1097,19 @@ def schedule_photo_done_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int
             if count > 0:
                 state = context.user_data.get("state")
                 in_enhance = isinstance(state, UserState) and state.prompt == ENHANCE_PHOTO_PROMPT
-                _pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
                 if in_enhance:
                     msg_text = "Фото получено ✅\nМожно улучшать!"
                     markup = InlineKeyboardMarkup([
                         [InlineKeyboardButton("🚀 Улучшить это фото", callback_data="generate")],
                     ])
                 else:
-                    # Просим описание только если его ещё нет — иначе бот зовёт
-                    # по кругу: «пришли фото» ↔ «напиши описание». Проверка идёт
-                    # в момент отправки (через 2с), так что текст, присланный
-                    # сразу после фото, тоже успевает учесться.
-                    saved_prompt = (state.prompt or "").strip() if isinstance(state, UserState) else ""
-                    if saved_prompt:
-                        preview = saved_prompt if len(saved_prompt) <= 50 else saved_prompt[:47] + "…"
-                        msg_text = (
-                            f"Фото получены: {count} шт. ✅\n"
-                            f"Описание уже есть: «{preview}»\n"
-                            "Всё готово — запускай!"
-                        )
-                        markup = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("🚀 Запустить генерацию", callback_data="generate")],
-                            [InlineKeyboardButton("📚 Выбрать другой стиль", callback_data=_pl_cb)],
-                        ])
-                    else:
-                        msg_text = (
-                            f"Фото получены: {count} шт. ✅\n"
-                            "Бот будет использовать их при генерации.\n\n"
-                            "Напиши описание или выбери стиль из библиотеки — и запускай."
-                        )
-                        markup = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
-                            [InlineKeyboardButton("📚 Выбрать стиль", callback_data=_pl_cb)],
-                        ])
+                    # Единый экран фото: статусы черновика (описание/стиль, фото,
+                    # модель) + только осмысленные кнопки. Проверка идёт в момент
+                    # отправки (через 2с), так что текст, присланный сразу после
+                    # фото, тоже успевает учесться в статусе.
+                    draft_state = state if isinstance(state, UserState) else UserState()
+                    msg_text = photo_draft_text(draft_state)
+                    markup = photo_draft_kb(draft_state)
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=msg_text,
@@ -1592,8 +1627,10 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
         rows.append([
             InlineKeyboardButton(custom_label, callback_data="video_set_duration"),
         ])
-    # Запуск
-    rows.append([InlineKeyboardButton("🚀 Запустить видео", callback_data="video_start")])
+    # Запуск существует только когда есть из чего генерить (описание или фото) —
+    # правило docs/UI_STYLE.md: кнопка есть ⇔ действие сейчас возможно.
+    if prompt_done or video_images:
+        rows.append([InlineKeyboardButton("🚀 Запустить видео", callback_data="video_start")])
     rows.append([InlineKeyboardButton("◀️ В меню", callback_data="menu_from_video")])
     return InlineKeyboardMarkup(rows)
 
@@ -3080,24 +3117,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Зовём прислать фото только если референсов ещё нет — иначе бот зовёт
     # по кругу: «напиши описание» ↔ «пришли фото».
     ref_count = len(state.references)
-    if ref_count:
-        await update.message.reply_text(
-            "Описание сохранено ✅\n"
-            f"Фото на месте ({ref_count} шт.) — запускай!",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🚀 Запустить генерацию", callback_data="generate")],
-                [InlineKeyboardButton("📚 Выбрать стиль", callback_data=_pl_cb)],
-            ]),
-        )
-    else:
-        await update.message.reply_text(
-            "Описание сохранено ✅\n"
-            "Отправь своё фото, чтобы быть на картинке, или сразу запускай.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
-                [InlineKeyboardButton("📚 Выбрать стиль", callback_data=_pl_cb)],
-            ]),
-        )
+    # Единый экран фото: статусы черновика + только осмысленные кнопки.
+    await update.message.reply_text(photo_draft_text(state), reply_markup=photo_draft_kb(state))
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3258,9 +3279,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await update.message.reply_text(
         f"Готово ✨\nСтиль «{title}» применён.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
-        ]),
+        reply_markup=photo_draft_kb(state),
     )
 
 
@@ -3303,9 +3322,7 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
         else:
             await update.effective_message.reply_text(
                 f"Готово ✨\nСтиль «{title}» применён.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
-                ]),
+                reply_markup=photo_draft_kb(state),
             )
     return True
 
@@ -3440,10 +3457,8 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
                 reply_markup=persistent_menu_kb(user_id_for_kb),
             )
             await update.effective_message.reply_text(
-                "Пришли фото — или запускай сразу:",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
-                ]),
+                photo_draft_text(state),
+                reply_markup=photo_draft_kb(state),
             )
     return True
 
@@ -4133,16 +4148,10 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = get_or_init_state(context)
 
     if not state.prompt:
+        # Пустой черновик: вместо выговора — экран фото со статусом и только
+        # осмысленными кнопками (кнопки запуска тут нет — запускать нечего).
         queued_user_ids.discard(user.id)
-        await reply_target.reply_text(
-            "Сначала опиши, что хочешь увидеть на картинке 👇\n\n"
-            "Например: «девушка на фоне заката», «кот в космосе», «портрет в стиле кино»\n\n"
-            "Или выбери готовый стиль из библиотеки:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open_webapp")],
-                [InlineKeyboardButton("❓ Как пользоваться", callback_data="show_help")],
-            ])
-        )
+        await reply_target.reply_text(photo_draft_text(state), reply_markup=photo_draft_kb(state))
         return
 
     references = list(state.references)
@@ -4437,10 +4446,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(
                 f"Стиль «{title}» применён ✨{_upload_note_sc}\n"
                 "Хочешь себя на этом фото? Сначала пришли своё фото обычным сообщением.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
-                    [InlineKeyboardButton("📚 Выбрать другой стиль", callback_data=_pl_cb_sc)],
-                ]),
+                reply_markup=photo_draft_kb(state),
             )
         return
 
@@ -4685,10 +4691,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.prompt = item["prompt"]
         await query.message.reply_text(
             style_applied_message(_showcase_item_label(item), item, "image") + "\n"
-            "Нажми «✨ Сгенерировать фото» или отправь своё фото.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
-            ]),
+            "Пришли своё фото — или запускай сразу.",
+            reply_markup=photo_draft_kb(state),
         )
         return
 
@@ -5391,9 +5395,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.message.reply_text(
             "Готово ✨\nСтиль применён ✅",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
-            ]),
+            reply_markup=photo_draft_kb(state),
         )
         return
 

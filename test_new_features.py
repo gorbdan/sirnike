@@ -157,6 +157,25 @@ check("3.8 у veo31 есть 16:9 и 9:16", "video_aspect_16x9" in cbs5 and "vid
 durs5 = [c for c in cbs5 if c.startswith("video_duration_")]
 check("3.9 duration кнопки veo31 только 4/6/8", set(durs5) <= {"video_duration_4", "video_duration_6", "video_duration_8"}, str(durs5))
 
+# Кнопка есть ⇔ действие возможно (docs/UI_STYLE.md, правило 0)
+st_e = S.UserState()
+cbs_e = [b.callback_data for row in S.video_kb(st_e).inline_keyboard for b in row if b.callback_data]
+check("3.30 пустой видео-черновик: НЕТ video_start", "video_start" not in cbs_e, str(cbs_e))
+st_f = S.UserState(); st_f.video_prompt = "закат"
+cbs_f = [b.callback_data for row in S.video_kb(st_f).inline_keyboard for b in row if b.callback_data]
+check("3.31 видео с описанием: есть video_start", "video_start" in cbs_f)
+pd_e = S.UserState()
+cbs_pd = [b.callback_data for row in S.photo_draft_kb(pd_e).inline_keyboard for b in row if b.callback_data]
+check("3.32 пустой фото-черновик: НЕТ generate, есть библиотека и меню",
+      "generate" not in cbs_pd and any(c in cbs_pd for c in ("pl_open_webapp", "pl_open")) and "reset" in cbs_pd, str(cbs_pd))
+pd_f = S.UserState(); pd_f.prompt = "девушка на фоне заката"
+cbs_pf = [b.callback_data for row in S.photo_draft_kb(pd_f).inline_keyboard for b in row if b.callback_data]
+check("3.33 фото-черновик с описанием: есть generate", "generate" in cbs_pf, str(cbs_pf))
+check("3.34 текст пустого фото-черновика зовёт выбрать стиль",
+      "Стиль или описание: пока нет" in S.photo_draft_text(pd_e))
+check("3.35 текст заполненного фото-черновика показывает описание ✅",
+      "Описание: «девушка на фоне заката» ✅" in S.photo_draft_text(pd_f), S.photo_draft_text(pd_f))
+
 stxt = S.video_status_text(st4)
 check("3.10 статус-текст содержит Kling 3.0 и стоимость", "Kling 3.0" in stxt and "изюминок" in stxt)
 

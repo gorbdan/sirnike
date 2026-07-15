@@ -195,6 +195,20 @@ def init_db():
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_template_usage_item ON template_usage_events(category, item_title)")
 
+        cur3 = conn.cursor()
+        cur3.execute("PRAGMA table_info(template_usage_events)")
+        tpl_cols = {row[1] for row in cur3.fetchall()}
+        # cat_idx/item_idx — абсолютные индексы в PROMPT_LIBRARY на момент события.
+        # Нужны для фида «Топ-стили» в вебаппе (docs/specs/2026-07-16_top_styles_stats_feed.md):
+        # текстовый category/item_title не годится для точного сопоставления на
+        # стороне вебаппа (те же баги с рассинхроном текста, что чинили в payload,
+        # docs/specs/2026-07-12_webapp_payload.md). Nullable — старые события без
+        # индексов просто не участвуют в топе.
+        if "cat_idx" not in tpl_cols:
+            conn.execute("ALTER TABLE template_usage_events ADD COLUMN cat_idx INTEGER")
+        if "item_idx" not in tpl_cols:
+            conn.execute("ALTER TABLE template_usage_events ADD COLUMN item_idx INTEGER")
+
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_referrer_id ON users(referrer_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_free_used_date ON users(free_used_date)")
         conn.commit()
@@ -759,6 +773,8 @@ def log_template_usage(
     item_title: str,
     item_kind: str = "image",
     category: Optional[str] = None,
+    cat_idx: Optional[int] = None,
+    item_idx: Optional[int] = None,
 ) -> None:
     """Записать факт применения шаблона из «Библиотеки стилей».
     Аналитика не должна ронять основной сценарий — ошибки глотаются (см. log_generation_event)."""
@@ -766,10 +782,10 @@ def log_template_usage(
         with get_conn() as conn:
             conn.execute(
                 """
-                INSERT INTO template_usage_events (user_id, category, item_title, item_kind, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO template_usage_events (user_id, category, item_title, item_kind, created_at, cat_idx, item_idx)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (user_id, category, item_title, item_kind, datetime.utcnow().isoformat()),
+                (user_id, category, item_title, item_kind, datetime.utcnow().isoformat(), cat_idx, item_idx),
             )
             conn.commit()
     except Exception:
@@ -802,6 +818,31 @@ def get_template_usage_counts(days: Optional[int] = None):
             )
         rows = cur.fetchall()
     return {(cat, title): cnt for cat, title, cnt in rows}
+
+
+def get_top_styles_by_index(days: int = 30, limit: int = 10):
+    """Топ-N стилей за N дней по абсолютным (cat_idx, item_idx) — для фида
+    «Топ-стили» в вебаппе (docs/specs/2026-07-16_top_styles_stats_feed.md).
+    Строки без индексов (записаны до миграции 2026-07-16, или из путей, где
+    индекс не резолвится — см. apply_webapp_prompt_payload) в топ не попадают.
+    Возвращает список [{"cat_idx": int, "item_idx": int, "uses": int}, ...],
+    отсортированный по убыванию uses."""
+    since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT cat_idx, item_idx, COUNT(*) AS uses
+            FROM template_usage_events
+            WHERE created_at >= ? AND cat_idx IS NOT NULL AND item_idx IS NOT NULL
+            GROUP BY cat_idx, item_idx
+            ORDER BY uses DESC
+            LIMIT ?
+            """,
+            (since, limit),
+        )
+        rows = cur.fetchall()
+    return [{"cat_idx": cat_idx, "item_idx": item_idx, "uses": uses} for cat_idx, item_idx, uses in rows]
 
 
 def count_success_image_generations(user_id: int) -> int:

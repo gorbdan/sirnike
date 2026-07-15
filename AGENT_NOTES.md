@@ -26,6 +26,32 @@
 Что было исправлено и где.
 -->
 
+### [2026-07-16] Фид «Топ-стили»: cat_idx/item_idx в template_usage_events + пуш в репо вебаппа
+По docs/specs/2026-07-16_top_styles_stats_feed.md. `template_usage_events`
+раньше хранил только текстовые `category`/`item_title` — для фида нужны были
+абсолютные индексы (чтобы вебапп не занимался нечётким текстовым матчингом,
+та же категория багов, что чинили в payload). Добавлены nullable-колонки
+`cat_idx`/`item_idx` (аддитивная ALTER-миграция, старые строки без индексов
+просто не участвуют в топе). `log_template_usage`/`_log_template_usage_safe`
+принимают их опционально; прокинуты в 2 из 3 мест логирования, где индекс
+реально резолвится (`pl_use_` callback, `apply_webapp_prompt_payload_v2` —
+добавлена переменная `resolved_item_idx` рядом с уже существовавшей
+`resolved_cat_idx`, тот же сброс при рассинхроне индексов). 3-е место
+(`apply_webapp_prompt_payload` v1, легаси-фолбэк) индексов не получает —
+не расширяла, слишком редкий путь.
+
+Публикация: `_push_top_styles_to_webapp_repo()` — тот же паттерн, что
+`_push_log_to_github` (GitHub Contents API, PUT с sha если файл уже есть),
+но в **другой репо** — `WEBAPP_GITHUB_REPO` (config.py, дефолт
+`gorbdan/_webapp`), не `GITHUB_REPO`. Раз в сутки + сразу при старте бота
+(`_daily_top_styles_push_loop`, зовётся из `post_init`).
+
+⚠️ НЕ ПРОВЕРЕНО НА ПРОДЕ: имеет ли `GITHUB_TOKEN` права записи именно в
+`gorbdan/_webapp` (до сих пор использовался только для `gorbdan/sirnike`).
+Если пуш будет молча падать (см. warning "GitHub top_styles push error") —
+это первое, что проверить. Не блокирует остальной бот — ошибки в этой
+функции глотаются, как и у `_push_log_to_github`.
+
 ### [2026-07-16] Вторая половина 1-тапа: web_app вернули на инлайн-кнопки
 answerWebAppQuery-путь (Cloudflare Function + app.js) задеплоен фронтендом
 2026-07-16, но живой тест показал: фича не включалась — бот НИГДЕ не вешал

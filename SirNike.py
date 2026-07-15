@@ -101,6 +101,7 @@ from config import (
     DATA_DIR,
     GITHUB_TOKEN,
     GITHUB_REPO,
+    WEBAPP_GITHUB_REPO,
     KLING3_ENABLED,
     KLING3_MODEL,
     KLING3_COST_PER_SECOND,
@@ -151,6 +152,7 @@ from db import (
     get_pnl_report,
     log_template_usage,
     get_template_usage_counts,
+    get_top_styles_by_index,
     add_generation_history,
     get_generation_history,
     get_generation_history_item,
@@ -1454,14 +1456,20 @@ def _resolve_template_category(item_label: str, cat_idx: Optional[int] = None) -
     return None
 
 
-def _log_template_usage_safe(user_id: int, item_label: str, item_kind: str, cat_idx: Optional[int] = None) -> None:
+def _log_template_usage_safe(
+    user_id: int,
+    item_label: str,
+    item_kind: str,
+    cat_idx: Optional[int] = None,
+    item_idx: Optional[int] = None,
+) -> None:
     if user_id in ADMIN_IDS:
         return
     label = (item_label or "").strip()
     if not label:
         return
     category = _resolve_template_category(label, cat_idx)
-    log_template_usage(user_id, label, item_kind or "image", category=category)
+    log_template_usage(user_id, label, item_kind or "image", category=category, cat_idx=cat_idx, item_idx=item_idx)
 
 
 def prompt_library_item_kb(cat_idx: int, item_idx: int, item_kind: str = "image") -> InlineKeyboardMarkup:
@@ -3434,6 +3442,7 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
     # payload. Многие фото-стили не имеют "title" (только description), так что без
     # этого резолва title/upload_hint остаются пустыми в обычном (не fallback) пути.
     resolved_cat_idx = None
+    resolved_item_idx = None
     item = None
     try:
         cat_idx = int(payload.get("cat_idx") if payload.get("cat_idx") is not None else payload.get("ci"))
@@ -3443,6 +3452,7 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
             if 0 <= item_idx < len(cat_items):
                 item = cat_items[item_idx]
                 resolved_cat_idx = cat_idx
+                resolved_item_idx = item_idx
     except Exception:
         item = None
 
@@ -3469,6 +3479,7 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
             )
             item = None
             resolved_cat_idx = None
+            resolved_item_idx = None
 
     if item is not None:
         resolved_title = str(item.get("title") or "").strip()
@@ -3497,7 +3508,7 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
 
     item_kind = "video" if action in {"set_video_prompt", "set_video_prompt_ref"} else "image"
     if raw_title and update.effective_user:
-        _log_template_usage_safe(update.effective_user.id, raw_title, item_kind, cat_idx=resolved_cat_idx)
+        _log_template_usage_safe(update.effective_user.id, raw_title, item_kind, cat_idx=resolved_cat_idx, item_idx=resolved_item_idx)
 
     state = get_or_init_state(context)
     state.image_prompt = image_prompt
@@ -4747,7 +4758,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if update.effective_user:
-            _log_template_usage_safe(update.effective_user.id, _showcase_item_label(item), item_kind, cat_idx=cat_idx)
+            _log_template_usage_safe(update.effective_user.id, _showcase_item_label(item), item_kind, cat_idx=cat_idx, item_idx=item_idx)
 
         state = get_or_init_state(context)
         state.image_prompt = str(item.get("image_prompt") or "").strip()
@@ -6560,6 +6571,68 @@ def _push_log_to_github() -> None:
     logger.info("Log pushed to GitHub: logs/%s.log", today)
 
 
+def _push_top_styles_to_webapp_repo(days: int = 30, limit: int = 10) -> None:
+    """Публикует top_styles.json в репо вебаппа (docs/specs/2026-07-16_top_styles_stats_feed.md).
+    Формат для фронтенда: [{"cat_idx": int, "item_idx": int, "uses_30d": int}, ...].
+    Аналитика не должна ронять бот — все ошибки логируются и глотаются."""
+    if not GITHUB_TOKEN or not WEBAPP_GITHUB_REPO:
+        return
+    import urllib.request as _req
+    import base64 as _b64
+
+    def _gh(method, path, body=None):
+        url = f"https://api.github.com{path}"
+        data = json.dumps(body).encode() if body else None
+        req = _req.Request(url, data=data, method=method)
+        req.add_header("Authorization", f"token {GITHUB_TOKEN}")
+        req.add_header("Accept", "application/vnd.github+json")
+        req.add_header("User-Agent", "SirnikeBot/1.0")
+        if body:
+            req.add_header("Content-Type", "application/json")
+        try:
+            with _req.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read())
+        except Exception as e:
+            logger.warning("GitHub top_styles push error %s %s: %s", method, path, e)
+            return None
+
+    try:
+        rows = get_top_styles_by_index(days=days, limit=limit)
+    except Exception:
+        logger.exception("get_top_styles_by_index failed")
+        return
+
+    payload_list = [
+        {"cat_idx": r["cat_idx"], "item_idx": r["item_idx"], "uses_30d": r["uses"]}
+        for r in rows
+    ]
+    content = json.dumps(payload_list, ensure_ascii=False, indent=2)
+
+    filepath = f"/repos/{WEBAPP_GITHUB_REPO}/contents/top_styles.json"
+    existing = _gh("GET", filepath)
+    sha = existing.get("sha") if isinstance(existing, dict) else None
+
+    body = {
+        "message": f"stats: top_styles.json ({datetime.utcnow().strftime('%Y-%m-%d')})",
+        "content": _b64.b64encode(content.encode("utf-8")).decode("ascii"),
+    }
+    if sha:
+        body["sha"] = sha
+    result = _gh("PUT", filepath, body)
+    if result is not None:
+        logger.info("top_styles.json pushed to %s (%d styles)", WEBAPP_GITHUB_REPO, len(payload_list))
+
+
+async def _daily_top_styles_push_loop():
+    """Раз в сутки публикует top_styles.json (спека требует «не реже раза в сутки»)."""
+    while True:
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, _push_top_styles_to_webapp_repo)
+        except Exception:
+            logger.exception("Daily top_styles push failed")
+        await asyncio.sleep(86400)  # 24 часа
+
+
 def _cleanup_old_outputs(max_age_days: int = 3) -> int:
     """Delete video files in OUTPUTS_DIR older than max_age_days. Returns count deleted."""
     cutoff = time.time() - max_age_days * 86400
@@ -6604,6 +6677,7 @@ async def post_init(app: Application):
     queue_worker_task = asyncio.create_task(_queue_worker_supervised(app))
     _cleanup_old_outputs(max_age_days=3)
     asyncio.create_task(_daily_log_push_loop())
+    asyncio.create_task(_daily_top_styles_push_loop())
 
 
 async def post_shutdown(app: Application):

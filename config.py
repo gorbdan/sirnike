@@ -192,5 +192,9 @@ ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "320423776").split(",") if x
 RESULTS_CHANNEL_ID = os.getenv("RESULTS_CHANNEL_ID", "").strip()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
 GITHUB_REPO = os.getenv("GITHUB_REPO", "gorbdan/sirnike").strip()
+# Репо вебаппа — публикация top_styles.json (docs/specs/2026-07-16_top_styles_stats_feed.md).
+# ⚠️ Требует, чтобы GITHUB_TOKEN имел права записи и в этот репо (не только в GITHUB_REPO) —
+# не проверено автоматически, подтвердить вручную перед первым релизом фичи.
+WEBAPP_GITHUB_REPO = os.getenv("WEBAPP_GITHUB_REPO", "gorbdan/_webapp").strip()
 
 TEST_MODE = os.getenv("TEST_MODE", "0").strip().lower() in ("1", "true", "yes", "on")

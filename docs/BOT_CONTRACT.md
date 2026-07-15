@@ -59,3 +59,51 @@ JSON строкой. Полные и короткие ключи равнозн�
 - `topup` открывает у бота экран пополнения.
 - Менять формат payload или структуру JSON — только синхронно с правкой парсера в боте
   (бриф бэкенду в `docs/briefs/backend.md` в репо бота).
+
+## Инлайн-путь «Использовать» в 1 тап (Cloudflare Function, вариант B)
+
+Решение по [docs/specs/2026-07-15_webapp_inline_1tap.md](specs/2026-07-15_webapp_inline_1tap.md)
+принято 2026-07-16: **вариант B**. `sendData()` работает только для вебаппа,
+открытого с reply-клавиатуры (`persistent_menu_kb`) — это НЕ меняется,
+остаётся основным путём. Для вебаппа, открытого с ИНЛАЙН-кнопки (`main_menu_kb`,
+`result_actions_kb` — там, где сейчас 2-таповый обход через `pl_open_webapp`),
+добавляется отдельный путь через `answerWebAppQuery`:
+
+1. Вебапп открыт с инлайн-кнопки → `tg.initDataUnsafe.query_id` присутствует.
+2. Тап «Использовать» → вместо `tg.sendData()` вебапп шлёт `POST` на Cloudflare
+   Function (репо вебаппа, `/functions/answer-webapp-query` или аналогично —
+   путь фронтенд выбирает сам) с телом:
+   ```json
+   {"init_data": "<tg.initData как есть>", "cat_idx": 3, "item_idx": 7, "note": ""}
+   ```
+3. Function проверяет HMAC-подпись `init_data` секретом `BOT_TOKEN` (алгоритм
+   — офиц. доки Telegram, "Validating data received via the Mini App"), достаёт
+   `query_id`, отклоняет запрос при невалидной подписи.
+4. Function вызывает Telegram Bot API напрямую (`fetch`, без SDK):
+   ```
+   POST https://api.telegram.org/bot<BOT_TOKEN>/answerWebAppQuery
+   {
+     "web_app_query_id": "<query_id из initData>",
+     "result": {
+       "type": "article",
+       "id": "pl_use_3_7",
+       "title": "Использовать стиль",
+       "input_message_content": {"message_text": "📚 Стиль подобран — жми ниже 👇"},
+       "reply_markup": {"inline_keyboard": [[
+         {"text": "🚀 Использовать", "callback_data": "pl_use_3_7"}
+       ]]}
+     }
+   }
+   ```
+5. Telegram сам вставляет это сообщение в чат юзера с ботом. Тап по кнопке —
+   обычный `callback_query` с `callback_data=pl_use_{cat_idx}_{item_idx}`,
+   бот обрабатывает его существующим хэндлером `button_handler` → ветка
+   `pl_use_` (SirNike.py) — тот же код, что у инлайн-каталога библиотеки
+   внутри бота. Дублировать логику применения стиля не пришлось.
+6. Вебапп после успешного ответа Function вызывает `tg.close()`. При сетевой
+   ошибке — показать тост, `tg.close()` не звать (см. критерий приёмки в спеке).
+
+Секреты: `BOT_TOKEN` заводится вторым секретом в Cloudflare Pages (тот же
+токен, что в BotHost) — секретами занимается Аня, не бэкенд-сессия.
+Со стороны бота изменений не требуется — `pl_use_{cat_idx}_{item_idx}`
+уже штатный формат callback_data.

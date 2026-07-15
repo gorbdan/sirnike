@@ -17,6 +17,13 @@
       callback_data (SirNike.py, `button_handler`). Дальше: фронтенд поднимает
       Cloudflare Function + правит app.js (детект `query_id` → POST вместо
       sendData), Аня заводит `BOT_TOKEN` вторым секретом в Cloudflare.
+      Фронтенд-часть готова 2026-07-16, PR https://github.com/gorbdan/_webapp/pull/13:
+      `functions/answer-webapp-query.js` (проверка HMAC initData + вызов
+      `answerWebAppQuery`, алгоритм кросс-проверен отдельным скриптом) +
+      `app.js` (`isOpenedViaInlineButton`, POST вместо `sendData` для инлайн-пути,
+      `tg.close()` не вызывается при сетевой ошибке). Осталось: смёржить PR,
+      завести секрет `BOT_TOKEN` в Cloudflare Pages (Аня), живой тест критерия
+      приёмки в Telegram после деплоя.
 - [x] P0 · Реализовать [docs/specs/2026-07-02_navigatsiya.md](../specs/2026-07-02_navigatsiya.md):
       добавить «🖼️ Улучшить фото» в нижнюю reply-клавиатуру (7 кнопок), выровнять тексты
       «Баланс»/«Как пользоваться» между клавиатурой и инлайн-меню, восстанавливать

@@ -686,6 +686,30 @@ asyncio.run(S.button_handler(update, context))
 msgs = [c.args[0] for c in query.message.reply_text.await_args_list]
 check("9.13 без жаргона «для Seedance»", not any("для Seedance" in m for m in msgs), str(msgs))
 
+# 9.14 via_bot-заглушка (answerWebAppQuery, docs/specs/2026-07-17_via_bot_message_leak.md)
+# не затирает уже выбранный стиль в state.prompt
+st_leak = S.UserState(prompt="реальный промт выбранного стиля")
+update, context, message = make_text_update(
+    "📚 Стиль подобран — жми ниже 👇", user_id=907, state=st_leak,
+)
+context.bot.id = 999999
+message.via_bot = types.SimpleNamespace(id=999999)
+asyncio.run(S.handle_text(update, context))
+check("9.14 via_bot-заглушка не трогает state.prompt",
+      context.user_data["state"].prompt == "реальный промт выбранного стиля",
+      context.user_data["state"].prompt)
+check("9.15 via_bot-заглушка не шлёт ответных сообщений",
+      message.reply_text.await_args_list == [], str(message.reply_text.await_args_list))
+
+# 9.16 обычный текст от юзера (via_bot=None) по-прежнему работает как раньше
+st_normal = S.UserState()
+update, context, message = make_text_update("кот в шляпе", user_id=908, state=st_normal)
+context.bot.id = 999999
+message.via_bot = None
+asyncio.run(S.handle_text(update, context))
+check("9.16 обычный текст всё ещё сохраняется в state.prompt",
+      context.user_data["state"].prompt == "кот в шляпе", context.user_data["state"].prompt)
+
 # ════════════════ ИТОГ ════════════════
 print()
 print(f"PASS: {len(PASS)}  FAIL: {len(FAIL)}")

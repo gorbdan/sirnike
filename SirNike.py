@@ -3006,6 +3006,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     create_user_if_not_exists(user.id, user.username, START_BONUS)
 
+    # Telegram доставляет боту копию его же answerWebAppQuery-сообщения как
+    # обычный message-update в личном чате (via_bot = сам бот) — например,
+    # заглушку "📚 Стиль подобран — жми ниже 👇" из инлайн-1-тапа библиотеки
+    # (docs/specs/2026-07-17_via_bot_message_leak.md). Без этого фильтра
+    # текст заглушки доходил до state.prompt = text ниже и затирал реально
+    # выбранный стиль раньше, чем успевал сработать pl_use_ по кнопке под ней.
+    _via_bot = getattr(update.message, "via_bot", None)
+    if _via_bot and _via_bot.id == context.bot.id:
+        return
+
     text = update.message.text.strip()
     if not text:
         return

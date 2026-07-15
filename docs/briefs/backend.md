@@ -17,6 +17,20 @@
       текст пользователя по-прежнему работает). `py_compile` OK, тесты
       146 PASS / 0 FAIL. Подробности — [docs/specs/2026-07-17_via_bot_message_leak.md](../specs/2026-07-17_via_bot_message_leak.md),
       AGENT_NOTES.md [2026-07-17].
+      ⚠️ Живой тест на проде после этого фикса (Telegram Desktop, аккаунт
+      Ани) показал, что «Использовать» ВСЁ ЕЩЁ не отвечает — via_bot-фикс
+      устранил порчу текста, но не саму немоту кнопки. Настоящая причина
+      глубже: сообщение от `answerWebAppQuery` — это inline-сообщение
+      Telegram, у кнопки под ним `query.message` гарантированно `None` (Bot
+      API: ровно одно из полей `message`/`inline_message_id`). `pl_use_` звал
+      `query.message.reply_text(...)` → `AttributeError` уже ПОСЛЕ того, как
+      `state.prompt` успевал выставиться корректно — юзер просто не видел
+      подтверждения (реальная генерация потом отрабатывала на правильном
+      промте). Добавлен `_reply_after_callback()` — фолбэк на
+      `context.bot.send_message(chat_id=user_id, ...)`, когда `query.message`
+      нет; применён во всех 3 ответах `pl_use_`. Тест 9.17–9.18. Тесты
+      148 PASS / 0 FAIL. Подробности — AGENT_NOTES.md [2026-07-17], вторая
+      запись.
 - [x] P2 · Канал доставки статистики для раздела «Топ-стили» в вебаппе — по
       [docs/specs/2026-07-16_top_styles_stats_feed.md](../specs/2026-07-16_top_styles_stats_feed.md).
       Сделано: `template_usage_events` (db.py) дополнен nullable-колонками

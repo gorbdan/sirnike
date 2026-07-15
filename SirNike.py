@@ -4454,6 +4454,30 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+async def _reply_after_callback(
+    query,
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+    text: str,
+    reply_markup=None,
+) -> None:
+    """query.message.reply_text(), но с фолбэком на send_message по chat_id.
+
+    Кнопка на сообщении от answerWebAppQuery (инлайн-1-тап библиотеки,
+    docs/specs/2026-07-15_webapp_inline_1tap.md) — это inline-сообщение
+    Telegram: у такого callback'а `query.message` всегда None (только
+    `inline_message_id`, Bot API гарантирует ровно одно из двух полей).
+    `query.message.reply_text(...)` в этом случае падает AttributeError
+    молча (state уже успевает выставиться до этой строки, а подтверждение
+    юзер не видит вообще — живой баг 2026-07-17). В личном чате chat_id
+    юзера всегда равен его user_id, так что send_message работает как
+    полноценная замена."""
+    if query.message is not None:
+        await query.message.reply_text(text, reply_markup=reply_markup)
+    else:
+        await context.bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
+
+
 # ══════════════════════════════════════════════════════════════
 # ОБРАБОТЧИК КНОПОК: button_handler и вся логика callback
 # ══════════════════════════════════════════════════════════════
@@ -4783,7 +4807,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             item = PROMPT_LIBRARY[cat_idx]["items"][item_idx]
             item_kind = get_prompt_item_kind(item)
         except Exception:
-            await query.message.reply_text("Не удалось применить стиль. Попробуй ещё раз.")
+            await _reply_after_callback(query, context, user.id, "Не удалось применить стиль. Попробуй ещё раз.")
             return
 
         if update.effective_user:
@@ -4801,14 +4825,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "Теперь отправь фото и запускай видео.\n"
                     "💡 Бот сначала стилизует фото через GPT Image, затем сгенерит видео."
                 )
-            await query.message.reply_text(
+            await _reply_after_callback(
+                query, context, user.id,
                 style_applied_message(_showcase_item_label(item), item, "video") + "\n" + hint,
                 reply_markup=video_kb(state),
             )
             return
         deactivate_video_session(state)
         state.prompt = item["prompt"]
-        await query.message.reply_text(
+        await _reply_after_callback(
+            query, context, user.id,
             style_applied_message(_showcase_item_label(item), item, "image") + "\n"
             "Пришли своё фото — или запускай сразу.",
             reply_markup=photo_draft_kb(state, user.id),

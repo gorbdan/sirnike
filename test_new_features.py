@@ -710,6 +710,20 @@ asyncio.run(S.handle_text(update, context))
 check("9.16 обычный текст всё ещё сохраняется в state.prompt",
       context.user_data["state"].prompt == "кот в шляпе", context.user_data["state"].prompt)
 
+# 9.17 pl_use_ на inline-сообщении (answerWebAppQuery, query.message=None) —
+# docs/specs/2026-07-15_webapp_inline_1tap.md: Bot API гарантирует ровно одно
+# из полей message/inline_message_id у callback_query. Раньше query.message.
+# reply_text() падал AttributeError молча (state успевал выставиться, юзер
+# не видел подтверждения) — живой баг 2026-07-17.
+update, context, query = make_update_context("pl_use_0_0", user_id=909)
+query.message = None
+asyncio.run(S.button_handler(update, context))
+st917 = context.user_data.get("state")
+check("9.17 pl_use_ на inline-сообщении не падает и выставляет state.prompt",
+      isinstance(st917, S.UserState) and bool(st917.prompt), getattr(st917, "prompt", None))
+check("9.18 pl_use_ на inline-сообщении шлёт подтверждение через bot.send_message",
+      context.bot.send_message.await_args_list != [], str(context.bot.send_message.await_args_list))
+
 # ════════════════ ИТОГ ════════════════
 print()
 print(f"PASS: {len(PASS)}  FAIL: {len(FAIL)}")

@@ -3371,6 +3371,13 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
 
     prompt = prompt or title
 
+    # Свободный текст пользователя («свои пожелания к причёске/макияжу») —
+    # вебапп присылает его отдельным полем note/n для шаблонов с input_hint,
+    # чтобы не переписывать сам prompt на клиенте. Пусто — шаблон уходит как есть.
+    user_note = str(payload.get("note") or payload.get("n") or "").strip()
+    if user_note:
+        prompt = f"{prompt}\n\nUser's specific wish (follow this instead of the generic description above): {user_note}"
+
     item_kind = "video" if action in {"set_video_prompt", "set_video_prompt_ref"} else "image"
     if raw_title and update.effective_user:
         _log_template_usage_safe(update.effective_user.id, raw_title, item_kind, cat_idx=resolved_cat_idx)

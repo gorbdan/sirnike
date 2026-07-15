@@ -737,6 +737,86 @@ sent_texts = [c.args[0] for c in query.message.reply_text.await_args_list]
 check("9.20 pl_usen_ показывает «Учла твои пожелания» вместо статичного описания",
       any(_note in t and "Учла твои пожелания" in t for t in sent_texts), str(sent_texts))
 
+# ════════════════ БЛОК 10: style_extract — двухшаговый пайплайн «Образ с референса» ════════════════
+print("Блок 10: style_extract (двух-референсные стили)")
+
+
+def make_run_generation_context(state, user_id):
+    message = types.SimpleNamespace(reply_text=AsyncMock())
+    update = types.SimpleNamespace(
+        effective_user=types.SimpleNamespace(id=user_id, username="tester"),
+        effective_message=message,
+        effective_chat=types.SimpleNamespace(id=user_id),
+        callback_query=None,
+    )
+    context = types.SimpleNamespace(user_data={"state": state}, bot=AsyncMock())
+    return update, context, message
+
+
+_rg_orig = {
+    name: getattr(S, name)
+    for name in (
+        "create_user_if_not_exists", "get_avatar_urls", "get_active_avatar_kind",
+        "try_use_free_generation", "extract_style_description_from_reference",
+    )
+}
+S.create_user_if_not_exists = lambda *a, **k: None
+S.get_avatar_urls = lambda uid: {}
+S.get_active_avatar_kind = lambda uid: None
+S.try_use_free_generation = lambda uid, max_per_day: True
+
+_ref1 = png_data_url(color=(10, 10, 10, 255))
+_ref2 = png_data_url(color=(20, 20, 20, 255))
+
+# 10.1: успешная экстракция — второе фото не попадает в references job'а,
+# его текстовое описание дописывается в промт
+S.extract_style_description_from_reference = AsyncMock(return_value="каре, блонд, нюдовая помада")
+st10 = S.UserState(prompt="базовый промт стиля", references=[_ref1, _ref2], style_extract=True)
+update, context, message = make_run_generation_context(st10, user_id=951)
+while not S.generation_queue.empty():
+    S.generation_queue.get_nowait()
+asyncio.run(S.run_generation(update, context))
+S.queued_user_ids.discard(951)
+job10 = S.generation_queue.get_nowait() if not S.generation_queue.empty() else None
+check("10.1 второе фото не попадает в references job'а",
+      job10 is not None and job10.references == [_ref1], str(job10.references if job10 else None))
+check("10.2 описание стиля дописано в промт",
+      job10 is not None and "каре, блонд, нюдовая помада" in job10.prompt, str(job10.prompt if job10 else None))
+check("10.3 style_extract сброшен после использования (one-shot)",
+      context.user_data["state"].style_extract is False)
+
+# 10.4: extract вернул None (сбой vision-вызова) — откат на старое поведение,
+# оба фото уходят в job, юзер предупреждён
+S.extract_style_description_from_reference = AsyncMock(return_value=None)
+st10b = S.UserState(prompt="базовый промт стиля", references=[_ref1, _ref2], style_extract=True)
+update, context, message = make_run_generation_context(st10b, user_id=952)
+while not S.generation_queue.empty():
+    S.generation_queue.get_nowait()
+asyncio.run(S.run_generation(update, context))
+S.queued_user_ids.discard(952)
+job10b = S.generation_queue.get_nowait() if not S.generation_queue.empty() else None
+check("10.4 сбой vision-вызова -> оба фото в job (откат на старое поведение)",
+      job10b is not None and job10b.references == [_ref1, _ref2], str(job10b.references if job10b else None))
+warn_texts = [c.args[0] for c in message.reply_text.await_args_list]
+check("10.5 юзер предупреждён о сбое разбора референса",
+      any("не удалось разобрать референс" in t.lower() for t in warn_texts), str(warn_texts))
+
+# 10.6: флаг не выставлен (обычный стиль) — оба фото уходят как обычно, vision не вызывается
+S.extract_style_description_from_reference = AsyncMock(return_value="не должно вызваться")
+st10c = S.UserState(prompt="базовый промт стиля", references=[_ref1, _ref2], style_extract=False)
+update, context, message = make_run_generation_context(st10c, user_id=953)
+while not S.generation_queue.empty():
+    S.generation_queue.get_nowait()
+asyncio.run(S.run_generation(update, context))
+S.queued_user_ids.discard(953)
+job10c = S.generation_queue.get_nowait() if not S.generation_queue.empty() else None
+check("10.6 style_extract=False -> vision не вызывается, оба фото в job",
+      job10c is not None and job10c.references == [_ref1, _ref2] and not S.extract_style_description_from_reference.await_args_list,
+      str(job10c.references if job10c else None))
+
+for _name, _fn in _rg_orig.items():
+    setattr(S, _name, _fn)
+
 # ════════════════ ИТОГ ════════════════
 print()
 print(f"PASS: {len(PASS)}  FAIL: {len(FAIL)}")

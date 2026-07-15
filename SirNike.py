@@ -604,6 +604,24 @@ def _showcase_item_label(item: dict) -> str:
     return "Стиль"
 
 
+def style_applied_message(label: str, item: Optional[dict], kind: str) -> str:
+    """Инструкция в чат после применения стиля: что получится + что загрузить.
+
+    Карточка с этой инструкцией остаётся в закрывшемся вебаппе/каталоге —
+    дублируем её в чате, чтобы юзер видел требования к фото (макет утверждён
+    Аней 2026-07-15). Строки без данных опускаются целиком."""
+    applied = f"Стиль «{label}» применён для видео." if kind == "video" else f"Стиль «{label}» применён."
+    lines = ["Готово ✨", applied]
+    description = str((item or {}).get("description") or "").strip()
+    upload_hint = str((item or {}).get("upload_hint") or "").strip()
+    if description:
+        emoji = "🎬" if kind == "video" else "🎨"
+        lines.append(f"{emoji} Что получится: {description}")
+    if upload_hint:
+        lines.append(f"📎 Что загрузить: {upload_hint}")
+    return "\n".join(lines)
+
+
 def pick_showcase_items(limit_images: int = 2, limit_videos: int = 2) -> list:
     """Свежие стили с превью для витрины новичка: (cat_idx, item_idx, item).
     Фото-стили — по example_url, видео-стили — по video_url. Сначала фото, потом видео."""
@@ -3323,7 +3341,6 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
     # payload. Многие фото-стили не имеют "title" (только description), так что без
     # этого резолва title/upload_hint остаются пустыми в обычном (не fallback) пути.
     resolved_cat_idx = None
-    resolved_upload_hint = ""
     item = None
     try:
         cat_idx = int(payload.get("cat_idx") if payload.get("cat_idx") is not None else payload.get("ci"))
@@ -3362,7 +3379,6 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
 
     if item is not None:
         resolved_title = str(item.get("title") or "").strip()
-        resolved_upload_hint = str(item.get("upload_hint") or "").strip()
         # Лейбл для аналитики и для сообщения пользователю: у фото-стилей часто
         # нет "title" (только description) — берём тот же fallback, что и в UI
         # (_showcase_item_label), иначе выходит «Шаблон «шаблон»».
@@ -3409,9 +3425,8 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
                     "💡 Бот сначала стилизует фото через GPT Image, затем сгенерит видео."
                 )
             user_id_for_kb = update.effective_user.id if update.effective_user else None
-            upload_note = f"\n📎 Что загрузить: {resolved_upload_hint}" if resolved_upload_hint else ""
             await update.effective_message.reply_text(
-                f"Готово ✨\nСтиль «{title}» применён для видео.{upload_note}\n" + hint,
+                style_applied_message(title, item, "video") + "\n" + hint,
                 reply_markup=persistent_menu_kb(user_id_for_kb),
             )
             await update.effective_message.reply_text(
@@ -3420,13 +3435,12 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
             )
         else:
             user_id_for_kb = update.effective_user.id if update.effective_user else None
-            upload_note = f"\n\n📎 Что загрузить: {resolved_upload_hint}" if resolved_upload_hint else ""
             await update.effective_message.reply_text(
-                f"Готово ✨\nСтиль «{title}» применён.{upload_note}",
+                style_applied_message(title, item, "image"),
                 reply_markup=persistent_menu_kb(user_id_for_kb),
             )
             await update.effective_message.reply_text(
-                "Можно запускать:",
+                "Пришли фото — или запускай сразу:",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
                 ]),
@@ -4652,7 +4666,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         state = get_or_init_state(context)
         state.image_prompt = str(item.get("image_prompt") or "").strip()
-        upload_hint = str(item.get("upload_hint") or "").strip()
         if item_kind == "video":
             state.video_prompt = str(item.get("prompt") or item.get("title") or "").strip()
             state.video_session_active = True
@@ -4663,20 +4676,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "Теперь отправь фото и запускай видео.\n"
                     "💡 Бот сначала стилизует фото через GPT Image, затем сгенерит видео."
                 )
-            # Дублируем "что загрузить" здесь же, в чате — карточка с этой
-            # инструкцией остаётся в WebApp, который закрылся после тапа
-            # «Использовать», и юзер её больше не видит.
-            upload_note = f"\n📎 Что загрузить: {upload_hint}" if upload_hint else ""
             await query.message.reply_text(
-                f"Готово ✨\nСтиль «{_showcase_item_label(item)}» применён для видео.{upload_note}\n" + hint,
+                style_applied_message(_showcase_item_label(item), item, "video") + "\n" + hint,
                 reply_markup=video_kb(state),
             )
             return
         deactivate_video_session(state)
         state.prompt = item["prompt"]
-        upload_note = f"\n📎 Что загрузить: {upload_hint}" if upload_hint else ""
         await query.message.reply_text(
-            f"Готово ✨\nСтиль «{_showcase_item_label(item)}» применён.{upload_note}\n"
+            style_applied_message(_showcase_item_label(item), item, "image") + "\n"
             "Нажми «✨ Сгенерировать фото» или отправь своё фото.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],

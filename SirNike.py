@@ -606,17 +606,24 @@ def _showcase_item_label(item: dict) -> str:
     return "Стиль"
 
 
-def style_applied_message(label: str, item: Optional[dict], kind: str) -> str:
+def style_applied_message(label: str, item: Optional[dict], kind: str, user_note: str = "") -> str:
     """Инструкция в чат после применения стиля: что получится + что загрузить.
 
     Карточка с этой инструкцией остаётся в закрывшемся вебаппе/каталоге —
     дублируем её в чате, чтобы юзер видел требования к фото (макет утверждён
-    Аней 2026-07-15). Строки без данных опускаются целиком."""
+    Аней 2026-07-15). Строки без данных опускаются целиком.
+
+    user_note — «свои пожелания» из поля input_hint в вебаппе. Если заданы,
+    статичное описание из библиотеки больше не гарантированно точное (юзер
+    попросил другое) — вместо "Что получится: <дефолт>" показываем, что
+    именно учтено, а не выдаём канцелярское описание за факт."""
     applied = f"Стиль «{label}» применён для видео." if kind == "video" else f"Стиль «{label}» применён."
     lines = ["Готово ✨", applied]
     description = str((item or {}).get("description") or "").strip()
     upload_hint = str((item or {}).get("upload_hint") or "").strip()
-    if description:
+    if user_note:
+        lines.append(f"✍️ Учла твои пожелания: «{user_note}»")
+    elif description:
         emoji = "🎬" if kind == "video" else "🎨"
         lines.append(f"{emoji} Что получится: {description}")
     if upload_hint:
@@ -3559,7 +3566,7 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
                 )
             user_id_for_kb = update.effective_user.id if update.effective_user else None
             await update.effective_message.reply_text(
-                style_applied_message(title, item, "video") + "\n" + hint,
+                style_applied_message(title, item, "video", user_note=user_note) + "\n" + hint,
                 reply_markup=persistent_menu_kb(user_id_for_kb),
             )
             await update.effective_message.reply_text(
@@ -3569,7 +3576,7 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
         else:
             user_id_for_kb = update.effective_user.id if update.effective_user else None
             await update.effective_message.reply_text(
-                style_applied_message(title, item, "image"),
+                style_applied_message(title, item, "image", user_note=user_note),
                 reply_markup=persistent_menu_kb(user_id_for_kb),
             )
             await update.effective_message.reply_text(
@@ -4799,9 +4806,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if query.data.startswith("pl_use_"):
+    if query.data.startswith("pl_use_") or query.data.startswith("pl_usen_"):
+        # pl_usen_ несёт ещё и "свои пожелания" (поле input_hint в вебаппе),
+        # закодированные base64url — свободный текст не влезает как есть в
+        # callback_data (лимит Telegram — 64 байта), см.
+        # docs/specs/2026-07-17_inline_note_passthrough.md.
+        has_note = query.data.startswith("pl_usen_")
+        user_note = ""
         try:
-            _, _, cat_raw, item_raw = query.data.split("_", 3)
+            if has_note:
+                rest = query.data[len("pl_usen_"):]
+                cat_raw, item_raw, enc_note = rest.split("_", 2)
+                pad = "=" * (-len(enc_note) % 4)
+                user_note = base64.urlsafe_b64decode(enc_note + pad).decode("utf-8", errors="ignore").strip()
+            else:
+                _, _, cat_raw, item_raw = query.data.split("_", 3)
             cat_idx = int(cat_raw)
             item_idx = int(item_raw)
             item = PROMPT_LIBRARY[cat_idx]["items"][item_idx]
@@ -4815,8 +4834,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         state = get_or_init_state(context)
         state.image_prompt = str(item.get("image_prompt") or "").strip()
+        base_prompt = str(item.get("prompt") or item.get("title") or "").strip()
+        final_prompt = base_prompt
+        if user_note:
+            final_prompt = f"{base_prompt}\n\nUser's specific wish (follow this instead of the generic description above): {user_note}"
         if item_kind == "video":
-            state.video_prompt = str(item.get("prompt") or item.get("title") or "").strip()
+            state.video_prompt = final_prompt
             state.video_session_active = True
             state.waiting_for_video_image = True
             hint = "Теперь отправь фото и запускай видео."
@@ -4827,15 +4850,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             await _reply_after_callback(
                 query, context, user.id,
-                style_applied_message(_showcase_item_label(item), item, "video") + "\n" + hint,
+                style_applied_message(_showcase_item_label(item), item, "video", user_note=user_note) + "\n" + hint,
                 reply_markup=video_kb(state),
             )
             return
         deactivate_video_session(state)
-        state.prompt = item["prompt"]
+        state.prompt = final_prompt
         await _reply_after_callback(
             query, context, user.id,
-            style_applied_message(_showcase_item_label(item), item, "image") + "\n"
+            style_applied_message(_showcase_item_label(item), item, "image", user_note=user_note) + "\n"
             "Пришли своё фото — или запускай сразу.",
             reply_markup=photo_draft_kb(state, user.id),
         )

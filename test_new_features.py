@@ -724,6 +724,19 @@ check("9.17 pl_use_ на inline-сообщении не падает и выст
 check("9.18 pl_use_ на inline-сообщении шлёт подтверждение через bot.send_message",
       context.bot.send_message.await_args_list != [], str(context.bot.send_message.await_args_list))
 
+# 9.19 pl_usen_ — «свои пожелания» из инлайн-1-тапа (base64url в callback_data,
+# docs/specs/2026-07-17_inline_note_passthrough.md)
+_note = "каре, блонд"
+_enc = base64.urlsafe_b64encode(_note.encode("utf-8")).decode("ascii").rstrip("=")
+update, context, query = make_update_context(f"pl_usen_0_0_{_enc}", user_id=910)
+asyncio.run(S.button_handler(update, context))
+st919 = context.user_data.get("state")
+check("9.19 pl_usen_ дописывает note в state.prompt",
+      isinstance(st919, S.UserState) and _note in st919.prompt, getattr(st919, "prompt", None))
+sent_texts = [c.args[0] for c in query.message.reply_text.await_args_list]
+check("9.20 pl_usen_ показывает «Учла твои пожелания» вместо статичного описания",
+      any(_note in t and "Учла твои пожелания" in t for t in sent_texts), str(sent_texts))
+
 # ════════════════ ИТОГ ════════════════
 print()
 print(f"PASS: {len(PASS)}  FAIL: {len(FAIL)}")

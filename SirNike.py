@@ -3344,7 +3344,15 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
     # подсказкой «фото партнёра»).
     if item is not None and prompt:
         item_prompt = str(item.get("prompt") or "").strip()
-        if item_prompt and item_prompt != prompt:
+        # Сравниваем по префиксу, а не целиком: WebApp может прислать промт
+        # ОБРЕЗАННЫМ из-за лимита размера payload (см. parse_webapp_payload_loose
+        # чуть ниже) — тогда усечённый текст не совпадёт с полным побайтово,
+        # хотя это тот же самый стиль. Точное сравнение тут раньше гасило
+        # upload_hint именно у длинных промтов — там, где подсказка нужнее
+        # всего. 80 символов достаточно, чтобы отличить реально ДРУГОЙ стиль
+        # (несовпадение по индексам при активном поиске в вебаппе).
+        _prefix_len = min(len(item_prompt), len(prompt), 80)
+        if item_prompt and _prefix_len > 0 and item_prompt[:_prefix_len] != prompt[:_prefix_len]:
             logger.warning(
                 "webapp payload index mismatch: prompt differs from PROMPT_LIBRARY[%s][%s] — ignoring indices",
                 payload.get("cat_idx", payload.get("ci")), payload.get("item_idx", payload.get("ii")),
@@ -3438,6 +3446,12 @@ def parse_webapp_payload_loose(raw_data: str) -> Optional[dict]:
     action_match = re.search(r'"(?:action|a)"\s*:\s*"([^"]+)"', text, flags=re.IGNORECASE)
     title_match = re.search(r'"(?:title|t)"\s*:\s*"([^"]*)"', text, flags=re.IGNORECASE)
     prompt_match = re.search(r'"(?:prompt|p)"\s*:\s*"([\s\S]*)"', text, flags=re.IGNORECASE)
+    # cat_idx/item_idx — короткие числовые поля, обычно идут ДО длинного prompt
+    # в JSON и потому выживают при обрезке payload по лимиту размера. Без них
+    # upload_hint/title-фолбэк резолвиться не могут вообще (см. apply_webapp_
+    # prompt_payload_v2) — раньше loose-парсер их просто не искал.
+    cat_idx_match = re.search(r'"(?:cat_idx|ci)"\s*:\s*(\d+)', text, flags=re.IGNORECASE)
+    item_idx_match = re.search(r'"(?:item_idx|ii)"\s*:\s*(\d+)', text, flags=re.IGNORECASE)
 
     action = action_match.group(1).strip().lower() if action_match else "set_prompt"
     title = title_match.group(1) if title_match else "шаблон"
@@ -3458,6 +3472,10 @@ def parse_webapp_payload_loose(raw_data: str) -> Optional[dict]:
         "title": title or "шаблон",
         "prompt": prompt_raw.strip(),
     }
+    if cat_idx_match:
+        payload["cat_idx"] = int(cat_idx_match.group(1))
+    if item_idx_match:
+        payload["item_idx"] = int(item_idx_match.group(1))
     if not payload["prompt"] and not payload["title"]:
         return None
     return payload

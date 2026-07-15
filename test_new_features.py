@@ -607,6 +607,85 @@ S.processing_user_ids.discard(810)
 
 S.run_seedance = _orig_run_seedance
 
+# ════════════════ БЛОК 9: кнопка есть ⇔ действие возможно (фиксы 2, 3, 4) ════════════════
+print("Блок 9: улучшить фото / аватар / видео-модели без жаргона")
+S.init_db()  # handle_text вызывает create_user_if_not_exists — нужны таблицы
+
+
+def make_text_update(text, user_id=900, state=None):
+    context = types.SimpleNamespace(user_data={}, application=None, bot=AsyncMock())
+    if state is not None:
+        context.user_data["state"] = state
+    message = types.SimpleNamespace(
+        text=text, caption=None, reply_text=AsyncMock(), photo=None,
+    )
+    update = types.SimpleNamespace(
+        message=message,
+        effective_user=types.SimpleNamespace(id=user_id, username="test"),
+        effective_chat=types.SimpleNamespace(id=user_id),
+        effective_message=message,
+    )
+    return update, context, message
+
+
+# 9.1 текст в режиме «Улучшить фото» — не перезаписывает промт молча
+st_enh = S.UserState()
+st_enh.prompt = S.ENHANCE_PHOTO_PROMPT
+update, context, message = make_text_update("сделай поярче", user_id=901, state=st_enh)
+asyncio.run(S.handle_text(update, context))
+msgs = [c.args[0] for c in message.reply_text.await_args_list]
+check("9.1 текст в enhance-режиме не меняет state.prompt",
+      context.user_data["state"].prompt == S.ENHANCE_PHOTO_PROMPT, context.user_data["state"].prompt)
+check("9.2 текст в enhance-режиме предлагает выбор, не молчит",
+      any("жду фото" in m for m in msgs), str(msgs))
+check("9.3 pending text сохранён для enhance_use_pending_text",
+      context.user_data.get("enhance_pending_text") == "сделай поярче")
+
+# 9.4 enhance_use_pending_text превращает сохранённый текст в обычный промт
+update, context, query = make_update_context("enhance_use_pending_text", user_id=902)
+context.user_data["state"] = S.UserState(prompt=S.ENHANCE_PHOTO_PROMPT)
+context.user_data["enhance_pending_text"] = "кот в космосе"
+asyncio.run(S.button_handler(update, context))
+st_after = context.user_data["state"]
+check("9.4 промт стал обычным описанием", st_after.prompt == "кот в космосе", st_after.prompt)
+check("9.5 pending text очищен после использования", "enhance_pending_text" not in context.user_data)
+
+# 9.6 avatar_gen_refsheet включает приём фото сразу, без выбора типа
+update, context, query = make_update_context("avatar_gen_refsheet", user_id=903)
+asyncio.run(S.button_handler(update, context))
+st_av = context.user_data["state"]
+check("9.6 generating_avatar включён сразу", st_av.generating_avatar is True)
+check("9.7 pending_avatar_kind ещё не выбран", st_av.pending_avatar_kind == "")
+
+# 9.8 avatar_gen_start без выбранного типа — alert, генерация не стартует
+update, context, query = make_update_context("avatar_gen_start", user_id=904)
+st_av2 = S.UserState(generating_avatar=True)
+st_av2.avatar_photos = ["https://example.com/face.png"]
+context.user_data["state"] = st_av2
+asyncio.run(S.button_handler(update, context))
+check("9.9 без типа — alert «выбери тип аватара»",
+      any("тип аватара" in str(c) for c in query.answer.await_args_list), str(query.answer.await_args_list))
+
+# 9.10 выбор типа не стирает уже загруженные фото
+update, context, query = make_update_context("avatar_gen_kind_male", user_id=905)
+st_av3 = S.UserState(generating_avatar=True)
+st_av3.avatar_photos = ["https://example.com/a.png", "https://example.com/b.png"]
+context.user_data["state"] = st_av3
+asyncio.run(S.button_handler(update, context))
+st_av3_after = context.user_data["state"]
+check("9.10 тип выбран", st_av3_after.pending_avatar_kind == "male")
+check("9.11 фото не стёрлись при выборе типа", len(st_av3_after.avatar_photos) == 2, st_av3_after.avatar_photos)
+
+# 9.12 видео-панель: пояснение модели вместо жаргона «для Seedance»
+st_blurb = S.UserState(video_model="seedance2")
+blurb_text = S.video_status_text(st_blurb)
+check("9.12 статус видео содержит пояснение модели",
+      "максимум качества" in blurb_text, blurb_text[:200])
+update, context, query = make_update_context("video_set_image", user_id=906)
+asyncio.run(S.button_handler(update, context))
+msgs = [c.args[0] for c in query.message.reply_text.await_args_list]
+check("9.13 без жаргона «для Seedance»", not any("для Seedance" in m for m in msgs), str(msgs))
+
 # ════════════════ ИТОГ ════════════════
 print()
 print(f"PASS: {len(PASS)}  FAIL: {len(FAIL)}")

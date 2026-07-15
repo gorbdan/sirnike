@@ -295,7 +295,7 @@ class UserState:
     animation_source_url: Optional[str] = None
     animation_source_urls: List[str] = field(default_factory=list)
     # Тип аватара (female/male/child), выбранный перед генерацией — читается в avatar_gen_start.
-    pending_avatar_kind: str = "female"
+    pending_avatar_kind: str = ""  # "" = ещё не выбран (см. avatar_gen_start)
     generating_avatar: bool = False
     avatar_photos: List[str] = field(default_factory=list)
     avatar_status_msg_id: Optional[int] = None
@@ -939,6 +939,19 @@ def get_video_model_label(model_code: str) -> str:
     return labels.get(model_code, "Seedance 2")
 
 
+def get_video_model_blurb(model_code: str) -> str:
+    """Человеческое пояснение модели — без него выбор в video_kb был вслепую
+    (5 моделей без единого слова разницы), особенно жаргонное «для Seedance»."""
+    blurbs = {
+        "seedance2": "максимум качества и движения, наш выбор",
+        "seedance2_fast": "быстрее и дешевле, попроще картинка",
+        "kling3": "оживляет фото, плавная камера",
+        "veo31": "кинореализм, до 8 сек",
+        "wan27": "живая мимика и жесты",
+    }
+    return blurbs.get(model_code, "")
+
+
 def get_video_model_cost_per_second(model_code: str) -> float:
     if model_code == "seedance2_fast":
         return max(SEEDANCE_FAST_COST_PER_SECOND, 0.01)
@@ -1136,6 +1149,12 @@ ENHANCE_PHOTO_PROMPT = (
     "Сделай это фото более профессиональным, будто бы это работа профессионального "
     "фотографа, черты лица не меняй"
 )
+
+# Кнопка отмены сразу при входе в режим «Улучшить фото» — без неё юзер, передумав,
+# мог только молча перезаписать режим текстом (см. ENHANCE_WAITING_KB чуть ниже).
+ENHANCE_WAITING_KB = InlineKeyboardMarkup([
+    [InlineKeyboardButton("✖️ Отмена", callback_data="reset")],
+])
 
 
 def main_menu_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
@@ -1673,6 +1692,8 @@ def video_status_text(state: UserState) -> str:
     )
     step3 = "3. Выбери длительность и качество" if selected_model == "seedance2" else "3. Выбери длительность"
     refs_line = f"{refs_preview_text}\n" if refs_preview_text else ""
+    model_blurb = get_video_model_blurb(selected_model)
+    model_line = f"Модель: {model_label} — {model_blurb}" if model_blurb else f"Модель: {model_label}"
     return (
         f"{model_label}\n"
         "Генерация видео с помощью нейросети.\n\n"
@@ -1681,7 +1702,7 @@ def video_status_text(state: UserState) -> str:
         "2. Отправь фото (бот запомнит внешность)\n"
         f"{step3}\n"
         "4. Нажми «🚀 Запустить видео»\n\n"
-        f"Модель: {model_label}\n"
+        f"{model_line}\n"
         f"Описание: {prompt_state}\n"
         f"Фото: {image_state}\n"
         f"{refs_line}"
@@ -2897,6 +2918,7 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE,
             "Пришли фото, которое нужно улучшить 🖼️\n"
             "Бот повысит качество и сделает его похожим на кадр от профессионального "
             "фотографа — черты лица останутся прежними.",
+            reply_markup=ENHANCE_WAITING_KB,
         )
         return True
 
@@ -3110,13 +3132,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if state.prompt == ENHANCE_PHOTO_PROMPT:
+        # Режим «Улучшить фото» ждёт ФОТО, а не описание — раньше текст молча
+        # перезаписывал служебный промт и юзер тихо оказывался в обычной
+        # генерации, не заметив (макет утверждён Аней 2026-07-15).
+        context.user_data["enhance_pending_text"] = text
+        await update.message.reply_text(
+            "Я жду фото для улучшения 🖼️\n"
+            "Пришли фото — или преврати этот текст в описание для обычной генерации:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✍️ Генерить по этому тексту", callback_data="enhance_use_pending_text")],
+                [InlineKeyboardButton("✖️ Отмена", callback_data="reset")],
+            ]),
+        )
+        return
+
     deactivate_video_session(state)
     state.prompt = text
 
-    _pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
-    # Зовём прислать фото только если референсов ещё нет — иначе бот зовёт
-    # по кругу: «напиши описание» ↔ «пришли фото».
-    ref_count = len(state.references)
     # Единый экран фото: статусы черновика + только осмысленные кнопки.
     await update.message.reply_text(photo_draft_text(state), reply_markup=photo_draft_kb(state))
 
@@ -4835,7 +4868,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Пришли фото, которое нужно улучшить 🖼️\n"
             "Бот повысит качество и сделает его похожим на кадр от профессионального "
             "фотографа — черты лица останутся прежними.",
+            reply_markup=ENHANCE_WAITING_KB,
         )
+        return
+
+    if query.data == "enhance_use_pending_text":
+        state = get_or_init_state(context)
+        pending_text = str(context.user_data.pop("enhance_pending_text", "") or "").strip()
+        if not pending_text:
+            await query.answer("Текст уже неактуален, напиши заново.", show_alert=True)
+            return
+        deactivate_video_session(state)
+        state.prompt = pending_text
+        await query.message.reply_text(photo_draft_text(state), reply_markup=photo_draft_kb(state))
         return
 
     if query.data == "image_model_menu":
@@ -5016,7 +5061,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.video_session_active = True
         state.waiting_for_video_image = True
         await query.message.reply_text(
-            "Отправляй фото для Seedance (можно несколько подряд).\n"
+            "Отправляй фото для видео (можно несколько подряд).\n"
             f"Лимит: до {MAX_SEEDANCE_IMAGE_REFERENCES} фото.\n"
             "Бот запомнит внешность с фото и перенесёт в видео.\n"
             "Когда всё загрузишь, нажми «🚀 Запустить видео»."
@@ -5224,32 +5269,41 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "avatar_gen_refsheet":
-        # Сначала спрашиваем тип аватара — без этого генерация всегда
-        # сохранялась как женский (pending_avatar_kind по умолчанию "female").
+        # Фото принимаются сразу, до выбора типа — порядок действий (сначала
+        # фото или сначала тип) юзеру не важен, и фото больше не улетают в
+        # обычный фото-черновик, если тип ещё не выбран (макет утверждён
+        # Аней 2026-07-15).
+        state = get_or_init_state(context)
+        deactivate_video_session(state)
+        state.prompt = AVATAR_REFSHEET_PROMPT
+        state.references = []
+        state.avatar_photos = []
+        state.avatar_status_msg_id = None
+        state.pending_avatar_kind = ""
+        state.generating_avatar = True
         await query.message.reply_text(
-            "Для кого генерируем аватар? 🪄\n\n"
-            "Выбери тип — от этого зависит, как он сохранится.",
+            "Создаём аватар 🪄\n\n"
+            "Пришли 3–6 фото, где хорошо видно лицо, и выбери, для кого аватар 👇\n"
+            "Фото можно слать прямо сейчас — не потеряются.",
             reply_markup=avatar_gen_kind_kb(),
         )
         return
 
     if query.data in {"avatar_gen_kind_female", "avatar_gen_kind_male", "avatar_gen_kind_child"}:
         state = get_or_init_state(context)
-        deactivate_video_session(state)
         avatar_kind = query.data.rsplit("_", 1)[-1]
+        # Тип можно тапнуть, даже если приём фото ещё не был включён явно
+        # (например, повторный тап из старого сообщения) — не теряем то,
+        # что юзер уже успел прислать.
+        if not state.generating_avatar:
+            deactivate_video_session(state)
+            state.prompt = AVATAR_REFSHEET_PROMPT
+            state.references = []
+            state.avatar_photos = []
+            state.avatar_status_msg_id = None
+            state.generating_avatar = True
         state.pending_avatar_kind = avatar_kind
-        state.prompt = AVATAR_REFSHEET_PROMPT
-        state.references = []
-        state.avatar_photos = []
-        state.avatar_status_msg_id = None
-        state.generating_avatar = True
-        await query.message.reply_text(
-            f"Тип: {avatar_kind_label(avatar_kind)} ✅\n\n"
-            "Отправь фото для генерации аватара 📸\n\n"
-            "Чем больше фото с разных ракурсов — тем лучше результат.\n"
-            "Важно: на фото должно быть хорошо видно лицо.\n\n"
-            "Когда загрузишь все фото — нажми «Готово».",
-        )
+        await query.answer(f"Тип: {avatar_kind_label(avatar_kind)} ✅")
         return
 
     if query.data == "avatar_gen_start":
@@ -5257,6 +5311,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photos = list(state.avatar_photos)
         if not photos:
             await query.answer("Сначала отправь хотя бы одно фото.", show_alert=True)
+            return
+        if not state.pending_avatar_kind:
+            await query.answer("Сначала выбери тип аватара 👆", show_alert=True)
             return
 
         if user.id in queued_user_ids or user.id in processing_user_ids:

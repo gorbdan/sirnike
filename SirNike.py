@@ -659,7 +659,17 @@ def photo_draft_text(state: "UserState", user_id: Optional[int] = None) -> str:
     """Экран «✨ Сгенерировать фото»: статус черновика (макет утверждён Аней 2026-07-15)."""
     prompt = (state.prompt or "").strip()
     refs = len(state.references)
-    if refs:
+    if state.style_extract:
+        # Этому стилю нужны РОВНО 2 фото по порядку: своё лицо, потом референс
+        # причёски/макияжа — явный статус по слотам (P0 2026-07-17, брифу
+        # нужно было "подтверждение, каких фото не хватает").
+        if refs == 0:
+            photo_line = "Фото: 0/2 — сначала своё фото (лицо), потом фото-референс причёски/макияжа"
+        elif refs == 1:
+            photo_line = "Фото: 1/2 ✅ своё — теперь пришли фото-референс причёски/макияжа"
+        else:
+            photo_line = "Фото: 2/2 ✅ своё + референс — можно запускать"
+    elif refs:
         photo_line = f"Твоё фото: {refs} шт. ✅"
     else:
         # Без своего фото генерация молча подставляет сохранённый аватар
@@ -714,11 +724,10 @@ def photo_draft_kb(state: "UserState", user_id: Optional[int] = None) -> InlineK
             callback_data=pl_cb,
         )
     rows = []
-    if prompt:
+    ready = bool(prompt) and (not state.style_extract or len(state.references) == 2)
+    if ready:
         rows.append([InlineKeyboardButton("🚀 Запустить генерацию", callback_data="generate")])
-        rows.append([library_button])
-    else:
-        rows.append([library_button])
+    rows.append([library_button])
     rows.append([InlineKeyboardButton("◀️ В меню", callback_data="reset")])
     return InlineKeyboardMarkup(rows)
 
@@ -3332,7 +3341,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         state.animation_source_url = direct_url
-        if len(state.references) < 8:  # cap to max used in generation
+        # style_extract ждёт РОВНО 2 фото (своё лицо + референс стиля) — 3-е и
+        # дальше игнорируем, а не добавляем в буфер, иначе пайплайн снова может
+        # схватить не то фото (см. _set_style_extract, P0 2026-07-17).
+        _refs_cap = 2 if state.style_extract else 8
+        if len(state.references) < _refs_cap:  # cap to max used in generation
             state.references.append(direct_url)
             state.references_updated_at = time.time()
 
@@ -3568,7 +3581,7 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
     else:
         deactivate_video_session(state)
         state.prompt = prompt
-        state.style_extract = bool(item.get("style_extract")) if item is not None else False
+        _set_style_extract(state, bool(item.get("style_extract")) if item is not None else False)
 
     if update.effective_message:
         if action in {"set_video_prompt", "set_video_prompt_ref"}:
@@ -4360,6 +4373,31 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     references = list(state.references)
+
+    if state.style_extract and len(references) != 2:
+        # Жёсткий гейт (P0 2026-07-17): этому стилю нужны РОВНО 2 фото
+        # (лицо + референс причёски/макияжа), аватар как автозамена сюда не
+        # годится — не подставляем и не запускаем генерацию, пока их не 2.
+        queued_user_ids.discard(user.id)
+        if not references:
+            gate_msg = (
+                "Для этого стиля нужны 2 фото по порядку: сначала своё (лицо), "
+                "потом фото-референс причёски/макияжа. Пришли оба и запускай снова."
+            )
+        elif len(references) == 1:
+            gate_msg = (
+                "Есть только 1 фото. Пришли ещё фото-референс причёски/макияжа "
+                "(второе фото) и запускай снова."
+            )
+        else:
+            gate_msg = (
+                f"Для этого стиля нужно ровно 2 фото, а загружено {len(references)}. "
+                "Выбери стиль заново из библиотеки — буфер фото очистится, и пришли "
+                "только 2 нужных фото по порядку."
+            )
+        await reply_target.reply_text(gate_msg, reply_markup=photo_draft_kb(state, user.id))
+        return
+
     # Берём выбранный активный аватар; если не выбран или его слот пуст —
     # откатываемся на первый доступный (female → male → child).
     _all_avatars = get_avatar_urls(user.id)
@@ -4559,6 +4597,22 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+def _set_style_extract(state: "UserState", enabled: bool) -> None:
+    """Переключает `state.style_extract` и, если включаем — чистит буфер фото.
+
+    P0 2026-07-17 (docs/briefs/backend.md): `state.references` копится между
+    генерациями (handle_photo только append'ит), поэтому без явной очистки
+    `references[0]` при входе в style_extract-стиль мог оказаться старым
+    фото с прошлого теста, а не тем, что юзер прислал сейчас — пайплайн
+    принимал его за «лицо». Юзер обязан собрать пару фото заново под
+    конкретно этот стиль (см. также run_generation — жёсткий гейт на
+    len(references) == 2 и photo_draft_text — статус по слотам)."""
+    state.style_extract = enabled
+    if enabled:
+        state.references = []
+        state.references_updated_at = 0.0
+
+
 async def _reply_after_callback(
     query,
     context: ContextTypes.DEFAULT_TYPE,
@@ -4689,7 +4743,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             deactivate_video_session(state)
             state.prompt = prompt
-            state.style_extract = bool(item.get("style_extract"))
+            _set_style_extract(state, bool(item.get("style_extract")))
             _hint_sc = str(item.get("upload_hint") or "").strip()
             _upload_note_sc = f"\n📎 Что загрузить: {_hint_sc}" if _hint_sc else ""
             await query.message.reply_text(
@@ -4955,7 +5009,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         deactivate_video_session(state)
         state.prompt = final_prompt
-        state.style_extract = bool(item.get("style_extract"))
+        _set_style_extract(state, bool(item.get("style_extract")))
         await _reply_after_callback(
             query, context, user.id,
             style_applied_message(_showcase_item_label(item), item, "image", user_note=user_note) + "\n"

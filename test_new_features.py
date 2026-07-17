@@ -814,8 +814,65 @@ check("10.6 style_extract=False -> vision не вызывается, оба фо
       job10c is not None and job10c.references == [_ref1, _ref2] and not S.extract_style_description_from_reference.await_args_list,
       str(job10c.references if job10c else None))
 
+# 10.7: гейт — style_extract=True, 0 фото -> генерация не запускается,
+# job в очередь не попадает, юзер получает понятный запрос на 2 фото
+S.extract_style_description_from_reference = AsyncMock(return_value="не должно вызваться")
+st10d = S.UserState(prompt="базовый промт стиля", references=[], style_extract=True)
+update, context, message = make_run_generation_context(st10d, user_id=954)
+while not S.generation_queue.empty():
+    S.generation_queue.get_nowait()
+asyncio.run(S.run_generation(update, context))
+S.queued_user_ids.discard(954)
+job10d = S.generation_queue.get_nowait() if not S.generation_queue.empty() else None
+check("10.7 гейт: 0 фото -> job не создаётся", job10d is None)
+gate_texts_d = [c.args[0] for c in message.reply_text.await_args_list]
+check("10.8 гейт: 0 фото -> просит 2 фото по порядку",
+      any("нужны 2 фото" in t for t in gate_texts_d), str(gate_texts_d))
+
+# 10.9: гейт — style_extract=True, 1 фото -> тоже блокируется
+st10e = S.UserState(prompt="базовый промт стиля", references=[_ref1], style_extract=True)
+update, context, message = make_run_generation_context(st10e, user_id=955)
+while not S.generation_queue.empty():
+    S.generation_queue.get_nowait()
+asyncio.run(S.run_generation(update, context))
+S.queued_user_ids.discard(955)
+job10e = S.generation_queue.get_nowait() if not S.generation_queue.empty() else None
+check("10.9 гейт: 1 фото -> job не создаётся", job10e is None)
+gate_texts_e = [c.args[0] for c in message.reply_text.await_args_list]
+check("10.10 гейт: 1 фото -> просит второе фото",
+      any("есть только 1 фото" in t.lower() for t in gate_texts_e), str(gate_texts_e))
+check("10.11 гейт не вызывает vision (не тратим на неполный набор фото)",
+      not S.extract_style_description_from_reference.await_args_list)
+
 for _name, _fn in _rg_orig.items():
     setattr(S, _name, _fn)
+
+# 10.12: _set_style_extract чистит буфер референсов при включении (P0
+# 2026-07-17 — персистентный буфер путал лицо с рефом стиля)
+st10f = S.UserState(references=["старое-фото-с-прошлого-теста"])
+S._set_style_extract(st10f, True)
+check("10.12 _set_style_extract(True) очищает старый буфер references",
+      st10f.references == [] and st10f.style_extract is True, str(st10f.references))
+S._set_style_extract(st10f, False)
+check("10.13 _set_style_extract(False) не трогает буфер (не режим style_extract)",
+      st10f.style_extract is False)
+
+# 10.14: photo_draft_text/kb — статус по слотам и кнопка «Запустить» только при 2/2
+st10g = S.UserState(prompt="стиль", references=[], style_extract=True)
+check("10.15 photo_draft_text 0/2", "0/2" in S.photo_draft_text(st10g, 956))
+kb_0 = S.photo_draft_kb(st10g, 956)
+cbs_0 = [b.callback_data for row in kb_0.inline_keyboard for b in row]
+check("10.16 кнопки: 0/2 -> нет 'generate'", "generate" not in cbs_0, str(cbs_0))
+
+st10g.references = [_ref1]
+check("10.17 photo_draft_text 1/2", "1/2" in S.photo_draft_text(st10g, 956))
+cbs_1 = [b.callback_data for row in S.photo_draft_kb(st10g, 956).inline_keyboard for b in row]
+check("10.18 кнопки: 1/2 -> нет 'generate'", "generate" not in cbs_1, str(cbs_1))
+
+st10g.references = [_ref1, _ref2]
+check("10.19 photo_draft_text 2/2", "2/2" in S.photo_draft_text(st10g, 956))
+cbs_2 = [b.callback_data for row in S.photo_draft_kb(st10g, 956).inline_keyboard for b in row]
+check("10.20 кнопки: 2/2 -> есть 'generate'", "generate" in cbs_2, str(cbs_2))
 
 # ════════════════ ИТОГ ════════════════
 print()

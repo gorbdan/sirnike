@@ -315,6 +315,14 @@ class UserState:
     waiting_for_motion_video: bool = False
     image_model: str = "gemini"  # gemini | gpt5
     image_prompt: str = ""
+    # Стиль помечен `style_extract` в prompt_library.json (сейчас — «Образ с
+    # референса», 💄 Бьюти): второе загруженное фото не идёт в image-модель
+    # как референс, а сначала описывается text-only vision-вызовом (см.
+    # extract_style_description_from_reference), чтобы лицо со второго фото
+    # физически не могло попасть в результат. One-shot: run_generation сбрасывает
+    # флаг после использования, остальные пути установки state.prompt — тоже
+    # (см. docs/briefs/backend.md, P1 «Образ с референса»).
+    style_extract: bool = False
 
 @dataclass
 class GenerationJob:
@@ -651,7 +659,17 @@ def photo_draft_text(state: "UserState", user_id: Optional[int] = None) -> str:
     """Экран «✨ Сгенерировать фото»: статус черновика (макет утверждён Аней 2026-07-15)."""
     prompt = (state.prompt or "").strip()
     refs = len(state.references)
-    if refs:
+    if state.style_extract:
+        # Этому стилю нужны РОВНО 2 фото по порядку: своё лицо, потом референс
+        # причёски/макияжа — явный статус по слотам (P0 2026-07-17, брифу
+        # нужно было "подтверждение, каких фото не хватает").
+        if refs == 0:
+            photo_line = "Фото: 0/2 — сначала своё фото (лицо), потом фото-референс причёски/макияжа"
+        elif refs == 1:
+            photo_line = "Фото: 1/2 ✅ своё — теперь пришли фото-референс причёски/макияжа"
+        else:
+            photo_line = "Фото: 2/2 ✅ своё + референс — можно запускать"
+    elif refs:
         photo_line = f"Твоё фото: {refs} шт. ✅"
     else:
         # Без своего фото генерация молча подставляет сохранённый аватар
@@ -706,11 +724,10 @@ def photo_draft_kb(state: "UserState", user_id: Optional[int] = None) -> InlineK
             callback_data=pl_cb,
         )
     rows = []
-    if prompt:
+    ready = bool(prompt) and (not state.style_extract or len(state.references) == 2)
+    if ready:
         rows.append([InlineKeyboardButton("🚀 Запустить генерацию", callback_data="generate")])
-        rows.append([library_button])
-    else:
-        rows.append([library_button])
+    rows.append([library_button])
     rows.append([InlineKeyboardButton("◀️ В меню", callback_data="reset")])
     return InlineKeyboardMarkup(rows)
 
@@ -2988,6 +3005,7 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE,
         deactivate_video_session(state)
         state.prompt = ENHANCE_PHOTO_PROMPT
         state.image_prompt = ""
+        state.style_extract = False
         state.references = []  # старое фото не подмешиваем — нужно новое, для улучшения
         state.image_model = "gemini"  # nano banana, фикс по требованию функции
         await update.message.reply_text(
@@ -3235,6 +3253,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     deactivate_video_session(state)
     state.prompt = text
+    state.style_extract = False
 
     # Единый экран фото: статусы черновика + только осмысленные кнопки.
     await update.message.reply_text(photo_draft_text(state, user.id), reply_markup=photo_draft_kb(state, user.id))
@@ -3322,7 +3341,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         state.animation_source_url = direct_url
-        if len(state.references) < 8:  # cap to max used in generation
+        # style_extract ждёт РОВНО 2 фото (своё лицо + референс стиля) — 3-е и
+        # дальше игнорируем, а не добавляем в буфер, иначе пайплайн снова может
+        # схватить не то фото (см. _set_style_extract, P0 2026-07-17).
+        _refs_cap = 2 if state.style_extract else 8
+        if len(state.references) < _refs_cap:  # cap to max used in generation
             state.references.append(direct_url)
             state.references_updated_at = time.time()
 
@@ -3333,6 +3356,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if caption and state.prompt != ENHANCE_PHOTO_PROMPT:
             deactivate_video_session(state)
             state.prompt = caption
+            state.style_extract = False
 
         chat_id = update.effective_chat.id
         photo_counts[chat_id] = photo_counts.get(chat_id, 0) + 1
@@ -3395,6 +3419,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
     state = get_or_init_state(context)
     deactivate_video_session(state)
     state.prompt = prompt
+    state.style_extract = False
 
     await update.message.reply_text(
         f"Готово ✨\nСтиль «{title}» применён.",
@@ -3430,6 +3455,7 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
     else:
         deactivate_video_session(state)
         state.prompt = prompt
+        state.style_extract = False
 
     if update.effective_message:
         if action == "set_video_prompt":
@@ -3555,6 +3581,7 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
     else:
         deactivate_video_session(state)
         state.prompt = prompt
+        _set_style_extract(state, bool(item.get("style_extract")) if item is not None else False)
 
     if update.effective_message:
         if action in {"set_video_prompt", "set_video_prompt_ref"}:
@@ -4083,6 +4110,74 @@ async def _run_image_prompt_pipeline(image_prompt: str, ref_urls: List[str]) -> 
         return None
 
 
+async def extract_style_description_from_reference(image_url: str) -> Optional[str]:
+    """Text-only vision описание причёски/макияжа со второго фото.
+
+    Используется для стилей с флагом `style_extract` (сейчас — «Образ с
+    референса», 💄 Бьюти): раньше оба фото уходили в image-модель одним
+    запросом, и она периодически путала, чьё лицо использовать (~50/50,
+    см. docs/briefs/backend.md). Текстовое описание вместо второго фото
+    убирает лицо со второго фото из запроса физически — им неоткуда взяться
+    в результате. Возвращает None при любой ошибке (вызывающий код должен
+    штатно откатиться на старое поведение с двумя фото).
+    """
+    if not ZVENO_API_KEY:
+        return None
+    resolved = _ref_to_data_url(image_url) if _is_img_ref(image_url) else image_url
+    if not resolved or not (resolved.startswith("http") or resolved.startswith("data:")):
+        return None
+
+    prompt = (
+        "Describe ONLY the hairstyle and makeup visible in this photo, as a short "
+        "style reference for recreating the SAME look on a DIFFERENT person. "
+        "Hairstyle: shape, length, color, texture. Makeup: eye look, lips, tone/finish. "
+        "Do NOT describe the face shape, identity, age, ethnicity, skin tone or any "
+        "other facial/appearance feature of the person in the photo — only the "
+        "hairstyle and makeup style itself. 2-4 sentences, plain text, no preamble."
+    )
+    payload = {
+        "model": ZVENO_CHAT_MODEL,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": resolved}},
+            ],
+        }],
+        "temperature": 0.2,
+        "max_completion_tokens": 300,
+    }
+    request_url = build_zveno_url(ZVENO_API_BASE, "/v1/chat/completions")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                request_url,
+                headers={
+                    "Authorization": f"Bearer {ZVENO_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                if not (200 <= resp.status < 300):
+                    body = await resp.text()
+                    logger.warning("style_extract vision call failed: status=%s body=%s", resp.status, body[:300])
+                    return None
+                rd = await resp.json()
+    except Exception as e:
+        logger.warning("style_extract vision call exception: %s", e)
+        return None
+
+    choices = rd.get("choices") or []
+    if not choices:
+        return None
+    content = (choices[0].get("message") or {}).get("content")
+    if isinstance(content, list):
+        content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+    text = str(content or "").strip()
+    return text or None
+
+
 async def _seedance_aiportrait(image_bytes: bytes) -> Optional[bytes]:
     """Recreate a real selfie as an AI-generated portrait that keeps identity but
     passes Seedance's "real person" moderation.
@@ -4278,6 +4373,31 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     references = list(state.references)
+
+    if state.style_extract and len(references) != 2:
+        # Жёсткий гейт (P0 2026-07-17): этому стилю нужны РОВНО 2 фото
+        # (лицо + референс причёски/макияжа), аватар как автозамена сюда не
+        # годится — не подставляем и не запускаем генерацию, пока их не 2.
+        queued_user_ids.discard(user.id)
+        if not references:
+            gate_msg = (
+                "Для этого стиля нужны 2 фото по порядку: сначала своё (лицо), "
+                "потом фото-референс причёски/макияжа. Пришли оба и запускай снова."
+            )
+        elif len(references) == 1:
+            gate_msg = (
+                "Есть только 1 фото. Пришли ещё фото-референс причёски/макияжа "
+                "(второе фото) и запускай снова."
+            )
+        else:
+            gate_msg = (
+                f"Для этого стиля нужно ровно 2 фото, а загружено {len(references)}. "
+                "Выбери стиль заново из библиотеки — буфер фото очистится, и пришли "
+                "только 2 нужных фото по порядку."
+            )
+        await reply_target.reply_text(gate_msg, reply_markup=photo_draft_kb(state, user.id))
+        return
+
     # Берём выбранный активный аватар; если не выбран или его слот пуст —
     # откатываемся на первый доступный (female → male → child).
     _all_avatars = get_avatar_urls(user.id)
@@ -4362,6 +4482,22 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "Перезагрузи фото и запусти генерацию снова."
                 )
                 return
+
+    if state.style_extract:
+        state.style_extract = False  # one-shot — не переносить на «Повторить»/следующую генерацию
+        if len(references) >= 2:
+            style_desc = await extract_style_description_from_reference(references[1])
+            if style_desc:
+                state.prompt = (
+                    f"{state.prompt}\n\nStyle reference (hairstyle & makeup only — "
+                    f"apply this look to the person in the first reference photo, "
+                    f"do not use any facial features from this description): {style_desc}"
+                )
+                references = references[:1] + references[2:]
+            else:
+                await reply_target.reply_text(
+                    "Не удалось разобрать референс стиля отдельно — сгенерирую по обоим фото как раньше."
+                )
 
     selected_image_model = get_image_model(state)
     cost = calc_generation_cost(references, selected_image_model)
@@ -4459,6 +4595,22 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         raise
 
+
+
+def _set_style_extract(state: "UserState", enabled: bool) -> None:
+    """Переключает `state.style_extract` и, если включаем — чистит буфер фото.
+
+    P0 2026-07-17 (docs/briefs/backend.md): `state.references` копится между
+    генерациями (handle_photo только append'ит), поэтому без явной очистки
+    `references[0]` при входе в style_extract-стиль мог оказаться старым
+    фото с прошлого теста, а не тем, что юзер прислал сейчас — пайплайн
+    принимал его за «лицо». Юзер обязан собрать пару фото заново под
+    конкретно этот стиль (см. также run_generation — жёсткий гейт на
+    len(references) == 2 и photo_draft_text — статус по слотам)."""
+    state.style_extract = enabled
+    if enabled:
+        state.references = []
+        state.references_updated_at = 0.0
 
 
 async def _reply_after_callback(
@@ -4591,6 +4743,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             deactivate_video_session(state)
             state.prompt = prompt
+            _set_style_extract(state, bool(item.get("style_extract")))
             _hint_sc = str(item.get("upload_hint") or "").strip()
             _upload_note_sc = f"\n📎 Что загрузить: {_hint_sc}" if _hint_sc else ""
             await query.message.reply_text(
@@ -4856,6 +5009,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         deactivate_video_session(state)
         state.prompt = final_prompt
+        _set_style_extract(state, bool(item.get("style_extract")))
         await _reply_after_callback(
             query, context, user.id,
             style_applied_message(_showcase_item_label(item), item, "image", user_note=user_note) + "\n"
@@ -4997,6 +5151,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         deactivate_video_session(state)
         state.prompt = ENHANCE_PHOTO_PROMPT
         state.image_prompt = ""
+        state.style_extract = False
         state.references = []  # старое фото не подмешиваем — нужно новое, для улучшения
         state.image_model = "gemini"  # nano banana, фикс по требованию функции
         await query.message.reply_text(
@@ -5015,6 +5170,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         deactivate_video_session(state)
         state.prompt = pending_text
+        state.style_extract = False
         await query.message.reply_text(photo_draft_text(state, user.id), reply_markup=photo_draft_kb(state, user.id))
         return
 
@@ -5057,6 +5213,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = get_or_init_state(context)
         deactivate_video_session(state)
         state.prompt = saved_prompt
+        state.style_extract = False
         # Keep refs that are still usable: persistent URLs + __img__ refs still in cache.
         # __img__ refs evaporate on bot restart, so drop the ones that no longer resolve.
         saved_refs = [
@@ -5411,6 +5568,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = get_or_init_state(context)
         deactivate_video_session(state)
         state.prompt = AVATAR_REFSHEET_PROMPT
+        state.style_extract = False
         state.references = []
         state.avatar_photos = []
         state.avatar_status_msg_id = None
@@ -5433,6 +5591,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not state.generating_avatar:
             deactivate_video_session(state)
             state.prompt = AVATAR_REFSHEET_PROMPT
+            state.style_extract = False
             state.references = []
             state.avatar_photos = []
             state.avatar_status_msg_id = None
@@ -5582,6 +5741,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = get_or_init_state(context)
         deactivate_video_session(state)
         state.prompt = promo["promo_prompt"]
+        state.style_extract = False
 
         register_promo_click(promo_id, update.effective_user.id)
 

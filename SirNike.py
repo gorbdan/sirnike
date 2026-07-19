@@ -3566,7 +3566,7 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
     # чтобы не переписывать сам prompt на клиенте. Пусто — шаблон уходит как есть.
     user_note = str(payload.get("note") or payload.get("n") or "").strip()
     if user_note:
-        prompt = f"{prompt}\n\nUser's specific wish (follow this instead of the generic description above): {user_note}"
+        prompt = apply_user_note_override(prompt, user_note)
 
     item_kind = "video" if action in {"set_video_prompt", "set_video_prompt_ref"} else "image"
     if raw_title and update.effective_user:
@@ -4613,6 +4613,30 @@ def _set_style_extract(state: "UserState", enabled: bool) -> None:
         state.references_updated_at = 0.0
 
 
+def apply_user_note_override(base_prompt: str, user_note: str) -> str:
+    """Дописывает свободный текст юзера («свои пожелания») к промту стиля так,
+    чтобы image-модель реально его учитывала, а не игнорировала.
+
+    Живой баг 2026-07-17 (docs/specs/2026-07-17_note_override_weak.md):
+    слабая формулировка-приписка в конце промта («follow this instead of the
+    generic description above: {note}») проигрывала плотному визуально
+    конкретному дефолтному описанию образа впереди — модель держалась за
+    «warm bronze eyeshadow... nude-pink lips» даже когда юзер явно просил
+    «красная помада, стрелки». Не транспортный баг — note доезжал верно,
+    просто формулировка отмены была недостаточно категоричной. Фикс — явный
+    override-маркер вместо мягкой приписки (вариант 3 из ТЗ, без изменения
+    структуры prompt_library.json).
+    """
+    if not user_note:
+        return base_prompt
+    return (
+        f"{base_prompt}\n\n"
+        f"MOST IMPORTANT OVERRIDE — ignore every makeup/hairstyle/color detail "
+        f"mentioned above completely, they do not apply. Render ONLY this look "
+        f"instead: {user_note}"
+    )
+
+
 async def _reply_after_callback(
     query,
     context: ContextTypes.DEFAULT_TYPE,
@@ -4988,9 +5012,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = get_or_init_state(context)
         state.image_prompt = str(item.get("image_prompt") or "").strip()
         base_prompt = str(item.get("prompt") or item.get("title") or "").strip()
-        final_prompt = base_prompt
-        if user_note:
-            final_prompt = f"{base_prompt}\n\nUser's specific wish (follow this instead of the generic description above): {user_note}"
+        final_prompt = apply_user_note_override(base_prompt, user_note) if user_note else base_prompt
         if item_kind == "video":
             state.video_prompt = final_prompt
             state.video_session_active = True

@@ -737,6 +737,18 @@ sent_texts = [c.args[0] for c in query.message.reply_text.await_args_list]
 check("9.20 pl_usen_ показывает «Учла твои пожелания» вместо статичного описания",
       any(_note in t and "Учла твои пожелания" in t for t in sent_texts), str(sent_texts))
 
+# 9.21 apply_user_note_override — усиленный override вместо слабой приписки
+# (docs/specs/2026-07-17_note_override_weak.md: «follow this instead of the
+# generic description above» проигрывала плотному дефолтному описанию образа)
+_base = "Soft glam makeup: warm bronze eyeshadow, nude-pink lips."
+_overridden = S.apply_user_note_override(_base, "ярко-красная помада, стрелки")
+check("9.21 override содержит явный маркер MOST IMPORTANT OVERRIDE",
+      "MOST IMPORTANT OVERRIDE" in _overridden, _overridden)
+check("9.22 override сохраняет и дефолтный текст, и note (для контекста лица/фото)",
+      _base in _overridden and "ярко-красная помада, стрелки" in _overridden, _overridden)
+check("9.23 override с пустым note не трогает base_prompt",
+      S.apply_user_note_override(_base, "") == _base)
+
 # ════════════════ БЛОК 10: style_extract — двухшаговый пайплайн «Образ с референса» ════════════════
 print("Блок 10: style_extract (двух-референсные стили)")
 

@@ -1031,6 +1031,59 @@ check("11.22 фото из этого же сообщения тоже пере�
       photo_calls != [] and photo_calls[-1].kwargs.get("photo") == "ph3", str(photo_calls))
 S.ADMIN_IDS[:] = _orig_admin_ids4
 
+# ── Блок 12: причёсывание экранов 2026-07-20 (макет утверждён Аней) ──
+print("Блок 12: экраны по UI-гайду (видео-панель, отмена репорта, аватар)")
+
+st12 = S.UserState()
+vtxt = S.video_status_text(st12)
+check("12.1 видео-панель озаглавлена разделом, не моделью",
+      vtxt.startswith("🎬 Видео для Reels"), vtxt.splitlines()[0])
+check("12.2 видео-панель не показывает сырые URL и старую инструкцию",
+      "http" not in vtxt and "Фото в буфере" not in vtxt and "1. Напиши" not in vtxt, vtxt)
+check("12.3 пустой видео-черновик подсказывает, с чего начать",
+      "Хватит одного: описание или фото" in vtxt, vtxt)
+st12.video_prompt = "кошка прыгает"
+vtxt2 = S.video_status_text(st12)
+check("12.4 заполненный черновик: подсказки нет, статус ✅",
+      "Хватит одного" not in vtxt2 and "Описание: есть ✅" in vtxt2, vtxt2)
+
+# report_cancel: кнопка отмены репорта не на reset, отмена не трогает черновик
+import inspect as _inspect
+_rp_src = _inspect.getsource(S.report_problem_command)
+_bb_src = _inspect.getsource(S.bug_bounty_command)
+check("12.5 отмена «Проблемы» не на reset", 'callback_data="report_cancel"' in _rp_src, _rp_src[-200:])
+check("12.6 отмена «Баг-баунти» не на reset", 'callback_data="report_cancel"' in _bb_src, _bb_src[-200:])
+
+st12r = S.UserState(waiting_for_bug_report=True)
+st12r.prompt = "мой черновик"
+st12r.references = ["https://example.com/ref.jpg"]
+_q12 = types.SimpleNamespace(
+    data="report_cancel",
+    message=types.SimpleNamespace(reply_text=AsyncMock()),
+    answer=AsyncMock(),
+    from_user=types.SimpleNamespace(id=9712),
+)
+_u12 = types.SimpleNamespace(
+    callback_query=_q12,
+    effective_user=types.SimpleNamespace(id=9712, username="test"),
+    effective_chat=types.SimpleNamespace(id=9712),
+)
+_c12 = types.SimpleNamespace(user_data={"state": st12r}, application=None, bot=AsyncMock())
+asyncio.run(S.button_handler(_u12, _c12))
+check("12.7 report_cancel снимает режим репорта", st12r.waiting_for_bug_report is False)
+check("12.8 report_cancel НЕ трогает черновик",
+      st12r.prompt == "мой черновик" and st12r.references == ["https://example.com/ref.jpg"],
+      f"{st12r.prompt!r} {st12r.references!r}")
+
+kb12 = S.avatar_actions_kb()
+labels12 = [b.text for row in kb12.inline_keyboard for b in row]
+check("12.9 кнопка аватара с 🪄 по словарю (не 🎨)",
+      any(t.startswith("🪄") for t in labels12) and not any("🎨" in t for t in labels12), str(labels12))
+
+_help_src = _inspect.getsource(S.help_command)
+check("12.10 справка знает про «Улучшить фото» и без списка моделей",
+      "🖼️ Улучшить фото" in _help_src and "Seedance 2, Kling" not in _help_src)
+
 # ════════════════ ИТОГ ════════════════
 print()
 print(f"PASS: {len(PASS)}  FAIL: {len(FAIL)}")

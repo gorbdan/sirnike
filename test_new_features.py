@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import types
 from unittest.mock import AsyncMock
 
@@ -944,7 +945,59 @@ check("11.9 репорт улетел админу с кнопкой 'Награ
       "Наградить" in str(context.bot.send_message.await_args_list[-1].kwargs.get("reply_markup")),
       str(context.bot.send_message.await_args_list))
 check("11.10 waiting_for_bug_report сброшен после отправки", st11.waiting_for_bug_report is False)
+check("11.11 текст репорта выставляет pending_report_kind='bug' (для скриншота вторым сообщением)",
+      st11.pending_report_kind == "bug", st11.pending_report_kind)
 S.ADMIN_IDS[:] = _orig_admin_ids2
+
+# 11.12: живой баг 2026-07-19 — скриншот вторым сообщением после текста
+# репорта раньше тихо утекал в обычные references генерации вместо репорта.
+_orig_admin_ids3 = list(S.ADMIN_IDS)
+S.ADMIN_IDS[:] = [9607]
+st11b = S.UserState(pending_report_kind="bug", pending_report_kind_at=time.time())
+photo_message = types.SimpleNamespace(
+    photo=[types.SimpleNamespace(file_id="ph1")],
+    caption=None, media_group_id=None, reply_text=AsyncMock(),
+)
+update = types.SimpleNamespace(
+    message=photo_message,
+    effective_user=types.SimpleNamespace(id=9608, username="test"),
+    effective_chat=types.SimpleNamespace(id=9608),
+    effective_message=photo_message,
+)
+context = types.SimpleNamespace(user_data={"state": st11b}, application=None, bot=AsyncMock())
+asyncio.run(S.handle_photo(update, context))
+check("11.12 скриншот к репорту НЕ попадает в references генерации",
+      st11b.references == [], str(st11b.references))
+check("11.13 скриншот к репорту пересылается админу через send_photo",
+      context.bot.send_photo.await_args_list != [] and
+      context.bot.send_photo.await_args_list[-1].kwargs.get("photo") == "ph1",
+      str(context.bot.send_photo.await_args_list))
+check("11.14 pending_report_kind сброшен после пересылки скриншота",
+      st11b.pending_report_kind == "")
+photo_texts = [c.args[0] for c in photo_message.reply_text.await_args_list]
+check("11.15 юзер получил подтверждение 'скриншот добавлен'",
+      any("скриншот добавлен" in t.lower() for t in photo_texts), str(photo_texts))
+S.ADMIN_IDS[:] = _orig_admin_ids3
+
+# 11.16: TTL истёк -> фото уходит по обычному пути (в references), не как скриншот
+st11c = S.UserState(pending_report_kind="bug", pending_report_kind_at=time.time() - S.PENDING_REPORT_SCREENSHOT_TTL_SECONDS - 10)
+photo_message2 = types.SimpleNamespace(
+    photo=[types.SimpleNamespace(file_id="ph2")],
+    caption=None, media_group_id=None, reply_text=AsyncMock(),
+)
+update = types.SimpleNamespace(
+    message=photo_message2,
+    effective_user=types.SimpleNamespace(id=9609, username="test"),
+    effective_chat=types.SimpleNamespace(id=9609),
+    effective_message=photo_message2,
+)
+context = types.SimpleNamespace(user_data={"state": st11c}, application=None, bot=AsyncMock())
+context.bot.get_file = AsyncMock(return_value=types.SimpleNamespace(
+    download_to_memory=AsyncMock(side_effect=lambda out: out.write(base64.b64decode(ok_png_b64)))
+))
+asyncio.run(S.handle_photo(update, context))
+check("11.17 TTL истёк -> pending_report_kind не мешает обычной загрузке фото",
+      len(st11c.references) == 1, str(st11c.references))
 
 # ════════════════ ИТОГ ════════════════
 print()

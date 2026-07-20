@@ -304,6 +304,12 @@ class UserState:
     avatar_status_msg_id: Optional[int] = None
     waiting_for_problem_report: bool = False
     waiting_for_bug_report: bool = False
+    # Скриншот "вторым сообщением" к репорту (проблема/баг-баунти) — "" | "problem" | "bug".
+    # Живой баг 2026-07-19: раньше флаг ожидания текста сбрасывался сразу после
+    # текста репорта, и следующий отправленный скриншот тихо утекал в обычные
+    # references генерации вместо репорта. См. handle_photo.
+    pending_report_kind: str = ""
+    pending_report_kind_at: float = 0.0
     video_prompt: str = ""
     motion_video_url: Optional[str] = None
     video_duration: Optional[int] = None
@@ -1092,6 +1098,11 @@ def build_zveno_url(base: str, path: str) -> str:
 # устаревшими. Без этого «Фото на месте (N шт.) — запускай!» может тихо
 # подмешать в генерацию фото, загруженные пользователем недели назад.
 STALE_REFERENCES_TTL_SECONDS = 6 * 3600
+
+# Окно, в течение которого следующее ФОТО после текста репорта (проблема/
+# баг-баунти) считается "скриншотом к этому репорту", а не обычным
+# reference-фото для генерации. См. state.pending_report_kind.
+PENDING_REPORT_SCREENSHOT_TTL_SECONDS = 5 * 60
 
 
 def get_or_init_state(context: ContextTypes.DEFAULT_TYPE) -> UserState:
@@ -3224,6 +3235,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.exception(f"Failed to forward problem report to admin_id={admin_id}")
 
         if delivered > 0:
+            state.pending_report_kind = "problem"
+            state.pending_report_kind_at = time.time()
             await update.message.reply_text(
                 "Спасибо, отправила в поддержку ✅\n"
                 "Если хочешь, можешь добавить скриншот следующим сообщением.",
@@ -3272,6 +3285,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.exception(f"Failed to forward bug bounty report to admin_id={admin_id}")
 
         if delivered > 0:
+            state.pending_report_kind = "bug"
+            state.pending_report_kind_at = time.time()
             await update.message.reply_text(
                 f"Спасибо! Если это реальный баг — начислю {BUG_BOUNTY_REWARD} 🍇 "
                 "и пришлю уведомление.\n"
@@ -3339,6 +3354,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deactivate_video_session(state)
     state.prompt = text
     state.style_extract = False
+    state.pending_report_kind = ""
 
     # Единый экран фото: статусы черновика + только осмысленные кнопки.
     await update.message.reply_text(photo_draft_text(state, user.id), reply_markup=photo_draft_kb(state, user.id))
@@ -3350,7 +3366,34 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = get_or_init_state(context)
     cache_media_group_message(update.effective_message)
-    
+
+    if state.pending_report_kind and (time.time() - state.pending_report_kind_at) <= PENDING_REPORT_SCREENSHOT_TTL_SECONDS:
+        # Скриншот "вторым сообщением" к репорту — раньше тихо утекал в
+        # обычные references генерации, потому что флаг ожидания ТЕКСТА
+        # сбрасывается сразу после текста репорта, а фото никто не ждал
+        # (живой баг 2026-07-19). Пересылаем админам с той же меткой, не
+        # трогая state.prompt/state.references генерации.
+        kind_label = "🐞 Баг-баунти" if state.pending_report_kind == "bug" else "🚨 Проблема"
+        state.pending_report_kind = ""
+        photo = update.message.photo[-1]
+        delivered = 0
+        for admin_id in ADMIN_IDS:
+            try:
+                await context.bot.send_photo(
+                    chat_id=admin_id,
+                    photo=photo.file_id,
+                    caption=f"{kind_label} — скриншот от user_id {user.id}",
+                )
+                delivered += 1
+            except Exception:
+                logger.exception(f"Failed to forward report screenshot to admin_id={admin_id}")
+        if delivered > 0:
+            await update.message.reply_text("Скриншот добавлен к репорту ✅")
+        else:
+            await update.message.reply_text("Не получилось переслать скриншот. Попробуй ещё раз.")
+        return
+
+    state.pending_report_kind = ""
 
     photo = update.message.photo[-1]
     file = await context.bot.get_file(photo.file_id)

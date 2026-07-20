@@ -3074,6 +3074,77 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE,
     return False
 
 
+async def _submit_report(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user,
+    state: "UserState",
+    kind: str,
+    report_text: str,
+    photo_file_id: Optional[str] = None,
+) -> None:
+    """Общая отправка репорта админам — единая точка для «🚨 Проблема» и
+    «🐞 Баг-баунти», текстом (handle_text) или текст+фото одним сообщением
+    (handle_photo, caption). kind: "problem" | "bug".
+
+    Живой баг 2026-07-19 (второй за день): handle_photo вообще не проверял
+    waiting_for_problem_report/waiting_for_bug_report при caption — текст
+    всегда становился обычным state.prompt, фото — обычным reference,
+    репорт с фото в одном сообщении не уходил вовсе. Раньше это же поле
+    дублировалось в handle_text для двух почти одинаковых блоков
+    (проблема/баг) — вынесено сюда, чтобы такой баг не повторился в
+    третьем месте."""
+    username = f"@{user.username}" if user.username else "нет"
+    full_name = (user.full_name or "").strip() or "нет"
+    label = "🐞 Баг-баунти" if kind == "bug" else "🚨 Сообщение о проблеме"
+    admin_kb = bug_bounty_admin_kb(user.id) if kind == "bug" else support_report_admin_kb(user.id)
+    admin_message = (
+        f"{label}\n\n"
+        f"user_id: {user.id}\n"
+        f"username: {username}\n"
+        f"name: {full_name}\n"
+        f"chat_id: {update.effective_chat.id}\n\n"
+        f"Текст:\n{report_text}"
+    )
+
+    delivered = 0
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=admin_message,
+                reply_markup=admin_kb,
+            )
+            if photo_file_id:
+                await context.bot.send_photo(chat_id=admin_id, photo=photo_file_id)
+            delivered += 1
+        except Exception:
+            logger.exception(f"Failed to forward {kind} report to admin_id={admin_id}")
+
+    reply_target = update.message or update.effective_message
+    if delivered > 0:
+        if not photo_file_id:
+            # Фото уже приложено этим же сообщением — новый скриншот вторым
+            # сообщением не ждём (см. pending_report_kind в handle_photo).
+            state.pending_report_kind = kind
+            state.pending_report_kind_at = time.time()
+        if kind == "bug":
+            confirm = (
+                f"Спасибо! Если это реальный баг — начислю {BUG_BOUNTY_REWARD} 🍇 "
+                "и пришлю уведомление.\n"
+            )
+        else:
+            confirm = "Спасибо, отправила в поддержку ✅\n"
+        if not photo_file_id:
+            confirm += "Можешь добавить скриншот следующим сообщением."
+        await reply_target.reply_text(confirm.rstrip(), reply_markup=main_menu_kb(user.id))
+    else:
+        await reply_target.reply_text(
+            "Не получилось передать репорт прямо сейчас.\nПопробуй еще раз через минуту.",
+            reply_markup=main_menu_kb(user.id),
+        )
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     create_user_if_not_exists(user.id, user.username, START_BONUS)
@@ -3210,44 +3281,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         state.waiting_for_problem_report = False
-        username = f"@{user.username}" if user.username else "нет"
-        full_name = (user.full_name or "").strip() or "нет"
-        report_text = text.strip()
-        admin_message = (
-            "🚨 Сообщение о проблеме\n\n"
-            f"user_id: {user.id}\n"
-            f"username: {username}\n"
-            f"name: {full_name}\n"
-            f"chat_id: {update.effective_chat.id}\n\n"
-            f"Текст:\n{report_text}"
-        )
-
-        delivered = 0
-        for admin_id in ADMIN_IDS:
-            try:
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=admin_message,
-                    reply_markup=support_report_admin_kb(user.id),
-                )
-                delivered += 1
-            except Exception:
-                logger.exception(f"Failed to forward problem report to admin_id={admin_id}")
-
-        if delivered > 0:
-            state.pending_report_kind = "problem"
-            state.pending_report_kind_at = time.time()
-            await update.message.reply_text(
-                "Спасибо, отправила в поддержку ✅\n"
-                "Если хочешь, можешь добавить скриншот следующим сообщением.",
-                reply_markup=main_menu_kb(user.id),
-            )
-        else:
-            await update.message.reply_text(
-                "Не получилось передать сообщение в поддержку прямо сейчас.\n"
-                "Попробуй еще раз через минуту.",
-                reply_markup=main_menu_kb(user.id),
-            )
+        await _submit_report(update, context, user, state, "problem", text.strip())
         return
 
     if state.waiting_for_bug_report:
@@ -3260,45 +3294,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         state.waiting_for_bug_report = False
-        username = f"@{user.username}" if user.username else "нет"
-        full_name = (user.full_name or "").strip() or "нет"
-        report_text = text.strip()
-        admin_message = (
-            "🐞 Баг-баунти\n\n"
-            f"user_id: {user.id}\n"
-            f"username: {username}\n"
-            f"name: {full_name}\n"
-            f"chat_id: {update.effective_chat.id}\n\n"
-            f"Текст:\n{report_text}"
-        )
-
-        delivered = 0
-        for admin_id in ADMIN_IDS:
-            try:
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=admin_message,
-                    reply_markup=bug_bounty_admin_kb(user.id),
-                )
-                delivered += 1
-            except Exception:
-                logger.exception(f"Failed to forward bug bounty report to admin_id={admin_id}")
-
-        if delivered > 0:
-            state.pending_report_kind = "bug"
-            state.pending_report_kind_at = time.time()
-            await update.message.reply_text(
-                f"Спасибо! Если это реальный баг — начислю {BUG_BOUNTY_REWARD} 🍇 "
-                "и пришлю уведомление.\n"
-                "Можешь добавить скриншот следующим сообщением.",
-                reply_markup=main_menu_kb(user.id),
-            )
-        else:
-            await update.message.reply_text(
-                "Не получилось передать репорт прямо сейчас.\n"
-                "Попробуй еще раз через минуту.",
-                reply_markup=main_menu_kb(user.id),
-            )
+        await _submit_report(update, context, user, state, "bug", text.strip())
         return
 
     if state.waiting_for_video_duration:
@@ -3366,6 +3362,21 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = get_or_init_state(context)
     cache_media_group_message(update.effective_message)
+
+    if state.waiting_for_problem_report or state.waiting_for_bug_report:
+        # Текст + фото ОДНИМ сообщением (caption) — раньше сюда вообще не
+        # заглядывали: caption всегда становился обычным state.prompt, фото —
+        # обычным reference'ом для генерации, репорт не уходил (живой баг
+        # 2026-07-19, второй за день). Пустой caption — тоже валидный репорт,
+        # юзер мог решить, что один скриншот всё объясняет.
+        kind = "bug" if state.waiting_for_bug_report else "problem"
+        state.waiting_for_problem_report = False
+        state.waiting_for_bug_report = False
+        caption = (update.message.caption or "").strip()
+        report_text = caption or "(без текста — только скриншот)"
+        photo = update.message.photo[-1]
+        await _submit_report(update, context, user, state, kind, report_text, photo_file_id=photo.file_id)
+        return
 
     if state.pending_report_kind and (time.time() - state.pending_report_kind_at) <= PENDING_REPORT_SCREENSHOT_TTL_SECONDS:
         # Скриншот "вторым сообщением" к репорту — раньше тихо утекал в

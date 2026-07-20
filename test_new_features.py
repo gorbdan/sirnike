@@ -999,6 +999,38 @@ asyncio.run(S.handle_photo(update, context))
 check("11.17 TTL истёк -> pending_report_kind не мешает обычной загрузке фото",
       len(st11c.references) == 1, str(st11c.references))
 
+# 11.18: живой баг 2026-07-19 (второй за день) — текст+фото ОДНИМ сообщением
+# (caption) во время ожидания репорта раньше уходило как обычный промт+реф
+_orig_admin_ids4 = list(S.ADMIN_IDS)
+S.ADMIN_IDS[:] = [9610]
+st11d = S.UserState(waiting_for_bug_report=True)
+photo_message3 = types.SimpleNamespace(
+    photo=[types.SimpleNamespace(file_id="ph3")],
+    caption="кнопка X не открывается", media_group_id=None, reply_text=AsyncMock(),
+)
+update = types.SimpleNamespace(
+    message=photo_message3,
+    effective_user=types.SimpleNamespace(id=9611, username="test", full_name="Bug Finder"),
+    effective_chat=types.SimpleNamespace(id=9611),
+    effective_message=photo_message3,
+)
+context = types.SimpleNamespace(user_data={"state": st11d}, application=None, bot=AsyncMock())
+asyncio.run(S.handle_photo(update, context))
+check("11.18 текст+фото одним сообщением НЕ становится обычным промтом",
+      st11d.prompt == "", st11d.prompt)
+check("11.19 текст+фото одним сообщением НЕ попадает в references",
+      st11d.references == [], str(st11d.references))
+check("11.20 waiting_for_bug_report сброшен", st11d.waiting_for_bug_report is False)
+sent_calls = context.bot.send_message.await_args_list
+check("11.21 репорт (текст) ушёл админу с кнопкой 'Наградить'",
+      sent_calls != [] and "кнопка X не открывается" in sent_calls[-1].kwargs.get("text", "")
+      and "Наградить" in str(sent_calls[-1].kwargs.get("reply_markup")),
+      str(sent_calls))
+photo_calls = context.bot.send_photo.await_args_list
+check("11.22 фото из этого же сообщения тоже переслано админу",
+      photo_calls != [] and photo_calls[-1].kwargs.get("photo") == "ph3", str(photo_calls))
+S.ADMIN_IDS[:] = _orig_admin_ids4
+
 # ════════════════ ИТОГ ════════════════
 print()
 print(f"PASS: {len(PASS)}  FAIL: {len(FAIL)}")

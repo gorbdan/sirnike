@@ -1243,9 +1243,12 @@ def main_menu_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
         prompt_library_button = InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb)
 
     video_label = "🎬 Видео для Reels" if SEEDANCE_ENABLED else "🎬 Видео для Reels 🚧"
+    # Ряды сгруппированы по смысловым зонам сверху вниз: продукты → витрина →
+    # деньги → помощь/фидбек → настройка — раньше «🐞 Баг-баунти» стоял целым
+    # рядом посреди меню, а «🚨 Проблема» была оторвана от него (обе кнопки —
+    # обратная связь, макет утверждён Аней 2026-07-20).
     rows = [
-        # Сетка 2×N зеркалит нижнюю reply-клавиатуру (persistent_menu_kb) —
-        # у юзера одна карта расположения кнопок, а не две разные.
+        # Продукты — сетка 2×N зеркалит нижнюю reply-клавиатуру (persistent_menu_kb).
         [
             InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate"),
             InlineKeyboardButton(video_label, callback_data="video"),
@@ -1254,19 +1257,21 @@ def main_menu_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
             InlineKeyboardButton("🖼️ Улучшить фото", callback_data="enhance_photo"),
             InlineKeyboardButton("🪄 Аватар", callback_data="avatar_actions"),
         ],
-        # Главная витрина — во всю ширину
+        # Витрина — во всю ширину
         [prompt_library_button],
+        # Деньги
         [
             InlineKeyboardButton("💰 Баланс", callback_data="show_buy"),
             InlineKeyboardButton("🎁 Пригласить друга", callback_data="open_ref"),
         ],
-        [InlineKeyboardButton("🐞 Баг-баунти", callback_data="bug_bounty")],
-        # Условная настройка — одна в ряду, чтобы сетка не дёргалась при выключении
-        *([[InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu")]] if GPT5_IMAGE_ENABLED else []),
+        # Помощь и обратная связь
+        [InlineKeyboardButton("❓ Как пользоваться", callback_data="show_help")],
         [
-            InlineKeyboardButton("❓ Как пользоваться", callback_data="show_help"),
             InlineKeyboardButton("🚨 Проблема", callback_data="report_problem"),
+            InlineKeyboardButton("🐞 Баг-баунти", callback_data="bug_bounty"),
         ],
+        # Условная настройка — последней, одна в ряду, чтобы сетка не дёргалась при выключении
+        *([[InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu")]] if GPT5_IMAGE_ENABLED else []),
     ]
     return InlineKeyboardMarkup(rows)
 
@@ -2074,7 +2079,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"   Изюминки — внутренняя валюта бота: 1 фото = {BASE_GENERATION_COST} изюминок\n\n"
             f"⚡ Попробуй прямо сейчас:\n"
             f"  Нажми «📚 Библиотека стилей» → выбери стиль → «✨ Сгенерировать фото»\n\n"
-            f"🪄 Чтобы не загружать своё фото каждый раз — создай «Мой аватар», "
+            f"🪄 Чтобы не загружать своё фото каждый раз — зайди в «🪄 Аватар», "
             f"и бот запомнит твою внешность.\n"
             f"❓ Подробнее: /help"
         )
@@ -8807,7 +8812,7 @@ async def maybe_send_avatar_nudge(app: Application, chat_id: int, user_id: int) 
             chat_id=chat_id,
             text=(
                 "Кстати, можно не загружать своё фото каждый раз 🪄\n"
-                "Нажми «Мой аватар» и загрузи несколько своих фото — бот сгенерирует "
+                "Открой «🪄 Аватар» и загрузи несколько своих фото — бот сгенерирует "
                 "твою модель и запомнит внешность. Дальше будешь появляться "
                 "в любой идее автоматически.\n"
                 f"Стоит как обычная генерация — {BASE_GENERATION_COST} изюминок."

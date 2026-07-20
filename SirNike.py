@@ -1429,8 +1429,9 @@ def avatar_actions_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     rows = []
     if not has_any:
         rows.append([InlineKeyboardButton("❓ Что такое аватар?", callback_data="avatar_help")])
-    # Единая кнопка: генерация и есть создание/замена аватара (загрузки фото нет)
-    gen_label = "🎨 Создать / заменить аватар" if has_any else "🎨 Сгенерировать аватар"
+    # Единая кнопка: генерация и есть создание/замена аватара (загрузки фото нет).
+    # 🪄 — эмодзи аватара по словарю UI_STYLE (🎨 в словаре нет).
+    gen_label = "🪄 Создать / заменить аватар" if has_any else "🪄 Сгенерировать аватар"
     rows.append([InlineKeyboardButton(gen_label, callback_data="avatar_gen_refsheet")])
     if has_any:
         rows.append([InlineKeyboardButton("👀 Показать аватары", callback_data="show_avatar")])
@@ -1749,26 +1750,20 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
 
 
 def video_status_text(state: UserState) -> str:
-    prompt_state = "добавлен" if state.video_prompt.strip() else "необязательно"
+    """Экран «🎬 Видео для Reels»: заголовок раздела + компактные статусы
+    (макет утверждён Аней 2026-07-20). Шаги живут в кнопках-шагах 1️⃣ 2️⃣
+    (video_kb) — нумерованная инструкция их дублировала и ссылалась на
+    «🚀 Запустить видео», которой при пустом черновике ещё нет. Сырые URL
+    фото юзеру не показываем — счётчика достаточно."""
+    prompt_done = bool(state.video_prompt.strip())
     _cur_aspect = getattr(state, "video_aspect_ratio", "16:9")
     _aspect_names = {"16:9": "горизонталь", "9:16": "вертикаль, Reels", "1:1": "квадрат"}
     _aspect_label = f"{_cur_aspect} ({_aspect_names[_cur_aspect]})" if _cur_aspect in _aspect_names else _cur_aspect
     video_images = get_video_image_urls(state)
     image_state = (
-        f"{len(video_images)} шт. (макс. {MAX_SEEDANCE_IMAGE_REFERENCES})"
+        f"{len(video_images)} шт. ✅ (можно до {MAX_SEEDANCE_IMAGE_REFERENCES})"
         if video_images
-        else "не добавлено"
-    )
-    refs_preview_lines: List[str] = []
-    for idx, ref_url in enumerate(video_images, start=1):
-        ref_text = str(ref_url or "").strip()
-        if len(ref_text) > 96:
-            ref_text = f"{ref_text[:60]}...{ref_text[-28:]}"
-        refs_preview_lines.append(f"{idx}. {ref_text}")
-    refs_preview_text = (
-        "Фото в буфере:\n" + "\n".join(refs_preview_lines)
-        if refs_preview_lines
-        else ""
+        else "пока нет"
     )
     selected_duration = get_selected_seedance_duration(state)
     selected_model = get_video_model(state)
@@ -1778,33 +1773,22 @@ def video_status_text(state: UserState) -> str:
     selected_cost = calc_seedance_cost(selected_duration, cps)
     eta_min = max(2, int(selected_duration * 0.8))
     eta_max = max(eta_min + 1, int(selected_duration * 2.0))
-    options_text = ", ".join([f"{sec}с" for sec in get_seedance_duration_options(selected_model)])
-    quality_text = (
-        f"{seedance_mode_ui_label(selected_mode)} (варианты: {', '.join([seedance_mode_ui_label(m) for m in get_seedance_mode_options(selected_model)])})"
-        if selected_model == "seedance2"
-        else f"{seedance_mode_ui_label(selected_mode)} (фиксировано)"
-    )
-    step3 = "3. Выбери длительность и качество" if selected_model == "seedance2" else "3. Выбери длительность"
-    refs_line = f"{refs_preview_text}\n" if refs_preview_text else ""
     model_blurb = get_video_model_blurb(selected_model)
     model_line = f"Модель: {model_label} — {model_blurb}" if model_blurb else f"Модель: {model_label}"
+    # Подсказка «с чего начать» — только пока черновик пуст (правило UI_STYLE:
+    # не рассказывать про заполненные шаги).
+    hint_line = "" if (prompt_done or video_images) else "Хватит одного: описание или фото 👇\n"
     return (
-        f"{model_label}\n"
-        "Генерация видео с помощью нейросети.\n\n"
-        "Нужно хотя бы одно: описание ИЛИ фото.\n"
-        "1. Напиши описание видео (необязательно)\n"
-        "2. Отправь фото (бот запомнит внешность)\n"
-        f"{step3}\n"
-        "4. Нажми «🚀 Запустить видео»\n\n"
+        "🎬 Видео для Reels\n\n"
+        f"{hint_line}"
         f"{model_line}\n"
-        f"Описание: {prompt_state}\n"
+        f"Описание: {'есть ✅' if prompt_done else 'пока нет'}\n"
         f"Фото: {image_state}\n"
-        f"{refs_line}"
         f"Формат: {_aspect_label}\n"
-        f"Качество: {quality_text}\n"
-        f"Длительность: {selected_duration} сек (варианты: {options_text})\n"
+        f"Качество: {seedance_mode_ui_label(selected_mode)}\n"
+        f"Длительность: {selected_duration} сек\n"
         f"Стоимость: {selected_cost} изюминок\n"
-        f"Ожидание результата: обычно {eta_min}–{eta_max} минут"
+        f"Результат: обычно через {eta_min}–{eta_max} мин"
     )
 
 
@@ -2182,9 +2166,18 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         library_button = InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open")
+    # Главный вопрос юзера — «на сколько хватит?», а не абстрактное число.
+    _video_cps = SEEDANCE_FAST_COST_PER_SECOND if SEEDANCE_FAST_ENABLED else SEEDANCE_COST_PER_SECOND
+    _video_10s = calc_seedance_cost(10, _video_cps)
+    _photos = bal // BASE_GENERATION_COST
+    if _photos > 0:
+        _enough = f" — хватит на {_photos} фото"
+    else:
+        _enough = " — на фото пока не хватает"
     await update.message.reply_text(
         f"💰 Твой баланс\n\n"
-        f"Изюминок: {bal} 🍇  (1 фото = {BASE_GENERATION_COST} изюминок)",
+        f"Изюминок: {bal} 🍇{_enough}\n"
+        f"(1 фото = {BASE_GENERATION_COST} изюминок, 1 видео 10 сек = {_video_10s})",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("💳 Купить изюминки", callback_data="show_buy")],
             [library_button],
@@ -2205,8 +2198,10 @@ async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📤 Поделиться с другом", url=share_url)],
         [InlineKeyboardButton("◀️ В меню", callback_data="reset")],
     ])
+    # Заголовок экрана = название кнопки «🎁 Пригласить друга» (UI_STYLE).
     await update.effective_message.reply_text(
-        f"Приглашай друзей и получай изюминки 🎁\n\n"
+        f"🎁 Пригласить друга\n\n"
+        f"Приглашай друзей и получай изюминки.\n"
         f"Твоя ссылка:\n`{link}`\n\n"
         f"Ты получишь +{REFERRAL_BONUS_REFERRER} изюминок за каждого друга.\n"
         f"Друг получит +{REFERRAL_BONUS_NEW_USER} изюминок в подарок.",
@@ -2227,7 +2222,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "2. Нажми «✨ Сгенерировать фото»\n"
         "3. Получи фото — готово!\n\n"
         "🪄 Аватар — создай аватар по своим фото, и бот поставит тебя в любой образ\n"
-        "🎬 Видео — Seedance 2, Kling 3.0, Veo 3.1, Wan 2.7 (кнопка в меню)\n"
+        "🖼️ Улучшить фото — качество как у профессионального фотографа, лицо не меняется\n"
+        "🎬 Видео для Reels — оживи фото или сгенерируй ролик по описанию (4 модели на выбор)\n"
         f"💰 Твой баланс: {bal} изюминок (1 фото = {BASE_GENERATION_COST} изюминок)\n\n"
         "Изюминки — внутренняя валюта бота. Их можно купить или получить "
         "за приглашённых друзей.\n\n"
@@ -2258,15 +2254,19 @@ async def report_problem_command(update: Update, context: ContextTypes.DEFAULT_T
     create_user_if_not_exists(user.id, user.username, START_BONUS)
     state = get_or_init_state(context)
     state.waiting_for_problem_report = True
+    # Заголовок экрана = название кнопки, с которой на него пришли (UI_STYLE).
     await update.effective_message.reply_text(
-        "📝 Опиши что не работает\n\n"
+        "🚨 Проблема\n\n"
+        "Опиши, что не работает.\n\n"
         "Примеры:\n"
         "• Генерация долго загружается\n"
         "• Фото выходит размытым\n"
         "• Не получается создать аватар\n\n"
         "Можешь добавить скриншот вторым сообщением.",
+        # НЕ "reset": отмена репорта не должна стирать черновик фото/стиля,
+        # который юзер готовил до того, как решил пожаловаться.
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("✖️ Отмена", callback_data="reset")
+            InlineKeyboardButton("✖️ Отмена", callback_data="report_cancel")
         ]])
     )
 
@@ -2290,8 +2290,9 @@ async def bug_bounty_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         " не то, что написано в кнопке/тексте. Опиши, что делал(а) и что"
         " пошло не так — чем подробнее, тем быстрее проверю.\n\n"
         "Можешь добавить скриншот вторым сообщением.",
+        # НЕ "reset" — см. комментарий в report_problem_command.
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("✖️ Отмена", callback_data="reset")
+            InlineKeyboardButton("✖️ Отмена", callback_data="report_cancel")
         ]])
     )
 
@@ -3421,17 +3422,19 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if direct_url not in state.avatar_photos:
                 if len(state.avatar_photos) >= MAX_AVATAR_PHOTOS:
                     await update.message.reply_text(
-                        f"Максимум {MAX_AVATAR_PHOTOS} фото для аватара. Нажми «Готово» или начни заново."
+                        f"Максимум {MAX_AVATAR_PHOTOS} фото для аватара. Нажми «🚀 Сгенерировать аватар» или начни заново."
                     )
                     return
                 state.avatar_photos.append(direct_url)
             count = len(state.avatar_photos)
+            # 🚀 — единый эмодзи запуска (UI_STYLE): кнопка честно говорит, что
+            # запустится генерация, а не просто «Готово».
             kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton(f"Готово ({count} фото) ▶️", callback_data="avatar_gen_start")
+                InlineKeyboardButton(f"🚀 Сгенерировать аватар ({count} фото)", callback_data="avatar_gen_start")
             ]])
             status_text = (
                 f"Получено фото: {count} ✅\n"
-                "Можешь отправить ещё с других ракурсов или нажать «Готово»."
+                "Можешь отправить ещё с других ракурсов или нажать «🚀 Сгенерировать аватар»."
             )
             if state.avatar_status_msg_id:
                 try:
@@ -5915,6 +5918,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "bug_bounty":
         await bug_bounty_command(update, context)
+        return
+
+    if query.data == "report_cancel":
+        # Отмена репорта («🚨 Проблема» / «🐞 Баг-баунти») — снимает ТОЛЬКО
+        # режим ожидания репорта. Раньше кнопка висела на общем "reset" и
+        # передумавший жаловаться юзер молча терял черновик фото/стиля.
+        state = get_or_init_state(context)
+        state.waiting_for_problem_report = False
+        state.waiting_for_bug_report = False
+        state.pending_report_kind = ""
+        await query.message.reply_text(
+            "Ок, отменила. Твой черновик не тронут 👌",
+            reply_markup=main_menu_kb(user.id),
+        )
         return
 
     if query.data == "reset":

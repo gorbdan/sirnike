@@ -72,6 +72,7 @@ from config import (
     TEST_MODE,
     REFERRAL_BONUS_REFERRER,
     REFERRAL_BONUS_NEW_USER,
+    BUG_BOUNTY_REWARD,
     BUY_PACKS,
     PROVIDER_TOKEN,
     KLING_MOTION_ENDPOINT,
@@ -302,6 +303,7 @@ class UserState:
     avatar_photos: List[str] = field(default_factory=list)
     avatar_status_msg_id: Optional[int] = None
     waiting_for_problem_report: bool = False
+    waiting_for_bug_report: bool = False
     video_prompt: str = ""
     motion_video_url: Optional[str] = None
     video_duration: Optional[int] = None
@@ -1247,6 +1249,7 @@ def main_menu_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
             InlineKeyboardButton("💰 Баланс", callback_data="show_buy"),
             InlineKeyboardButton("🎁 Пригласить друга", callback_data="open_ref"),
         ],
+        [InlineKeyboardButton("🐞 Баг-баунти", callback_data="bug_bounty")],
         # Условная настройка — одна в ряду, чтобы сетка не дёргалась при выключении
         *([[InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu")]] if GPT5_IMAGE_ENABLED else []),
         [
@@ -1350,6 +1353,13 @@ def promo_try_kb(promo_id: str, user_id: Optional[int] = None) -> InlineKeyboard
 def support_report_admin_kb(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💬 Ответить пользователю", callback_data=f"support_reply_{user_id}")]
+    ])
+
+
+def bug_bounty_admin_kb(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"🎁 Наградить {BUG_BOUNTY_REWARD} 🍇", callback_data=f"reward_bug_{user_id}")],
+        [InlineKeyboardButton("💬 Ответить пользователю", callback_data=f"support_reply_{user_id}")],
     ])
 
 
@@ -2216,6 +2226,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/buy — купить изюминки\n"
         "/ref — пригласить друга (+изюминки обоим)\n"
         "/report — сообщить о проблеме\n"
+        f"/bugbounty — нашёл(а) реальный баг → {BUG_BOUNTY_REWARD} 🍇 в подарок\n"
         "/help — эта справка",
         reply_markup=main_menu_kb(user.id),
     )
@@ -2242,6 +2253,31 @@ async def report_problem_command(update: Update, context: ContextTypes.DEFAULT_T
         "• Генерация долго загружается\n"
         "• Фото выходит размытым\n"
         "• Не получается создать аватар\n\n"
+        "Можешь добавить скриншот вторым сообщением.",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✖️ Отмена", callback_data="reset")
+        ]])
+    )
+
+
+async def bug_bounty_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """«🐞 Баг-баунти» — отдельно от «🚨 Проблема»: не жалоба на неудобство,
+    а осознанный репорт реального бага в обмен на награду. Тот же транспорт
+    (пересылка админу), но своя пометка в сообщении админу и кнопка
+    «Наградить» — см. BUG_BOUNTY_REWARD, handle_text (waiting_for_bug_report),
+    button_handler (reward_bug_)."""
+    user = update.effective_user
+    create_user_if_not_exists(user.id, user.username, START_BONUS)
+    state = get_or_init_state(context)
+    state.waiting_for_bug_report = True
+    await update.effective_message.reply_text(
+        f"🐞 Баг-баунти\n\n"
+        f"Нашёл(а) реальный баг — опиши его, и если подтвердится, "
+        f"получишь {BUG_BOUNTY_REWARD} 🍇 в подарок. Награда за каждый "
+        f"найденный баг, без ограничения по числу.\n\n"
+        "Что считается багом: не работает как задумано, ошибка, зависание,"
+        " не то, что написано в кнопке/тексте. Опиши, что делал(а) и что"
+        " пошло не так — чем подробнее, тем быстрее проверю.\n\n"
         "Можешь добавить скриншот вторым сообщением.",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("✖️ Отмена", callback_data="reset")
@@ -3196,6 +3232,55 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(
                 "Не получилось передать сообщение в поддержку прямо сейчас.\n"
+                "Попробуй еще раз через минуту.",
+                reply_markup=main_menu_kb(user.id),
+            )
+        return
+
+    if state.waiting_for_bug_report:
+        if text.lower() in {"отмена", "cancel", "/cancel"}:
+            state.waiting_for_bug_report = False
+            await update.message.reply_text(
+                "Ок, отмена. Если что — кнопку «🐞 Баг-баунти» можно нажать снова.",
+                reply_markup=main_menu_kb(user.id),
+            )
+            return
+
+        state.waiting_for_bug_report = False
+        username = f"@{user.username}" if user.username else "нет"
+        full_name = (user.full_name or "").strip() or "нет"
+        report_text = text.strip()
+        admin_message = (
+            "🐞 Баг-баунти\n\n"
+            f"user_id: {user.id}\n"
+            f"username: {username}\n"
+            f"name: {full_name}\n"
+            f"chat_id: {update.effective_chat.id}\n\n"
+            f"Текст:\n{report_text}"
+        )
+
+        delivered = 0
+        for admin_id in ADMIN_IDS:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=admin_message,
+                    reply_markup=bug_bounty_admin_kb(user.id),
+                )
+                delivered += 1
+            except Exception:
+                logger.exception(f"Failed to forward bug bounty report to admin_id={admin_id}")
+
+        if delivered > 0:
+            await update.message.reply_text(
+                f"Спасибо! Если это реальный баг — начислю {BUG_BOUNTY_REWARD} 🍇 "
+                "и пришлю уведомление.\n"
+                "Можешь добавить скриншот следующим сообщением.",
+                reply_markup=main_menu_kb(user.id),
+            )
+        else:
+            await update.message.reply_text(
+                "Не получилось передать репорт прямо сейчас.\n"
                 "Попробуй еще раз через минуту.",
                 reply_markup=main_menu_kb(user.id),
             )
@@ -4777,6 +4862,46 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
+    if query.data.startswith("reward_bug_"):
+        if not is_admin(update.effective_user.id):
+            await query.answer("Нет доступа.", show_alert=True)
+            return
+
+        try:
+            target_user_id = int(query.data.replace("reward_bug_", "", 1))
+        except ValueError:
+            await query.answer("Не удалось начислить: неверный user_id.", show_alert=True)
+            return
+
+        add_izyminki(target_user_id, BUG_BOUNTY_REWARD)
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=(
+                    f"🎉 Подтвердили баг, который ты нашёл(а) — держи {BUG_BOUNTY_REWARD} 🍇 в подарок!\n"
+                    "Спасибо, что помогаешь делать Сырник лучше 🧀"
+                ),
+            )
+        except Exception:
+            logger.warning("Failed to notify bug bounty reward to user_id=%s", target_user_id)
+
+        # Правим клавиатуру на "Награждено" — защита от повторного клика тем же
+        # админом на тот же репорт (если админов несколько, это best-effort:
+        # окно гонки при одновременном клике не закрыто, но это низкий риск
+        # для текущего масштаба — ADMIN_IDS короткий).
+        try:
+            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"✅ Награждено {BUG_BOUNTY_REWARD} 🍇", callback_data="noop")
+            ]]))
+        except Exception:
+            pass
+        await query.answer(f"Начислено {BUG_BOUNTY_REWARD} 🍇 пользователю {target_user_id} ✅")
+        return
+
+    if query.data == "noop":
+        await query.answer()
+        return
+
     if query.data.startswith("support_reply_"):
         if not is_admin(update.effective_user.id):
             await query.message.reply_text("У тебя нет доступа к этой кнопке.")
@@ -5732,6 +5857,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "report_problem":
         # Единая реализация с командой /report — один текст и один способ отмены.
         await report_problem_command(update, context)
+        return
+
+    if query.data == "bug_bounty":
+        await bug_bounty_command(update, context)
         return
 
     if query.data == "reset":
@@ -9815,6 +9944,7 @@ def main():
     app.add_handler(CommandHandler("buy", buy))
     app.add_handler(CommandHandler("ref", referral))
     app.add_handler(CommandHandler("report", report_problem_command))
+    app.add_handler(CommandHandler("bugbounty", bug_bounty_command))
     app.add_handler(CommandHandler("ai", ai_chat))
     app.add_handler(CommandHandler("hide_keyboard", hide_keyboard))
     app.add_handler(CommandHandler("admin_add", admin_add))

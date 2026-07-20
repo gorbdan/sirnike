@@ -886,6 +886,66 @@ check("10.19 photo_draft_text 2/2", "2/2" in S.photo_draft_text(st10g, 956))
 cbs_2 = [b.callback_data for row in S.photo_draft_kb(st10g, 956).inline_keyboard for b in row]
 check("10.20 кнопки: 2/2 -> есть 'generate'", "generate" in cbs_2, str(cbs_2))
 
+# ════════════════ БЛОК 11: баг-баунти (reward_bug_) ════════════════
+print("Блок 11: баг-баунти")
+
+_bb_target_id = 9601
+S.create_user_if_not_exists(_bb_target_id, "bugfinder", S.START_BONUS)
+_bal_before = S.get_balance(_bb_target_id)
+
+# 11.1: не-админ жмёт "Наградить" -> нет доступа, баланс не меняется
+update, context, query = make_update_context(f"reward_bug_{_bb_target_id}", user_id=9602)
+query.edit_message_reply_markup = AsyncMock()
+_orig_admin_ids = list(S.ADMIN_IDS)
+if 9602 in S.ADMIN_IDS:
+    S.ADMIN_IDS.remove(9602)
+asyncio.run(S.button_handler(update, context))
+check("11.1 не-админ: доступ запрещён", query.answer.await_args_list and "доступ" in query.answer.await_args_list[-1].args[0].lower(),
+      str(query.answer.await_args_list))
+check("11.2 не-админ: баланс не изменился", S.get_balance(_bb_target_id) == _bal_before)
+
+# 11.3: админ жмёт "Наградить" -> баланс +BUG_BOUNTY_REWARD, уведомление юзеру,
+# клавиатура заменена на "Награждено"
+_admin_id = 9603
+S.ADMIN_IDS.append(_admin_id)
+update, context, query = make_update_context(f"reward_bug_{_bb_target_id}", user_id=_admin_id)
+query.edit_message_reply_markup = AsyncMock()
+asyncio.run(S.button_handler(update, context))
+check("11.3 админ: баланс увеличен на BUG_BOUNTY_REWARD",
+      S.get_balance(_bb_target_id) == _bal_before + S.BUG_BOUNTY_REWARD,
+      f"before={_bal_before} after={S.get_balance(_bb_target_id)}")
+notify_calls = [c for c in context.bot.send_message.await_args_list if c.kwargs.get("chat_id") == _bb_target_id]
+check("11.4 админ: юзер получил уведомление о награде",
+      bool(notify_calls) and "🎉" in notify_calls[-1].kwargs.get("text", ""), str(notify_calls))
+check("11.5 админ: клавиатура заменена на 'Награждено'",
+      query.edit_message_reply_markup.await_args_list != [], str(query.edit_message_reply_markup.await_args_list))
+
+S.ADMIN_IDS[:] = _orig_admin_ids
+
+# 11.6: bug_bounty_command выставляет waiting_for_bug_report и шлёт инструкцию
+update, context, message = make_text_update("/bugbounty", user_id=9604)
+asyncio.run(S.bug_bounty_command(update, context))
+st11 = context.user_data.get("state")
+check("11.6 bug_bounty_command взводит waiting_for_bug_report",
+      isinstance(st11, S.UserState) and st11.waiting_for_bug_report is True)
+sent11 = [c.args[0] for c in message.reply_text.await_args_list]
+check("11.7 bug_bounty_command упоминает награду в тексте",
+      any(str(S.BUG_BOUNTY_REWARD) in t and "🍇" in t for t in sent11), str(sent11))
+
+# 11.8: текст после /bugbounty -> репорт уходит админам с bug_bounty_admin_kb
+_orig_admin_ids2 = list(S.ADMIN_IDS)
+S.ADMIN_IDS[:] = [9605]
+update, context, message = make_text_update("кнопка X не открывается", user_id=9606, state=st11)
+update.effective_user.full_name = "Bug Finder"
+context.bot.send_message = AsyncMock()
+asyncio.run(S.handle_text(update, context))
+check("11.9 репорт улетел админу с кнопкой 'Наградить'",
+      context.bot.send_message.await_args_list != [] and
+      "Наградить" in str(context.bot.send_message.await_args_list[-1].kwargs.get("reply_markup")),
+      str(context.bot.send_message.await_args_list))
+check("11.10 waiting_for_bug_report сброшен после отправки", st11.waiting_for_bug_report is False)
+S.ADMIN_IDS[:] = _orig_admin_ids2
+
 # ════════════════ ИТОГ ════════════════
 print()
 print(f"PASS: {len(PASS)}  FAIL: {len(FAIL)}")

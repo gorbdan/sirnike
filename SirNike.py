@@ -158,6 +158,7 @@ from db import (
     get_generation_history,
     get_generation_history_item,
     delete_user_for_test,
+    get_error_breakdown,
 )
 
 # ══════════════════════════════════════════════════════════════
@@ -6103,6 +6104,41 @@ async def test_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Пользователь {target_id} не найден в базе.")
 
 
+async def video_errors(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Причины отказов генераций за период. Использование: /video_errors [days=7] [image|video]"""
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("У тебя нет доступа к этой команде.")
+        return
+
+    days = 7
+    kind = None
+    for arg in (context.args or []):
+        a = arg.strip().lower()
+        if a in ("image", "video"):
+            kind = a
+            continue
+        try:
+            days = max(1, min(int(a), 365))
+        except ValueError:
+            await update.message.reply_text("Использование: /video_errors [дней=7] [image|video]")
+            return
+
+    rows = get_error_breakdown(days=days, kind=kind)
+    if not rows:
+        await update.message.reply_text(f"Отказов за {days} дн. не найдено (kind={kind or 'все'}).")
+        return
+
+    lines = [f"Отказы генераций за {days} дн. (kind={kind or 'все'}):\n"]
+    for r in rows:
+        lines.append(f"• {r['error_type']}: {r['count']}")
+        if r["last_message"]:
+            model_info = f" [{r['model'] or r['provider'] or '?'}]"
+            msg = r["last_message"][:200]
+            lines.append(f"   последний:{model_info} {msg}")
+    await send_long_text(update.message, "\n".join(lines))
+
+
 async def audience_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id):
@@ -10034,6 +10070,7 @@ def main():
     app.add_handler(CommandHandler("broadcast_hide_keyboard", broadcast_hide_keyboard))
     app.add_handler(CommandHandler("audience_stats", audience_stats))
     app.add_handler(CommandHandler("test_reset", test_reset))
+    app.add_handler(CommandHandler("video_errors", video_errors))
     app.add_handler(CommandHandler("pnl", pnl_report))
     app.add_handler(CommandHandler("template_stats", template_stats_report))
     app.add_handler(CommandHandler("pl_save", prompt_library_save_last))

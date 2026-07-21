@@ -792,6 +792,59 @@ def log_template_usage(
         logger.warning("log_template_usage failed (ignored): user_id=%s item=%s", user_id, item_title, exc_info=True)
 
 
+def get_error_breakdown(days: int = 7, kind: Optional[str] = None, limit: int = 8):
+    """Причины отказов генераций за период: сколько раз каждый error_type,
+    плюс последний реальный error_message-пример на тип (для диагностики
+    провалов конкретной модели/провайдера). kind — фильтр 'image'/'video', опционально."""
+    since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    with get_conn() as conn:
+        cur = conn.cursor()
+        params = [since]
+        kind_filter = ""
+        if kind:
+            kind_filter = "AND kind = ?"
+            params.append(kind)
+        cur.execute(
+            f"""
+            SELECT COALESCE(error_type, 'unknown'), COUNT(*)
+            FROM generation_events
+            WHERE status = 'error' AND created_at >= ? {kind_filter}
+            GROUP BY COALESCE(error_type, 'unknown')
+            ORDER BY COUNT(*) DESC
+            LIMIT ?
+            """,
+            params + [limit],
+        )
+        counts = cur.fetchall()
+
+        examples = {}
+        for error_type, _ in counts:
+            cur.execute(
+                f"""
+                SELECT error_message, model, provider
+                FROM generation_events
+                WHERE status = 'error' AND created_at >= ? {kind_filter}
+                  AND COALESCE(error_type, 'unknown') = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                params + [error_type],
+            )
+            row = cur.fetchone()
+            examples[error_type] = row
+
+    return [
+        {
+            "error_type": et,
+            "count": c,
+            "last_message": (examples[et][0] if examples.get(et) else None),
+            "model": (examples[et][1] if examples.get(et) else None),
+            "provider": (examples[et][2] if examples.get(et) else None),
+        }
+        for et, c in counts
+    ]
+
+
 def get_template_usage_counts(days: Optional[int] = None):
     """Кол-во применений каждого шаблона, сгруппировано по (category, item_title).
     days=None — за всё время."""

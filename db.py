@@ -808,7 +808,7 @@ def get_error_breakdown(days: int = 7, kind: Optional[str] = None, limit: int = 
             f"""
             SELECT COALESCE(error_type, 'unknown'), COUNT(*)
             FROM generation_events
-            WHERE status = 'error' AND created_at >= ? {kind_filter}
+            WHERE status = 'failed' AND created_at >= ? {kind_filter}
             GROUP BY COALESCE(error_type, 'unknown')
             ORDER BY COUNT(*) DESC
             LIMIT ?
@@ -823,7 +823,7 @@ def get_error_breakdown(days: int = 7, kind: Optional[str] = None, limit: int = 
                 f"""
                 SELECT error_message, model, provider
                 FROM generation_events
-                WHERE status = 'error' AND created_at >= ? {kind_filter}
+                WHERE status = 'failed' AND created_at >= ? {kind_filter}
                   AND COALESCE(error_type, 'unknown') = ?
                 ORDER BY created_at DESC
                 LIMIT 1

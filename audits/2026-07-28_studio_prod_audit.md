@@ -100,8 +100,9 @@ depends_on и доклейкой frame_url · каскад ошибок зави
 ## Осталось сделать
 
 1. **Аня**: BotHost «Update from Git» (бэкап клипов файлом + кнопка студии
-   в меню) — PR gorbdan/sirnike#76 уже в main.
-2. **Ф3 (склейка)** — по ТЗ, затем `STUDIO_STITCH_ENABLED=true` в studio.js.
+   в меню, PR gorbdan/sirnike#76 уже в main; плюс склейка Ф3, PR
+   gorbdan/sirnike#77 + вебапп gorbdan/_webapp#27, ждут ревью/деплоя).
+2. ~~Ф3 (склейка)~~ — готово 2026-07-29, см. п.1.
 3. Убрать debug_reason из тостов/API после недели стабильности.
 4. Бэклог: generation_events для студии, живой баланс в шапке, хостинг
    клипов (R2) для вечных URL в плеере.

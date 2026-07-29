@@ -198,4 +198,16 @@ GITHUB_REPO = os.getenv("GITHUB_REPO", "gorbdan/sirnike").strip()
 # не проверено автоматически, подтвердить вручную перед первым релизом фичи.
 WEBAPP_GITHUB_REPO = os.getenv("WEBAPP_GITHUB_REPO", "gorbdan/_webapp").strip()
 
+# ── Студия нейромультиков (docs/specs/2026-07-20_cartoon_studio.md) ──
+# Очередь заданий — в Cloudflare D1 при вебапе; бот поллит /api/studio/*.
+# Пустой STUDIO_POLL_SECRET = студия выключена (поллер не стартует) — так фича
+# безопасно деплоится до того, как Аня заведёт D1 и секреты в Cloudflare.
+STUDIO_POLL_SECRET = os.getenv("STUDIO_POLL_SECRET", "").strip()
+_default_studio_api = (PROMPT_WEBAPP_URL.rstrip("/") + "/api/studio") if PROMPT_WEBAPP_URL else ""
+STUDIO_API_BASE = os.getenv("STUDIO_API_BASE", _default_studio_api).strip().rstrip("/")
+STUDIO_ENABLED = bool(STUDIO_POLL_SECRET and STUDIO_API_BASE)
+STUDIO_MAX_SCENES = int(os.getenv("STUDIO_MAX_SCENES", "5"))
+STUDIO_POLL_INTERVAL = int(os.getenv("STUDIO_POLL_INTERVAL", "4"))
+STUDIO_CONCURRENCY = int(os.getenv("STUDIO_CONCURRENCY", "3"))
+
 TEST_MODE = os.getenv("TEST_MODE", "0").strip().lower() in ("1", "true", "yes", "on")

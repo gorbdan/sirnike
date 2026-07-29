@@ -209,6 +209,25 @@ def init_db():
         if "item_idx" not in tpl_cols:
             conn.execute("ALTER TABLE template_usage_events ADD COLUMN item_idx INTEGER")
 
+        # Журнал выполненных студийных джобов (студия мультиков,
+        # docs/specs/2026-07-20_cartoon_studio.md, ревизия п.2): защита от
+        # двойного списания/повторной генерации, когда job выполнен, но
+        # `complete` не дошёл до D1 и job вернулся в очередь. Переживает
+        # рестарт (DATA_DIR) — повторное взятие уже сделанного job'а означает
+        # только ре-отправку результата, без генерации и денег.
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS studio_done_jobs (
+            job_id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            charged INTEGER NOT NULL DEFAULT 0,
+            cost INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL,
+            error TEXT DEFAULT '',
+            result TEXT DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )
+        """)
+
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_referrer_id ON users(referrer_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_free_used_date ON users(free_used_date)")
         conn.commit()
@@ -1190,3 +1209,36 @@ def get_generation_history_item(user_id: int, item_id: int):
         if not row:
             return None
         return {"id": row[0], "prompt": row[1], "image_url": row[2], "created_at": row[3]}
+
+
+def get_studio_done_job(job_id: str):
+    """Студия мультиков: локальная запись о выполненном job'е (идемпотентность,
+    docs/specs/2026-07-20_cartoon_studio.md, ревизия п.2)."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT job_id, user_id, charged, cost, status, error, result FROM studio_done_jobs WHERE job_id = ?",
+            (str(job_id),),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "job_id": row[0], "user_id": row[1], "charged": bool(row[2]),
+            "cost": row[3], "status": row[4], "error": row[5], "result": row[6],
+        }
+
+
+def record_studio_done_job(job_id: str, user_id: int, charged: bool, cost: int,
+                           status: str, error: str = "", result_json: str = "{}"):
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO studio_done_jobs
+                (job_id, user_id, charged, cost, status, error, result, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (str(job_id), int(user_id), 1 if charged else 0, int(cost),
+             str(status), str(error or ""), str(result_json or "{}")),
+        )
+        conn.commit()

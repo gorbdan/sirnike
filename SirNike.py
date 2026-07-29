@@ -7449,11 +7449,15 @@ async def _studio_handle_job(app: Application, job: dict) -> None:
     async with _studio_semaphore:
         async with lock:
             # Идемпотентность: уже сделан (complete не дошёл в прошлый раз) —
-            # только повторная доставка, без генерации и денег.
+            # только повторная доставка, без генерации и денег. Запись со
+            # status='charged' — бот упал МЕЖДУ списанием и завершением
+            # генерации: деньги уже взяты, генерацию надо повторить, но
+            # списывать второй раз нельзя.
             done = get_studio_done_job(job_id)
-            if done:
+            if done and done["status"] in ("done", "error"):
                 await _studio_complete(job_id, done["status"], done["error"], json.loads(done["result"] or "{}"))
                 return
+            already_charged = bool(done and done["status"] == "charged" and done["charged"])
 
             job_type = str(job.get("type") or "")
             # Цена: пересчёт по боту + сверка с корзиной (ревизия п.5)
@@ -7469,8 +7473,8 @@ async def _studio_handle_job(app: Application, job: dict) -> None:
                 await _studio_complete(job_id, "error", "price_changed", {"actual_cost": cost})
                 return
 
-            charged = False
-            if cost > 0 and not is_admin(user_id):
+            charged = already_charged
+            if cost > 0 and not is_admin(user_id) and not already_charged:
                 if not spend_izyminki(user_id, cost):
                     record_studio_done_job(job_id, user_id, False, cost, "error", "not_enough_funds", "{}")
                     await _studio_complete(
@@ -7479,6 +7483,9 @@ async def _studio_handle_job(app: Application, job: dict) -> None:
                     )
                     return
                 charged = True
+                # Журналируем списание ДО генерации: упадём во время генерации —
+                # при повторном взятии job'а не спишем второй раз.
+                record_studio_done_job(job_id, user_id, True, cost, "charged", "", "{}")
 
             try:
                 result = await _studio_execute_job(app, job)

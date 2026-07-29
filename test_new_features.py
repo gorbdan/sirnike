@@ -1121,6 +1121,7 @@ _studio_api_orig = S._studio_api
 _studio_exec_orig = S._studio_execute_job
 
 _bb_uid = 9701
+_run_tag = str(int(time.time() * 1000))  # уникальные job-id: тестовая SQLite переживает прогоны
 S.create_user_if_not_exists(_bb_uid, "studio_user", 0)
 S.add_izyminki(_bb_uid, 100)
 _bal0 = S.get_balance(_bb_uid)
@@ -1128,7 +1129,7 @@ _bal0 = S.get_balance(_bb_uid)
 # 13.8 happy path: списание, генерация, complete
 S._studio_api = AsyncMock(return_value={})
 S._studio_execute_job = AsyncMock(return_value={"frame_url": "https://i.ibb.co/x.png"})
-_job = {"id": "job-1", "user_id": _bb_uid, "type": "frame",
+_job = {"id": f"job-1-{_run_tag}", "user_id": _bb_uid, "type": "frame",
         "payload": json.dumps({"frame_prompt": "cat", "expected_cost": S.BASE_GENERATION_COST})}
 asyncio.run(S._studio_handle_job(types.SimpleNamespace(bot=AsyncMock()), _job))
 check("13.8 happy path: списано ровно по цене", S.get_balance(_bb_uid) == _bal0 - S.BASE_GENERATION_COST,
@@ -1151,7 +1152,7 @@ check("13.12 повторный job: complete переотправлен",
 S._studio_api = AsyncMock(return_value={})
 S._studio_execute_job = AsyncMock(return_value={})
 _bal2 = S.get_balance(_bb_uid)
-_job_pc = {"id": "job-2", "user_id": _bb_uid, "type": "frame",
+_job_pc = {"id": f"job-2-{_run_tag}", "user_id": _bb_uid, "type": "frame",
            "payload": json.dumps({"frame_prompt": "cat", "expected_cost": 1})}
 asyncio.run(S._studio_handle_job(types.SimpleNamespace(bot=AsyncMock()), _job_pc))
 _c = [c for c in S._studio_api.await_args_list if c.args[0] == "complete"]
@@ -1165,7 +1166,7 @@ while S.get_balance(_poor_uid) > 0:
     S.spend_izyminki(_poor_uid, S.get_balance(_poor_uid))
 S._studio_api = AsyncMock(return_value={})
 S._studio_execute_job = AsyncMock(return_value={})
-_job_nf = {"id": "job-3", "user_id": _poor_uid, "type": "frame",
+_job_nf = {"id": f"job-3-{_run_tag}", "user_id": _poor_uid, "type": "frame",
            "payload": json.dumps({"frame_prompt": "cat"})}
 asyncio.run(S._studio_handle_job(types.SimpleNamespace(bot=AsyncMock()), _job_nf))
 _c = [c for c in S._studio_api.await_args_list if c.args[0] == "complete"]
@@ -1176,7 +1177,7 @@ check("13.14 not_enough_funds: error и генерация не вызвана",
 S._studio_api = AsyncMock(return_value={})
 S._studio_execute_job = AsyncMock(side_effect=Exception("provider exploded: server 500"))
 _bal3 = S.get_balance(_bb_uid)
-_job_fail = {"id": "job-4", "user_id": _bb_uid, "type": "frame",
+_job_fail = {"id": f"job-4-{_run_tag}", "user_id": _bb_uid, "type": "frame",
              "payload": json.dumps({"frame_prompt": "cat", "expected_cost": S.BASE_GENERATION_COST})}
 asyncio.run(S._studio_handle_job(types.SimpleNamespace(bot=AsyncMock()), _job_fail))
 _c = [c for c in S._studio_api.await_args_list if c.args[0] == "complete"]
@@ -1187,11 +1188,28 @@ check("13.16 сбой генерации: complete с error=provider",
 # 13.17 модерация классифицируется отдельно
 S._studio_api = AsyncMock(return_value={})
 S._studio_execute_job = AsyncMock(side_effect=Exception("blocked by content filter / moderation"))
-_job_mod = {"id": "job-5", "user_id": _bb_uid, "type": "frame",
+_job_mod = {"id": f"job-5-{_run_tag}", "user_id": _bb_uid, "type": "frame",
             "payload": json.dumps({"frame_prompt": "cat", "expected_cost": S.BASE_GENERATION_COST})}
 asyncio.run(S._studio_handle_job(types.SimpleNamespace(bot=AsyncMock()), _job_mod))
 _c = [c for c in S._studio_api.await_args_list if c.args[0] == "complete"]
 check("13.17 модерация -> error=moderation", _c and _c[-1].args[1]["error"] == "moderation", str(_c))
+
+# 13.20 крэш между списанием и генерацией: запись status='charged' в журнале —
+# повторное взятие job'а НЕ списывает второй раз, но генерацию повторяет
+S._studio_api = AsyncMock(return_value={})
+S._studio_execute_job = AsyncMock(return_value={"frame_url": "https://i.ibb.co/retry.png"})
+_job6_id = f"job-6-{_run_tag}"
+S.record_studio_done_job(_job6_id, _bb_uid, True, S.BASE_GENERATION_COST, "charged", "", "{}")
+_bal4 = S.get_balance(_bb_uid)
+_job_crash = {"id": _job6_id, "user_id": _bb_uid, "type": "frame",
+              "payload": json.dumps({"frame_prompt": "cat", "expected_cost": S.BASE_GENERATION_COST})}
+asyncio.run(S._studio_handle_job(types.SimpleNamespace(bot=AsyncMock()), _job_crash))
+check("13.20 после крэша: повторное взятие не списывает второй раз",
+      S.get_balance(_bb_uid) == _bal4, f"bal={S.get_balance(_bb_uid)}")
+check("13.21 после крэша: генерация повторена и complete=done",
+      S._studio_execute_job.await_args_list != [] and
+      any(c.args[0] == "complete" and c.args[1]["status"] == "done" for c in S._studio_api.await_args_list),
+      str(S._studio_api.await_args_list))
 
 # 13.18 прайс-фид: модели с длительностями и тарифами
 _feed = S._studio_price_feed()

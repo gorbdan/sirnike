@@ -1222,6 +1222,51 @@ check("13.19 прайс-фид: frame_cost и max_scenes на месте",
 S._studio_api = _studio_api_orig
 S._studio_execute_job = _studio_exec_orig
 
+# 13.22 stitch: меньше 2 клипов -> ValueError, без обращения к ffmpeg
+try:
+    asyncio.run(S._studio_generate_stitch(types.SimpleNamespace(bot=AsyncMock()), _bb_uid, {"clips": ["only-one"]}))
+    check("13.22 stitch <2 клипов -> исключение", False)
+except ValueError:
+    check("13.22 stitch <2 клипов -> исключение", True)
+
+# 13.23-13.24 stitch: реальный ffmpeg — склейка клипа со звуком и без звука
+# в один файл (ревизия ТЗ п.8: тихая дорожка для клипов без звука)
+import shutil as _shutil  # noqa: E402
+if _shutil.which("ffmpeg") and _shutil.which("ffprobe"):
+    _stitch_dir = tempfile.mkdtemp(prefix="test_stitch_src_")
+    _clip_silent = os.path.join(_stitch_dir, "silent.mp4")
+    _clip_audio = os.path.join(_stitch_dir, "audio.mp4")
+    asyncio.run(S._studio_ffmpeg_run(
+        "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=blue:s=320x180:d=1",
+        "-c:v", "libx264", "-t", "1", _clip_silent,
+    ))
+    asyncio.run(S._studio_ffmpeg_run(
+        "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=red:s=320x180:d=1",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+        "-c:v", "libx264", "-c:a", "aac", "-shortest", _clip_audio,
+    ))
+
+    async def _fake_download_stitch(url):
+        with open(url, "rb") as f:
+            return f.read()
+
+    _orig_download = S.download_video_bytes_with_fallback
+    S.download_video_bytes_with_fallback = _fake_download_stitch
+    _fake_app = types.SimpleNamespace(bot=AsyncMock())
+    _stitch_result = asyncio.run(S._studio_generate_stitch(
+        _fake_app, _bb_uid, {"clips": [_clip_silent, _clip_audio], "aspect": "16:9"},
+    ))
+    S.download_video_bytes_with_fallback = _orig_download
+    check("13.23 stitch: результат содержит final_url, финал отправлен в чат",
+          "final_url" in _stitch_result and _fake_app.bot.send_video.await_args is not None, str(_stitch_result))
+    _sent_kwargs = _fake_app.bot.send_video.await_args.kwargs
+    check("13.24 stitch: send_video получил непустые байты финального ролика",
+          isinstance(_sent_kwargs.get("video"), io.BytesIO) and _sent_kwargs["video"].getbuffer().nbytes > 0,
+          str(_sent_kwargs.get("video")))
+    _shutil.rmtree(_stitch_dir, ignore_errors=True)
+else:
+    check("13.23 stitch: ffmpeg недоступен локально, склейка не проверена", True)
+
 # ════════════════ ИТОГ ════════════════
 print()
 print(f"PASS: {len(PASS)}  FAIL: {len(FAIL)}")

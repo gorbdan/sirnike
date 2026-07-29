@@ -1254,10 +1254,30 @@ def main_menu_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
         prompt_library_button = InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb)
 
     video_label = "🎬 Видео для Reels" if SEEDANCE_ENABLED else "🎬 Видео для Reels 🚧"
+
+    # Студия мультиков: ТОЛЬКО инлайн-кнопка (web_app) — вебапп, открытый
+    # с нижней reply-кнопки, НЕ получает initData от Telegram (прод-аудит
+    # 2026-07-28, platform=tdesktop: initData пуст всегда, initDataUnsafe
+    # пустой объект), а студии initData обязателен для каждого запроса.
+    # ?tab=studio — вебапп сразу открывает таб студии.
+    studio_button = None
+    if STUDIO_ENABLED and PROMPT_WEBAPP_URL and user_id is not None:
+        studio_button = InlineKeyboardButton(
+            "🎬 Студия мультиков",
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=studio"),
+        )
+
+    help_button = InlineKeyboardButton("❓ Как пользоваться", callback_data="show_help")
+    model_button = (
+        InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu")
+        if GPT5_IMAGE_ENABLED else None
+    )
+
     # Ряды сгруппированы по смысловым зонам сверху вниз: продукты → витрина →
     # деньги → помощь/фидбек → настройка — раньше «🐞 Баг-баунти» стоял целым
     # рядом посреди меню, а «🚨 Проблема» была оторвана от него (обе кнопки —
-    # обратная связь, макет утверждён Аней 2026-07-20).
+    # обратная связь, макет утверждён Аней 2026-07-20). Витрина+студия и
+    # помощь+настройка сведены в общие ряды по просьбе Ани 2026-07-29.
     rows = [
         # Продукты — сетка 2×N зеркалит нижнюю reply-клавиатуру (persistent_menu_kb).
         [
@@ -1268,30 +1288,19 @@ def main_menu_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
             InlineKeyboardButton("🖼️ Улучшить фото", callback_data="enhance_photo"),
             InlineKeyboardButton("🪄 Аватар", callback_data="avatar_actions"),
         ],
-        # Витрина — во всю ширину
-        [prompt_library_button],
-        # Студия мультиков: ТОЛЬКО инлайн-кнопка (web_app) — вебапп, открытый
-        # с нижней reply-кнопки, НЕ получает initData от Telegram (прод-аудит
-        # 2026-07-28, platform=tdesktop: initData пуст всегда, initDataUnsafe
-        # пустой объект), а студии initData обязателен для каждого запроса.
-        # ?tab=studio — вебапп сразу открывает таб студии.
-        *([[InlineKeyboardButton(
-            "🎬 Студия мультиков",
-            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=studio"),
-        )]] if (STUDIO_ENABLED and PROMPT_WEBAPP_URL and user_id is not None) else []),
+        # Витрина — с студией в одном ряду, если студия включена
+        [prompt_library_button, studio_button] if studio_button else [prompt_library_button],
         # Деньги
         [
             InlineKeyboardButton("💰 Баланс", callback_data="show_buy"),
             InlineKeyboardButton("🎁 Пригласить друга", callback_data="open_ref"),
         ],
-        # Помощь и обратная связь
-        [InlineKeyboardButton("❓ Как пользоваться", callback_data="show_help")],
+        # Помощь — с настройкой модели в одном ряду, если настройка включена
+        [help_button, model_button] if model_button else [help_button],
         [
             InlineKeyboardButton("🚨 Проблема", callback_data="report_problem"),
             InlineKeyboardButton("🐞 Баг-баунти", callback_data="bug_bounty"),
         ],
-        # Условная настройка — последней, одна в ряду, чтобы сетка не дёргалась при выключении
-        *([[InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu")]] if GPT5_IMAGE_ENABLED else []),
     ]
     return InlineKeyboardMarkup(rows)
 

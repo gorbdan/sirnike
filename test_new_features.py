@@ -1084,6 +1084,126 @@ _help_src = _inspect.getsource(S.help_command)
 check("12.10 справка знает про «Улучшить фото» и без списка моделей",
       "🖼️ Улучшить фото" in _help_src and "Seedance 2, Kling" not in _help_src)
 
+# ════════ БЛОК 13: студия мультиков — воркер D1-очереди (Ф1) ════════
+print("Блок 13: студия мультиков (Ф1)")
+
+# 13.1 цены: кадр без рефов = BASE_GENERATION_COST, клип = секунды × тариф
+check("13.1 цена кадра без рефов", S._studio_compute_cost("frame", {}) == S.BASE_GENERATION_COST)
+_clip_cost = S._studio_compute_cost("clip", {"model": "seedance2_fast", "duration": 5})
+check("13.2 цена клипа seedance2_fast 5с",
+      _clip_cost == S.calc_seedance_cost(5, S.SEEDANCE_FAST_COST_PER_SECOND), str(_clip_cost))
+try:
+    S._studio_compute_cost("clip", {"model": "несуществующая"})
+    check("13.3 неизвестная модель клипа -> исключение", False)
+except ValueError:
+    check("13.3 неизвестная модель клипа -> исключение", True)
+check("13.4 scenario/stitch бесплатны",
+      S._studio_compute_cost("scenario", {}) == 0 and S._studio_compute_cost("stitch", {}) == 0)
+
+# 13.5 парсер сцен: терпит ```json-забор и болтовню вокруг
+_scenes = S._studio_parse_scenes(
+    'Вот сцены:\n```json\n[{"frame_prompt": "cat on roof", "video_prompt": "cat jumps"},'
+    '{"frame_prompt": "cat lands", "video_prompt": ""}]\n```\nГотово!'
+)
+check("13.5 парсер сцен достаёт JSON из забора", len(_scenes) == 2 and _scenes[0]["frame_prompt"] == "cat on roof", str(_scenes))
+try:
+    S._studio_parse_scenes("никакого json тут нет")
+    check("13.6 мусор без JSON -> исключение", False)
+except ValueError:
+    check("13.6 мусор без JSON -> исключение", True)
+_many = json.dumps([{"frame_prompt": f"scene {i}"} for i in range(20)])
+check("13.7 парсер режет по STUDIO_MAX_SCENES",
+      len(S._studio_parse_scenes(_many)) == S.STUDIO_MAX_SCENES)
+
+# Обвязка для _studio_handle_job: мокаем сеть (complete) и генерацию
+S._studio_semaphore = asyncio.Semaphore(3)
+_studio_api_orig = S._studio_api
+_studio_exec_orig = S._studio_execute_job
+
+_bb_uid = 9701
+S.create_user_if_not_exists(_bb_uid, "studio_user", 0)
+S.add_izyminki(_bb_uid, 100)
+_bal0 = S.get_balance(_bb_uid)
+
+# 13.8 happy path: списание, генерация, complete
+S._studio_api = AsyncMock(return_value={})
+S._studio_execute_job = AsyncMock(return_value={"frame_url": "https://i.ibb.co/x.png"})
+_job = {"id": "job-1", "user_id": _bb_uid, "type": "frame",
+        "payload": json.dumps({"frame_prompt": "cat", "expected_cost": S.BASE_GENERATION_COST})}
+asyncio.run(S._studio_handle_job(types.SimpleNamespace(bot=AsyncMock()), _job))
+check("13.8 happy path: списано ровно по цене", S.get_balance(_bb_uid) == _bal0 - S.BASE_GENERATION_COST,
+      f"bal={S.get_balance(_bb_uid)}")
+_complete_calls = [c for c in S._studio_api.await_args_list if c.args[0] == "complete"]
+check("13.9 happy path: complete со status=done",
+      _complete_calls and _complete_calls[-1].args[1]["status"] == "done", str(_complete_calls))
+
+# 13.10 идемпотентность: тот же job снова -> без генерации и денег, только complete
+S._studio_api = AsyncMock(return_value={})
+S._studio_execute_job = AsyncMock(return_value={"frame_url": "another"})
+_bal1 = S.get_balance(_bb_uid)
+asyncio.run(S._studio_handle_job(types.SimpleNamespace(bot=AsyncMock()), _job))
+check("13.10 повторный job: баланс не тронут", S.get_balance(_bb_uid) == _bal1)
+check("13.11 повторный job: генерация НЕ вызвана", not S._studio_execute_job.await_args_list)
+check("13.12 повторный job: complete переотправлен",
+      any(c.args[0] == "complete" for c in S._studio_api.await_args_list))
+
+# 13.13 price_changed: ожидаемая цена не сошлась -> отказ без списания
+S._studio_api = AsyncMock(return_value={})
+S._studio_execute_job = AsyncMock(return_value={})
+_bal2 = S.get_balance(_bb_uid)
+_job_pc = {"id": "job-2", "user_id": _bb_uid, "type": "frame",
+           "payload": json.dumps({"frame_prompt": "cat", "expected_cost": 1})}
+asyncio.run(S._studio_handle_job(types.SimpleNamespace(bot=AsyncMock()), _job_pc))
+_c = [c for c in S._studio_api.await_args_list if c.args[0] == "complete"]
+check("13.13 price_changed: error без списания",
+      S.get_balance(_bb_uid) == _bal2 and _c and _c[-1].args[1]["error"] == "price_changed", str(_c))
+
+# 13.14 not_enough_funds: пустой баланс -> отказ, генерация не запущена
+_poor_uid = 9702
+S.create_user_if_not_exists(_poor_uid, "poor", 0)
+while S.get_balance(_poor_uid) > 0:
+    S.spend_izyminki(_poor_uid, S.get_balance(_poor_uid))
+S._studio_api = AsyncMock(return_value={})
+S._studio_execute_job = AsyncMock(return_value={})
+_job_nf = {"id": "job-3", "user_id": _poor_uid, "type": "frame",
+           "payload": json.dumps({"frame_prompt": "cat"})}
+asyncio.run(S._studio_handle_job(types.SimpleNamespace(bot=AsyncMock()), _job_nf))
+_c = [c for c in S._studio_api.await_args_list if c.args[0] == "complete"]
+check("13.14 not_enough_funds: error и генерация не вызвана",
+      _c and _c[-1].args[1]["error"] == "not_enough_funds" and not S._studio_execute_job.await_args_list, str(_c))
+
+# 13.15 возврат при ошибке генерации
+S._studio_api = AsyncMock(return_value={})
+S._studio_execute_job = AsyncMock(side_effect=Exception("provider exploded: server 500"))
+_bal3 = S.get_balance(_bb_uid)
+_job_fail = {"id": "job-4", "user_id": _bb_uid, "type": "frame",
+             "payload": json.dumps({"frame_prompt": "cat", "expected_cost": S.BASE_GENERATION_COST})}
+asyncio.run(S._studio_handle_job(types.SimpleNamespace(bot=AsyncMock()), _job_fail))
+_c = [c for c in S._studio_api.await_args_list if c.args[0] == "complete"]
+check("13.15 сбой генерации: деньги возвращены", S.get_balance(_bb_uid) == _bal3, f"bal={S.get_balance(_bb_uid)}")
+check("13.16 сбой генерации: complete с error=provider",
+      _c and _c[-1].args[1]["status"] == "error" and _c[-1].args[1]["error"] == "provider", str(_c))
+
+# 13.17 модерация классифицируется отдельно
+S._studio_api = AsyncMock(return_value={})
+S._studio_execute_job = AsyncMock(side_effect=Exception("blocked by content filter / moderation"))
+_job_mod = {"id": "job-5", "user_id": _bb_uid, "type": "frame",
+            "payload": json.dumps({"frame_prompt": "cat", "expected_cost": S.BASE_GENERATION_COST})}
+asyncio.run(S._studio_handle_job(types.SimpleNamespace(bot=AsyncMock()), _job_mod))
+_c = [c for c in S._studio_api.await_args_list if c.args[0] == "complete"]
+check("13.17 модерация -> error=moderation", _c and _c[-1].args[1]["error"] == "moderation", str(_c))
+
+# 13.18 прайс-фид: модели с длительностями и тарифами
+_feed = S._studio_price_feed()
+check("13.18 прайс-фид: есть модели и у каждой durations+cost_per_second",
+      _feed["models"] and all("durations" in m and "cost_per_second" in m for m in _feed["models"].values()),
+      str(_feed))
+check("13.19 прайс-фид: frame_cost и max_scenes на месте",
+      _feed["frame_cost"] == S.BASE_GENERATION_COST and _feed["max_scenes"] == S.STUDIO_MAX_SCENES)
+
+S._studio_api = _studio_api_orig
+S._studio_execute_job = _studio_exec_orig
+
 # ════════════════ ИТОГ ════════════════
 print()
 print(f"PASS: {len(PASS)}  FAIL: {len(FAIL)}")

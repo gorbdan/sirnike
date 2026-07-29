@@ -1268,6 +1268,15 @@ def main_menu_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
         ],
         # Витрина — во всю ширину
         [prompt_library_button],
+        # Студия мультиков: ТОЛЬКО инлайн-кнопка (web_app) — вебапп, открытый
+        # с нижней reply-кнопки, НЕ получает initData от Telegram (прод-аудит
+        # 2026-07-28, platform=tdesktop: initData пуст всегда, initDataUnsafe
+        # пустой объект), а студии initData обязателен для каждого запроса.
+        # ?tab=studio — вебапп сразу открывает таб студии.
+        *([[InlineKeyboardButton(
+            "🎬 Студия мультиков",
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=studio"),
+        )]] if (STUDIO_ENABLED and PROMPT_WEBAPP_URL and user_id is not None) else []),
         # Деньги
         [
             InlineKeyboardButton("💰 Баланс", callback_data="show_buy"),
@@ -7404,9 +7413,16 @@ async def _studio_generate_clip(app: Application, user_id: int, payload: dict) -
     )
     if not clip_url:
         raise Exception("studio clip: empty result url (download_error)")
+    # Бэкап в чат ФАЙЛОМ, не URL: прод-аудит 2026-07-28 показал, что
+    # send_video(video=<zveno_url>) молча падает (Telegram не может скачать
+    # Zveno-URL — редиректы/размер), и ни один клип-бэкап юзерам не доехал.
+    # Обычный видео-путь бота всегда качает байты — делаем так же.
     try:
+        clip_bytes = await download_video_bytes_with_fallback(clip_url)
+        clip_buffer = io.BytesIO(clip_bytes)
+        clip_buffer.name = "studio_clip.mp4"
         await app.bot.send_video(
-            chat_id=user_id, video=clip_url,
+            chat_id=user_id, video=clip_buffer, supports_streaming=True,
             caption="🎬 Клип из студии мультиков готов — смотри в студии или здесь.",
         )
     except Exception:

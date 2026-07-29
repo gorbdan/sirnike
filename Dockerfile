@@ -8,8 +8,9 @@ ENV BOT_LOG_DIR=/app/data
 WORKDIR /app
 
 # System libs needed by onnxruntime (rembg dependency for local bg removal)
+# + ffmpeg for студия нейромультиков (склейка клипов, Ф3)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 libglib2.0-0 \
+    libgl1 libglib2.0-0 ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

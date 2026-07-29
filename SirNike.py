@@ -7,6 +7,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import tempfile
 import time
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
@@ -7430,6 +7432,104 @@ async def _studio_generate_clip(app: Application, user_id: int, payload: dict) -
     return {"clip_url": clip_url, "duration": duration}
 
 
+STUDIO_STITCH_RESOLUTION = {"9:16": "1080x1920", "16:9": "1920x1080"}
+
+
+async def _studio_ffmpeg_run(*args: str, timeout: int = 300) -> None:
+    """Запускает ffmpeg/ffprobe, кидает исключение с хвостом stderr при ошибке."""
+    proc = await asyncio.create_subprocess_exec(
+        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise Exception(f"studio stitch: ffmpeg timeout ({args[0]})")
+    if proc.returncode != 0:
+        raise Exception(f"studio stitch: {args[0]} failed: {stderr.decode(errors='replace')[-500:]}")
+
+
+async def _studio_clip_has_audio(path: str) -> bool:
+    proc = await asyncio.create_subprocess_exec(
+        "ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index",
+        "-of", "csv=p=0", path,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+    return bool(stdout.decode(errors="replace").strip())
+
+
+async def _studio_normalize_clip(src: str, dst: str, aspect: str) -> None:
+    """Единый формат под concat: одно разрешение/fps/кодеки + звуковая
+    дорожка обязательна (тихая, если в исходнике её нет — ревизия ТЗ п.8,
+    иначе ffmpeg concat падает на смеси клипов со звуком и без)."""
+    res = STUDIO_STITCH_RESOLUTION.get(aspect, STUDIO_STITCH_RESOLUTION["9:16"])
+    w, h = res.split("x")
+    scale_filter = (
+        f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
+        f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30"
+    )
+    has_audio = await _studio_clip_has_audio(src)
+    args = ["ffmpeg", "-y", "-i", src]
+    if not has_audio:
+        args += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+    args += ["-vf", scale_filter, "-map", "0:v:0"]
+    args += ["-map", "1:a:0" if not has_audio else "0:a:0"]
+    args += [
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "128k", "-shortest",
+        dst,
+    ]
+    await _studio_ffmpeg_run(*args)
+
+
+async def _studio_generate_stitch(app: Application, user_id: int, payload: dict) -> dict:
+    """Склейка готовых клипов сцен в один ролик. Хостинга видео у нас нет
+    (ревизия ТЗ), поэтому итог живёт в чате — файлом, как и клип-бэкапы;
+    в D1 final_url не пишем (Function помечает проект done без плеера в
+    вебаппе, только ссылка «смотри в чате»)."""
+    clip_urls = [u for u in (payload.get("clips") or []) if isinstance(u, str) and u.strip()]
+    if len(clip_urls) < 2:
+        raise ValueError("studio stitch: need at least 2 clips")
+    aspect = str(payload.get("aspect") or "9:16")
+    if aspect not in STUDIO_STITCH_RESOLUTION:
+        aspect = "9:16"
+
+    workdir = tempfile.mkdtemp(prefix="studio_stitch_")
+    try:
+        normalized = []
+        for i, url in enumerate(clip_urls):
+            raw_path = os.path.join(workdir, f"raw_{i}.mp4")
+            with open(raw_path, "wb") as f:
+                f.write(await download_video_bytes_with_fallback(url))
+            norm_path = os.path.join(workdir, f"norm_{i}.mp4")
+            await _studio_normalize_clip(raw_path, norm_path, aspect)
+            normalized.append(norm_path)
+
+        list_path = os.path.join(workdir, "concat.txt")
+        with open(list_path, "w") as f:
+            for p in normalized:
+                f.write(f"file '{p}'\n")
+
+        final_path = os.path.join(workdir, "final.mp4")
+        await _studio_ffmpeg_run(
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", final_path,
+        )
+
+        with open(final_path, "rb") as f:
+            final_bytes = f.read()
+        final_buffer = io.BytesIO(final_bytes)
+        final_buffer.name = "studio_final.mp4"
+        await app.bot.send_video(
+            chat_id=user_id, video=final_buffer, supports_streaming=True,
+            caption="🎬 Мультик из студии склеен — готов!",
+        )
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    return {"final_url": "", "clips_count": len(clip_urls)}
+
+
 async def _studio_execute_job(app: Application, job: dict) -> dict:
     """Генерация без биллинга. Возвращает result-dict, кидает исключения."""
     job_type = str(job.get("type") or "")
@@ -7444,7 +7544,7 @@ async def _studio_execute_job(app: Application, job: dict) -> dict:
     if job_type == "clip":
         return await _studio_generate_clip(app, user_id, payload)
     if job_type == "stitch":
-        raise Exception("studio stitch: not implemented yet (Ф3)")
+        return await _studio_generate_stitch(app, user_id, payload)
     raise ValueError(f"studio: unknown job type {job_type}")
 
 

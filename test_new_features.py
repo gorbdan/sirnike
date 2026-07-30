@@ -197,9 +197,21 @@ S.SEEDANCE_ENABLED = _se
 
 mkb = S.main_menu_kb()
 mcbs = [b.callback_data for row in mkb.inline_keyboard for b in row if b.callback_data]
-check("3.14 главное меню: 4 продукта и кнопка image_model_menu",
-      all(c in mcbs for c in ("generate", "video", "avatar_actions", "enhance_photo"))
-      and "image_model_menu" in mcbs, str(mcbs))
+check("3.14 главное меню: только входы в разделы «Фото»/«Видео», без прямых продуктовых кнопок",
+      "menu_photo" in mcbs and "menu_video" in mcbs
+      and not any(c in mcbs for c in ("generate", "video", "avatar_actions", "enhance_photo", "image_model_menu")),
+      str(mcbs))
+
+pkb = S.photo_menu_kb()
+pcbs = [b.callback_data for row in pkb.inline_keyboard for b in row if b.callback_data]
+check("3.14a раздел «Фото»: генерация/улучшение/аватар/модель картинок + назад",
+      all(c in pcbs for c in ("generate", "enhance_photo", "avatar_actions", "image_model_menu", "avatar_back_menu")),
+      str(pcbs))
+
+vkb = S.video_menu_kb()
+vcbs = [b.callback_data for row in vkb.inline_keyboard for b in row if b.callback_data]
+check("3.14b раздел «Видео»: запуск видео + назад",
+      "video" in vcbs and "avatar_back_menu" in vcbs, str(vcbs))
 
 # ════════════════ БЛОК 4: JPEG-конверсия кадров ════════════════
 print("Блок 4: JPEG-конверсия")

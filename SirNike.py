@@ -7238,6 +7238,9 @@ def _studio_price_feed() -> dict:
             # Допустимые длительности обязаны совпадать со снэпом бота —
             # иначе корзина посчитает «7с для Veo» и цена разойдётся.
             "durations": get_seedance_duration_options(code),
+            # Качество (разрешение) — тот же принцип: список кнопок в
+            # вебаппе строго из снэпа бота, иначе можно выбрать несуществующее.
+            "resolutions": get_seedance_mode_options(code),
         }
     return {
         "frame_cost": BASE_GENERATION_COST,
@@ -7378,7 +7381,7 @@ async def _studio_generate_frame(user_id: int, payload: dict) -> dict:
     if not prompt:
         raise ValueError("studio frame: empty prompt")
     aspect = str(payload.get("aspect") or "9:16")
-    if aspect not in ("9:16", "16:9"):
+    if aspect not in ("9:16", "16:9", "4:3"):
         aspect = "9:16"
 
     ref_urls: List[str] = []
@@ -7449,12 +7452,16 @@ async def _studio_generate_clip(app: Application, user_id: int, payload: dict) -
         raise ValueError(f"studio clip: unknown/disabled model {model_code}")
     aspect = str(payload.get("aspect") or "9:16")
     duration = normalize_seedance_duration(int(payload.get("duration") or SEEDANCE_DURATION), model_code)
+    resolution = normalize_seedance_mode(payload.get("resolution") or "720p")
+    if resolution not in get_seedance_mode_options(model_code):
+        resolution = get_seedance_mode_options(model_code)[0]
 
     task_id = await start_seedance_task(
         prompt=video_prompt or "Animate this frame naturally, cartoon style",
         image_url=frame_url,
         user_id=user_id,
         duration=duration,
+        mode=resolution,
         model_code=model_code,
         aspect_ratio=aspect,
     )
@@ -7480,7 +7487,7 @@ async def _studio_generate_clip(app: Application, user_id: int, payload: dict) -
     return {"clip_url": clip_url, "duration": duration}
 
 
-STUDIO_STITCH_RESOLUTION = {"9:16": "1080x1920", "16:9": "1920x1080"}
+STUDIO_STITCH_RESOLUTION = {"9:16": "1080x1920", "16:9": "1920x1080", "4:3": "1440x1080"}
 
 
 async def _studio_ffmpeg_run(*args: str, timeout: int = 300) -> None:

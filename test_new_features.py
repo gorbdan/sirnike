@@ -125,7 +125,7 @@ opts_v = S.get_seedance_duration_options("veo31")
 check("2.16 veo31 duration options только 4/6/8", set(opts_v) <= {4, 6, 8} and len(opts_v) >= 2, str(opts_v))
 opts_k = S.get_seedance_duration_options("kling3")
 check("2.17 kling3 duration options валидны (3..15)", all(3 <= x <= 15 for x in opts_k) and opts_k, str(opts_k))
-check("2.18 mode kling3 = [720p]", S.get_seedance_mode_options("kling3") == ["720p"])
+check("2.18 mode kling3 = [720p, 1080p]", S.get_seedance_mode_options("kling3") == ["720p", "1080p"])
 check("2.19 mode veo31 = [720p]", S.get_seedance_mode_options("veo31") == ["720p"])
 
 st3 = S.UserState(); st3.video_model = "veo31"; st3.video_mode = "480p"
@@ -145,15 +145,17 @@ cbs4 = [b.callback_data for b in flat4 if b.callback_data]
 check("3.1 есть кнопка video_model_kling3", "video_model_kling3" in cbs4)
 check("3.2 есть кнопка video_model_veo31", "video_model_veo31" in cbs4)
 check("3.3 маркер ● на Kling 3.0", any(b.text.startswith("● ") and "Kling" in b.text for b in flat4))
-check("3.4 у kling3 нет кнопок качества video_mode_", not any(c.startswith("video_mode_") for c in cbs4), str(cbs4))
-check("3.5 у kling3 есть 1:1 аспект", any(c == "video_aspect_1x1" for c in cbs4))
+check("3.4 у kling3 есть кнопки качества 720/1080", "video_mode_720" in cbs4 and "video_mode_1080" in cbs4, str(cbs4))
+check("3.5 у kling3 есть 1:1 и 4:3 аспект",
+      any(c == "video_aspect_1x1" for c in cbs4) and any(c == "video_aspect_4x3" for c in cbs4))
 dur_btns = [b.text for b in flat4 if (b.callback_data or "").startswith("video_duration_")]
 check("3.6 цена в кнопке 5с = 40 🍇", any("5с · 40 🍇" in t for t in dur_btns), str(dur_btns))
 
 st5 = S.UserState(); st5.video_model = "veo31"
 kb5 = S.video_kb(st5)
 cbs5 = [b.callback_data for row in kb5.inline_keyboard for b in row if b.callback_data]
-check("3.7 у veo31 НЕТ 1:1 аспекта", "video_aspect_1x1" not in cbs5, str(cbs5))
+check("3.7 у veo31 НЕТ 1:1 и 4:3 аспекта",
+      "video_aspect_1x1" not in cbs5 and "video_aspect_4x3" not in cbs5, str(cbs5))
 check("3.8 у veo31 есть 16:9 и 9:16", "video_aspect_16x9" in cbs5 and "video_aspect_9x16" in cbs5)
 durs5 = [c for c in cbs5 if c.startswith("video_duration_")]
 check("3.9 duration кнопки veo31 только 4/6/8", set(durs5) <= {"video_duration_4", "video_duration_6", "video_duration_8"}, str(durs5))
@@ -498,6 +500,22 @@ asyncio.run(S.button_handler(update, context))
 st9 = context.user_data["state"]
 check("7.7 veo31 сбрасывает аспект 1:1 -> 16:9", st9.video_model == "veo31" and st9.video_aspect_ratio == "16:9",
       f"model={st9.video_model} aspect={st9.video_aspect_ratio}")
+
+# 7.7b kling3: выбор 1080p через video_mode_ callback теперь применяется
+update, context, query = make_update_context("video_model_kling3", user_id=7041)
+asyncio.run(S.button_handler(update, context))
+update.callback_query.data = "video_mode_1080"
+asyncio.run(S.button_handler(update, context))
+st8b = context.user_data["state"]
+check("7.7b kling3: video_mode_1080 переключает режим",
+      st8b.video_model == "kling3" and st8b.video_mode == "1080p", f"mode={st8b.video_mode}")
+
+# 7.7c 4:3 принимается как валидный аспект
+update, context, query = make_update_context("video_aspect_4x3", user_id=7042)
+context.user_data["state"] = S.UserState(video_model="seedance2")
+asyncio.run(S.button_handler(update, context))
+st8c = context.user_data["state"]
+check("7.7c video_aspect_4x3 ставит 4:3", st8c.video_aspect_ratio == "4:3", f"aspect={st8c.video_aspect_ratio}")
 
 # 7.8 выбор модели картинок через callback
 update, context, query = make_update_context("image_model_set_gpt5", user_id=706)

@@ -852,22 +852,40 @@ def normalize_seedance_mode(value: str) -> str:
     raw = raw.replace("р", "p")
     if raw in ("480", "480p"):
         return "480p"
+    if raw in ("1080", "1080p"):
+        return "1080p"
     return "720p"
 
 
 def seedance_mode_ui_label(mode: str) -> str:
     normalized = normalize_seedance_mode(mode)
-    return "480" if normalized == "480p" else "720"
+    if normalized == "480p":
+        return "480"
+    if normalized == "1080p":
+        return "1080"
+    return "720"
 
 
 def get_seedance_mode_options(model_code: Optional[str] = None) -> List[str]:
     if model_code == "seedance2_fast":
-        return [normalize_seedance_mode(SEEDANCE_FAST_MODE)]
-    if model_code in ("kling3", "veo31"):
-        # Zveno: kling-v3.0 и veo-3.1-fast поддерживают только 720p.
+        raw_options = os.getenv("SEEDANCE_FAST_MODE_OPTIONS", "720,1080")
+        parsed: List[str] = []
+        for raw in str(raw_options).split(","):
+            mode = normalize_seedance_mode(raw)
+            if mode not in parsed:
+                parsed.append(mode)
+        default_mode = normalize_seedance_mode(SEEDANCE_FAST_MODE)
+        if default_mode not in parsed:
+            parsed.append(default_mode)
+        return parsed
+    if model_code == "kling3":
+        # Zveno: kling-v3.0 теперь умеет и 720p, и 1080p.
+        return ["720p", "1080p"]
+    if model_code == "veo31":
+        # Zveno: veo-3.1-fast поддерживает только 720p.
         return ["720p"]
 
-    raw_options = os.getenv("SEEDANCE_MODE_OPTIONS", "480,720")
+    raw_options = os.getenv("SEEDANCE_MODE_OPTIONS", "480,720,1080")
     parsed: List[str] = []
     for raw in str(raw_options).split(","):
         mode = normalize_seedance_mode(raw)
@@ -876,8 +894,8 @@ def get_seedance_mode_options(model_code: Optional[str] = None) -> List[str]:
     default_mode = normalize_seedance_mode(SEEDANCE_MODE)
     if default_mode not in parsed:
         parsed.append(default_mode)
-    # Seedance 2 supports 480p/720p. Keep both visible unless explicitly restricted.
-    for fallback_mode in ("480p", "720p"):
+    # Seedance 2 supports 480p/720p/1080p. Keep all visible unless explicitly restricted.
+    for fallback_mode in ("480p", "720p", "1080p"):
         if fallback_mode not in parsed:
             parsed.append(fallback_mode)
     return parsed
@@ -886,7 +904,7 @@ def get_seedance_mode_options(model_code: Optional[str] = None) -> List[str]:
 def get_selected_seedance_mode(state: UserState) -> str:
     selected_model = get_video_model(state)
     options = get_seedance_mode_options(selected_model)
-    if selected_model in ("seedance2_fast", "kling3", "veo31"):
+    if selected_model == "veo31":
         return options[0]
     picked = normalize_seedance_mode(state.video_mode or SEEDANCE_MODE)
     if picked not in options:
@@ -1736,7 +1754,7 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
     if model_buttons_extra:
         rows.append(model_buttons_extra)
     # Режим качества
-    if selected_model in ("seedance2", "wan27"):
+    if selected_model in ("seedance2", "seedance2_fast", "kling3", "wan27"):
         mode_buttons = []
         for mode in get_seedance_mode_options(selected_model):
             prefix = "● " if mode == selected_mode else ""
@@ -1750,10 +1768,12 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
             rows.append(mode_buttons)
     # Формат (aspect ratio)
     selected_aspect = getattr(state, "video_aspect_ratio", "16:9")
-    aspect_options = [("16:9", "📺 16:9"), ("9:16", "📱 9:16"), ("1:1", "⬛ 1:1")]
+    aspect_options = [
+        ("16:9", "📺 16:9"), ("9:16", "📱 9:16"), ("1:1", "⬛ 1:1"), ("4:3", "🖼 4:3"),
+    ]
     if selected_model in ("veo31", "wan27"):
-        # Veo 3.1 и Wan 2.7 не поддерживают квадрат.
-        aspect_options = [(ar, label) for ar, label in aspect_options if ar != "1:1"]
+        # Veo 3.1 и Wan 2.7 не поддерживают квадрат и 4:3.
+        aspect_options = [(ar, label) for ar, label in aspect_options if ar not in ("1:1", "4:3")]
     aspect_buttons = [
         InlineKeyboardButton(
             ("● " if ar == selected_aspect else "") + label,
@@ -1796,7 +1816,7 @@ def video_status_text(state: UserState) -> str:
     фото юзеру не показываем — счётчика достаточно."""
     prompt_done = bool(state.video_prompt.strip())
     _cur_aspect = getattr(state, "video_aspect_ratio", "16:9")
-    _aspect_names = {"16:9": "горизонталь", "9:16": "вертикаль, Reels", "1:1": "квадрат"}
+    _aspect_names = {"16:9": "горизонталь", "9:16": "вертикаль, Reels", "1:1": "квадрат", "4:3": "классика"}
     _aspect_label = f"{_cur_aspect} ({_aspect_names[_cur_aspect]})" if _cur_aspect in _aspect_names else _cur_aspect
     video_images = get_video_image_urls(state)
     image_state = (
@@ -5633,7 +5653,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = get_or_init_state(context)
         state.video_session_active = True
         picked_ar = video_cb.replace("video_aspect_", "", 1).replace("x", ":")
-        if picked_ar in {"16:9", "9:16", "1:1"}:
+        if picked_ar in {"16:9", "9:16", "1:1", "4:3"}:
             state.video_aspect_ratio = picked_ar
         await update_video_panel(query, video_status_text(state), video_kb(state))
         return
@@ -5712,7 +5732,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.video_session_active = True
         state.waiting_for_video_image = True
         selected_model = get_video_model(state)
-        if selected_model != "seedance2":
+        if selected_model not in ("seedance2", "seedance2_fast", "kling3"):
             await update_video_panel(query, video_status_text(state), video_kb(state))
             return
         picked_mode = normalize_seedance_mode(video_cb.replace("video_mode_", "", 1))

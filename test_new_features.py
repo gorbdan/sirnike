@@ -917,6 +917,38 @@ check("10.19 photo_draft_text 2/2", "2/2" in S.photo_draft_text(st10g, 956))
 cbs_2 = [b.callback_data for row in S.photo_draft_kb(st10g, 956).inline_keyboard for b in row]
 check("10.20 кнопки: 2/2 -> есть 'generate'", "generate" in cbs_2, str(cbs_2))
 
+# ════════════════ БЛОК 10b: «Новинки» с рассинхроном cat_idx/item_idx ════════
+print("Блок 10b: библиотека — резолв title по промту при неверных индексах")
+
+
+def make_webapp_update_context(user_id=9501):
+    message = types.SimpleNamespace(reply_text=AsyncMock())
+    update = types.SimpleNamespace(
+        effective_message=message,
+        effective_user=types.SimpleNamespace(id=user_id, username="test"),
+        effective_chat=types.SimpleNamespace(id=user_id),
+    )
+    context = types.SimpleNamespace(user_data={}, application=None, bot=AsyncMock())
+    return update, context, message
+
+
+# Реальный стиль из PROMPT_LIBRARY, но с индексами, указывающими на ДРУГОЙ
+# (несуществующий на этой позиции) стиль — воспроизводит «Новинки», которые
+# шлют позицию в отфильтрованном списке, а не в реальной категории (аудиты
+# 07-02/07-07/07-31). Раньше title откатывался к литералу «шаблон».
+_real_item = S.PROMPT_LIBRARY[0]["items"][0]
+_real_prompt = _real_item["prompt"]
+update10b, context10b, msg10b = make_webapp_update_context()
+asyncio.run(S.apply_webapp_prompt_payload_v2(update10b, context10b, {
+    "action": "set_prompt",
+    "prompt": _real_prompt,
+    "cat_idx": 999, "item_idx": 999,  # заведомо не существует
+}))
+_texts10b = [c.args[0] for c in msg10b.reply_text.await_args_list]
+check("10b.1 title резолвится по промту, а не остаётся «шаблон»",
+      any("шаблон»" not in t and ("Стиль «" in t or "Готово" in t) for t in _texts10b), str(_texts10b))
+check("10b.2 промт сохранён в состояние", context10b.user_data["state"].prompt == _real_prompt)
+
 # ════════════════ БЛОК 11: баг-баунти (reward_bug_) ════════════════
 print("Блок 11: баг-баунти")
 

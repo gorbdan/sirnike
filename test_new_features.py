@@ -1248,9 +1248,16 @@ check("13.18 прайс-фид: есть модели и у каждой duratio
       str(_feed))
 check("13.19 прайс-фид: frame_cost и max_scenes на месте",
       _feed["frame_cost"] == S.BASE_GENERATION_COST and _feed["max_scenes"] == S.STUDIO_MAX_SCENES)
+check("13.19b прайс-фид: у каждой модели resolutions совпадает со снэпом бота",
+      all(m["resolutions"] == S.get_seedance_mode_options(code) for code, m in _feed["models"].items()),
+      str(_feed["models"]))
 
 S._studio_api = _studio_api_orig
 S._studio_execute_job = _studio_exec_orig
+
+# 13.19c студия: 4:3 добавлен в допустимые форматы стежка/кадра
+check("13.19c STUDIO_STITCH_RESOLUTION знает 4:3",
+      S.STUDIO_STITCH_RESOLUTION.get("4:3") == "1440x1080", str(S.STUDIO_STITCH_RESOLUTION))
 
 # 13.22 stitch: меньше 2 клипов -> ValueError, без обращения к ffmpeg
 try:

@@ -1726,6 +1726,29 @@ def prompt_library_admin_kb() -> InlineKeyboardMarkup:
 
 
 # Video control UI (single final implementation).
+def video_model_picker_kb() -> InlineKeyboardMarkup:
+    """Первый экран после «🎬 Видео для Reels» — только выбор модели, без
+    остальных настроек сразу (решение Ани 2026-07-31). Кнопки — те же
+    callback_data video_model_*, что и переключатель модели внутри полной
+    панели: тап редактирует ЭТО ЖЕ сообщение в video_kb/video_status_text
+    через update_video_panel (button_handler, ветка video_cb.startswith
+    ("video_model_")) — новое сообщение не шлётся, ничего дублировать не
+    пришлось."""
+    rows = [[InlineKeyboardButton("Seedance 2", callback_data="video_model_seedance2")]]
+    if SEEDANCE_FAST_ENABLED:
+        rows.append([InlineKeyboardButton("Seedance 2 Fast (бета)", callback_data="video_model_seedance2_fast")])
+    if KLING3_ENABLED:
+        rows.append([InlineKeyboardButton("Kling 3.0 🆕", callback_data="video_model_kling3")])
+    if VEO31_ENABLED:
+        rows.append([InlineKeyboardButton("Veo 3.1 🆕", callback_data="video_model_veo31")])
+    if WAN27_ENABLED:
+        rows.append([InlineKeyboardButton("Wan 2.7 🆕", callback_data="video_model_wan27")])
+    if GEMINI_OMNI_ENABLED:
+        rows.append([InlineKeyboardButton("Gemini Omni 🆕", callback_data="video_model_gemini_omni")])
+    rows.append([InlineKeyboardButton("◀️ В меню", callback_data="avatar_back_menu")])
+    return InlineKeyboardMarkup(rows)
+
+
 def video_kb(state: UserState) -> InlineKeyboardMarkup:
     selected_duration = get_selected_seedance_duration(state)
     selected_model = get_video_model(state)
@@ -3134,15 +3157,13 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE,
         state.waiting_for_video_prompt = False
         state.waiting_for_video_image = True
         state.waiting_for_motion_video = False
+        # Сначала только выбор модели — см. комментарий у video_cb == "video"
+        # в button_handler (тот же флоу, инлайн-путь).
         await update.message.reply_text(
-            "Режим видео включён 🎬\n"
-            "Можно сразу отправлять текст описания и фото без дополнительных кнопок.\n"
-            "Я сохраню всё в видео-буфер.\n\n"
-            "Дальше выбери модель, длительность/качество и нажми «🚀 Запустить видео».",
-        )
-        await update.message.reply_text(
-            video_status_text(state),
-            reply_markup=video_kb(state),
+            "🎬 Видео для Reels\n\n"
+            "Можно сразу отправлять текст описания и фото — сохраню в черновик.\n"
+            "Выбери модель:",
+            reply_markup=video_model_picker_kb(),
         )
         return True
 
@@ -5734,15 +5755,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.waiting_for_video_image = True
         state.waiting_for_motion_video = False
 
+        # Сначала только выбор модели — полная панель настроек открывается
+        # (редактированием этого же сообщения) уже после выбора, см.
+        # video_model_picker_kb и ветку video_cb.startswith("video_model_")
+        # ниже (решение Ани 2026-07-31, было 2 сообщения сразу со всеми
+        # настройками).
         await query.message.reply_text(
-            "Режим видео включён 🎬\n"
-            "Можно сразу отправлять текст описания и фото без дополнительных кнопок.\n"
-            "Я сохраню всё в видео-буфер.\n\n"
-            "Дальше выбери модель, длительность/качество и нажми «🚀 Запустить видео».",
-        )
-        await query.message.reply_text(
-            video_status_text(state),
-            reply_markup=video_kb(state),
+            "🎬 Видео для Reels\n\n"
+            "Можно сразу отправлять текст описания и фото — сохраню в черновик.\n"
+            "Выбери модель:",
+            reply_markup=video_model_picker_kb(),
         )
         return
 

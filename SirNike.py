@@ -5244,7 +5244,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             item = PROMPT_LIBRARY[cat_idx]["items"][item_idx]
             item_kind = get_prompt_item_kind(item)
         except Exception:
-            await _reply_after_callback(query, context, user.id, "Не удалось применить стиль. Попробуй ещё раз.")
+            # callback_data несёт только cat_idx/item_idx (лимит Telegram — 64 байта
+            # на callback_data, промт сюда не влезает) — если индексы не совпадают
+            # с реальным PROMPT_LIBRARY (например, вебапп прислал их для карточки
+            # из синтетической подборки «Новинки», а не по позиции в категории),
+            # восстановить стиль тут нечем. «Попробуй ещё раз» вводит в
+            # заблуждение — с теми же индексами повторный тап даст тот же отказ.
+            if PROMPT_WEBAPP_URL:
+                retry_btn = InlineKeyboardButton(
+                    "📚 Библиотека стилей",
+                    web_app=WebAppInfo(url=get_prompt_webapp_url(user.id)),
+                )
+            else:
+                retry_btn = InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open")
+            await _reply_after_callback(
+                query, context, user.id,
+                "Не удалось применить именно эту карточку (возможно, устарела).\n"
+                "Открой библиотеку и выбери стиль из категории заново:",
+                reply_markup=InlineKeyboardMarkup([[retry_btn]]),
+            )
             return
 
         if update.effective_user:
@@ -5712,13 +5730,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif picked_model == "veo31" and VEO31_ENABLED:
             state.video_model = "veo31"
             state.video_mode = "720p"
-            if state.video_aspect_ratio == "1:1":
+            # Veo 3.1 умеет только 16:9/9:16 — «1:1»/«4:3» с прошлой модели
+            # иначе остаются в сводке невыбранными и провайдер их не примет.
+            if state.video_aspect_ratio not in ("16:9", "9:16"):
                 state.video_aspect_ratio = "16:9"
         elif picked_model == "wan27" and WAN27_ENABLED:
             state.video_model = "wan27"
             if not state.video_mode:
                 state.video_mode = normalize_seedance_mode(SEEDANCE_MODE)
-            if state.video_aspect_ratio == "1:1":
+            # Wan 2.7 умеет только 16:9/9:16 — см. комментарий у veo31 выше.
+            if state.video_aspect_ratio not in ("16:9", "9:16"):
                 state.video_aspect_ratio = "16:9"
         else:
             state.video_model = "seedance2"

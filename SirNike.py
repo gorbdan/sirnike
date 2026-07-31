@@ -3744,6 +3744,28 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
             resolved_cat_idx = None
             resolved_item_idx = None
 
+    # Индексы не подошли (например, «Новинки» шлёт позицию в отфильтрованном
+    # списке, а не в реальной категории — живой аудит 2026-07-31), но сам
+    # prompt у нас есть — ищем стиль по содержимому промта по всей библиотеке.
+    # В отличие от резолва по индексам это НЕ угадывание: совпадение самого
+    # промта — надёжное доказательство, что это тот самый стиль, а не чужой.
+    # Раньше в этом случае title откатывался к литералу «шаблон» (находка
+    # «Шаблон «шаблон»» из аудитов 07-02/07-07/07-31).
+    if item is None and prompt:
+        for cat_i, category in enumerate(PROMPT_LIBRARY):
+            for item_i, cand in enumerate(category.get("items") or []):
+                cand_prompt = str(cand.get("prompt") or "").strip()
+                if not cand_prompt:
+                    continue
+                _prefix_len = min(len(cand_prompt), len(prompt), 80)
+                if _prefix_len > 0 and cand_prompt[:_prefix_len] == prompt[:_prefix_len]:
+                    item = cand
+                    resolved_cat_idx = cat_i
+                    resolved_item_idx = item_i
+                    break
+            if item is not None:
+                break
+
     if item is not None:
         resolved_title = str(item.get("title") or "").strip()
         # Лейбл для аналитики и для сообщения пользователю: у фото-стилей часто

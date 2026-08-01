@@ -4,6 +4,12 @@
 
 ## Очередь
 
+- [ ] P1 · Видео-панель — не спрашивать модель дважды, убрать кнопки-модели
+      из полной панели (там уже есть текстом). Макет утверждён Аней. Полное
+      ТЗ: [docs/specs/2026-07-31_video_panel_declutter.md](../specs/2026-07-31_video_panel_declutter.md).
+      Первая задача под новое правило разделения (docs/roles/backend.md,
+      docs/roles/frontend.md, 2026-07-31) — SirNike.py теперь целиком зона
+      бэкенда, фронтенд только пишет ТЗ.
 - [ ] P1 · Провайдер EvoLink — Gemini Omni, Kling Motion Control, перевод Seedance.
       Полное ТЗ: [docs/specs/2026-07-31_evolink_video_provider.md](../specs/2026-07-31_evolink_video_provider.md).
       2026-07-31 (заход 1, без ключа): `EVOLINK_API_BASE`/`EVOLINK_API_KEY`/

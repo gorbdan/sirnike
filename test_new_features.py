@@ -142,9 +142,12 @@ st4 = S.UserState(); st4.video_model = "kling3"
 kb4 = S.video_kb(st4)
 flat4 = [b for row in kb4.inline_keyboard for b in row]
 cbs4 = [b.callback_data for b in flat4 if b.callback_data]
-check("3.1 есть кнопка video_model_kling3", "video_model_kling3" in cbs4)
-check("3.2 есть кнопка video_model_veo31", "video_model_veo31" in cbs4)
-check("3.3 маркер ● на Kling 3.0", any(b.text.startswith("● ") and "Kling" in b.text for b in flat4))
+# Блок кнопок-моделей убран из полной панели (ТЗ video_panel_declutter):
+# модель видна текстом в шапке, вместо переключателей — одна кнопка смены.
+check("3.1 в полной панели НЕТ кнопок video_model_*", not any(c.startswith("video_model_") for c in cbs4), str(cbs4))
+check("3.2 есть кнопка «Сменить модель»", "video_change_model" in cbs4)
+check("3.3 модель в пикере: маркеров ● на моделях в панели нет",
+      not any(b.text.startswith("● ") and "Kling" in b.text for b in flat4))
 check("3.4 у kling3 есть кнопки качества 720/1080", "video_mode_720" in cbs4 and "video_mode_1080" in cbs4, str(cbs4))
 check("3.5 у kling3 есть 1:1 и 4:3 аспект",
       any(c == "video_aspect_1x1" for c in cbs4) and any(c == "video_aspect_4x3" for c in cbs4))
@@ -192,6 +195,12 @@ check("3.36 пикер модели видео: только модели + на
       and "video_model_seedance2" in pcbs, str(pcbs))
 check("3.37 пикер модели видео: нет кнопок длительности/формата/качества",
       not any(c.startswith(("video_duration_", "video_aspect_", "video_mode_")) for c in pcbs), str(pcbs))
+
+# ТЗ video_panel_declutter: пикер не показывается повторно, если модель уже
+# выбиралась в этой сессии; «Сменить модель» возвращает в пикер; reset
+# переносит выбор как липкую настройку.
+st_vp = S.UserState()
+check("3.38 свежий стейт: video_model_picked=False", st_vp.video_model_picked is False)
 
 kb6 = S.result_actions_kb(user_id=123, bot_username="TestBot")
 cbs6 = [b.callback_data for row in kb6.inline_keyboard for b in row if b.callback_data]
@@ -527,6 +536,33 @@ context.user_data["state"] = S.UserState(video_model="seedance2")
 asyncio.run(S.button_handler(update, context))
 st8c = context.user_data["state"]
 check("7.7c video_aspect_4x3 ставит 4:3", st8c.video_aspect_ratio == "4:3", f"aspect={st8c.video_aspect_ratio}")
+
+# 7.7d ТЗ video_panel_declutter: выбор модели ставит video_model_picked;
+# повторный вход в «видео» пропускает пикер (сразу полная панель);
+# «Сменить модель» возвращает пикер; reset переносит выбор.
+update, context, query = make_update_context("video_model_kling3", user_id=7043)
+asyncio.run(S.button_handler(update, context))
+st8d = context.user_data["state"]
+check("7.7d выбор модели ставит video_model_picked", st8d.video_model_picked is True)
+
+update.callback_query.data = "video"
+asyncio.run(S.button_handler(update, context))
+_texts8d = [c.args[0] for c in update.callback_query.message.reply_text.await_args_list]
+check("7.7e повторный вход: пикер пропущен, сразу статус-панель",
+      any("Модель:" in t for t in _texts8d) and not any("Выбери модель" in t for t in _texts8d), str(_texts8d))
+
+update.callback_query.data = "video_change_model"
+asyncio.run(S.button_handler(update, context))
+_edit8d = update.callback_query.message.edit_text.await_args_list
+check("7.7f «Сменить модель» рисует пикер тем же сообщением",
+      any("Выбери модель" in (c.args[0] if c.args else c.kwargs.get("text", "")) for c in _edit8d), str(_edit8d))
+
+update.callback_query.data = "reset"
+asyncio.run(S.button_handler(update, context))
+st8r = context.user_data["state"]
+check("7.7g reset переносит video_model и video_model_picked",
+      st8r.video_model == "kling3" and st8r.video_model_picked is True,
+      f"model={st8r.video_model} picked={st8r.video_model_picked}")
 
 # 7.8 выбор модели картинок через callback
 update, context, query = make_update_context("image_model_set_gpt5", user_id=706)
@@ -1642,17 +1678,17 @@ check("15.34 zveno (дефолт) seedance2 duration bounds = (5, 15)", S.get_se
 check("15.35 zveno seedance2_fast: 1080p доступен",
       "1080p" in S.get_seedance_mode_options("seedance2_fast"), str(S.get_seedance_mode_options("seedance2_fast")))
 
-# 15.36 Gemini Omni как модель — video_kb показывает кнопку, только если включён
+# 15.36 Gemini Omni как модель — кнопка живёт в ПИКЕРЕ моделей (после ТЗ
+# video_panel_declutter полная панель кнопок-моделей не держит вовсе),
+# и только когда флаг включён.
 _orig_gemini_enabled = S.GEMINI_OMNI_ENABLED
 S.GEMINI_OMNI_ENABLED = False
-kb15_off = S.video_kb(S.UserState())
-cbs15_off = [b.callback_data for row in kb15_off.inline_keyboard for b in row]
-check("15.36 gemini omni выключен -> кнопки нет", "video_model_gemini_omni" not in cbs15_off, str(cbs15_off))
+cbs15_off = [b.callback_data for row in S.video_model_picker_kb().inline_keyboard for b in row]
+check("15.36 gemini omni выключен -> кнопки нет в пикере", "video_model_gemini_omni" not in cbs15_off, str(cbs15_off))
 
 S.GEMINI_OMNI_ENABLED = True
-kb15_on = S.video_kb(S.UserState())
-cbs15_on = [b.callback_data for row in kb15_on.inline_keyboard for b in row]
-check("15.37 gemini omni включён -> кнопка есть", "video_model_gemini_omni" in cbs15_on, str(cbs15_on))
+cbs15_on = [b.callback_data for row in S.video_model_picker_kb().inline_keyboard for b in row]
+check("15.37 gemini omni включён -> кнопка есть в пикере", "video_model_gemini_omni" in cbs15_on, str(cbs15_on))
 
 # 15.38 выбор gemini_omni через callback ставит модель и форсит аспект 16:9/9:16
 update, context, query = make_update_context("video_model_gemini_omni", user_id=1501)

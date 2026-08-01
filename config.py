@@ -69,6 +69,25 @@ EVOLINK_API_KEY = os.getenv("EVOLINK_API_KEY", "")
 # Дефолт "zveno" — путь отката без редеплоя логики, одна env-переменная.
 SEEDANCE_PROVIDER = os.getenv("SEEDANCE_PROVIDER", "zveno").strip().lower()
 
+# "mashagpt" | "evolink" — переключатель провайдера для Kling Motion Control,
+# НЕЗАВИСИМЫЙ от SEEDANCE_PROVIDER (разные продукты, разные эндпоинты/модели).
+# MOTION_CONTROL_ENABLED остаётся выключенным по умолчанию вне зависимости от
+# этого флага — фича ещё не готова к продакшену в принципе (см. ТЗ EvoLink).
+MOTION_CONTROL_PROVIDER = os.getenv("MOTION_CONTROL_PROVIDER", "mashagpt").strip().lower()
+
+# Gemini Omni Flash (EvoLink) — новый продукт, которого нет у Zveno/MashaGPT.
+# Выключен по умолчанию до ручного ревью качества генераций Аней/маркетологом
+# (ТЗ EvoLink, п.2 порядка работ: «не продолжать без ок»).
+GEMINI_OMNI_ENABLED = os.getenv("GEMINI_OMNI_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+GEMINI_OMNI_MODEL = os.getenv("GEMINI_OMNI_MODEL", "gemini-omni-flash-image-to-video")
+GEMINI_OMNI_DURATION = int(os.getenv("GEMINI_OMNI_DURATION", "10"))
+GEMINI_OMNI_DURATION_OPTIONS = os.getenv("GEMINI_OMNI_DURATION_OPTIONS", "5,8,10")
+# Ориентир ≈7.8 ₽/сек (курс ~90₽/$, публичная страница EvoLink на 2026-07-31,
+# НЕ реальный биллинг) × маржа ~3.3 (как у остальных видео-моделей) / ~5 ₽ за
+# изюминку ≈ 5.1 изюм/сек. TODO: сверить по первому реальному счёту EvoLink —
+# calc_seedance_cost НЕ менять, это отдельная задача после счёта.
+GEMINI_OMNI_COST_PER_SECOND = float(os.getenv("GEMINI_OMNI_COST_PER_SECOND", "5.1"))
+
 PROMPT_WEBAPP_URL = os.getenv("PROMPT_WEBAPP_URL", "").strip()
 # Только стабильный домен: адреса вида https://<hash>.sirnike.pages.dev — снимок
 # одного деплоя, они никогда не обновляются

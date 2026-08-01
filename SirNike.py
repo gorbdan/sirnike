@@ -56,6 +56,12 @@ from config import (
     EVOLINK_API_BASE,
     EVOLINK_API_KEY,
     SEEDANCE_PROVIDER,
+    MOTION_CONTROL_PROVIDER,
+    GEMINI_OMNI_ENABLED,
+    GEMINI_OMNI_MODEL,
+    GEMINI_OMNI_DURATION,
+    GEMINI_OMNI_DURATION_OPTIONS,
+    GEMINI_OMNI_COST_PER_SECOND,
     PROMPT_WEBAPP_URL,
     PROMPT_LIBRARY_REMOTE_URL,
     REMOVE_BG_API_KEY,
@@ -844,6 +850,11 @@ def get_seedance_duration_bounds(model_code: Optional[str] = None) -> tuple[int,
         return 3, 15
     if model_code == "wan27":
         return 2, 10
+    if model_code == "gemini_omni":
+        return 3, 10
+    if model_code in ("seedance2", "seedance2_fast") and seedance_uses_evolink(model_code):
+        # EvoLink Seedance 2.0/2.0-fast: 4–15 сек (Zveno — 5–15).
+        return 4, 15
     return 5, 15
 
 
@@ -887,6 +898,10 @@ def get_seedance_mode_options(model_code: Optional[str] = None) -> List[str]:
         default_mode = normalize_seedance_mode(SEEDANCE_FAST_MODE)
         if default_mode not in parsed:
             parsed.append(default_mode)
+        if seedance_uses_evolink(model_code):
+            # EvoLink Seedance 2.0-fast не поддерживает 1080p (только обычный
+            # тариф умеет) — не даём выбрать несуществующую комбинацию.
+            parsed = [m for m in parsed if m != "1080p"] or ["720p"]
         return parsed
     if model_code == "kling3":
         # Zveno: kling-v3.0 теперь умеет и 720p, и 1080p.
@@ -931,6 +946,8 @@ def get_seedance_duration_options(model_code: Optional[str] = None) -> List[int]
         raw_options = WAN27_DURATION_OPTIONS
     elif model_code == "seedance2_fast":
         raw_options = SEEDANCE_FAST_DURATION_OPTIONS
+    elif model_code == "gemini_omni":
+        raw_options = GEMINI_OMNI_DURATION_OPTIONS
     else:
         raw_options = SEEDANCE_DURATION_OPTIONS
     parsed: List[int] = []
@@ -1033,6 +1050,8 @@ def get_video_model(state: UserState) -> str:
         return "veo31"
     if state.video_model == "wan27" and WAN27_ENABLED:
         return "wan27"
+    if state.video_model == "gemini_omni" and GEMINI_OMNI_ENABLED:
+        return "gemini_omni"
     return "seedance2"
 
 
@@ -1043,6 +1062,7 @@ def get_video_model_label(model_code: str) -> str:
         "kling3": "Kling 3.0 🆕",
         "veo31": "Veo 3.1 (Google) 🆕",
         "wan27": "Wan 2.7 (Alibaba) 🆕",
+        "gemini_omni": "Gemini Omni Flash 🆕",
     }
     return labels.get(model_code, "Seedance 2")
 
@@ -1056,6 +1076,7 @@ def get_video_model_blurb(model_code: str) -> str:
         "kling3": "оживляет фото, плавная камера",
         "veo31": "кинореализм, до 8 сек",
         "wan27": "живая мимика и жесты",
+        "gemini_omni": "звук генерируется сам, быстрая генерация",
     }
     return blurbs.get(model_code, "")
 
@@ -1078,6 +1099,8 @@ def get_video_model_cost_per_second(model_code: str) -> float:
         return max(VEO31_COST_PER_SECOND, 0.01)
     if model_code == "wan27":
         return max(WAN27_COST_PER_SECOND, 0.01)
+    if model_code == "gemini_omni":
+        return max(GEMINI_OMNI_COST_PER_SECOND, 0.01)
     return max(SEEDANCE_COST_PER_SECOND, 0.01)
 
 
@@ -1756,6 +1779,13 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
                 callback_data="video_model_wan27",
             )
         )
+    if GEMINI_OMNI_ENABLED:
+        model_buttons_extra.append(
+            InlineKeyboardButton(
+                ("● " if selected_model == "gemini_omni" else "") + "Gemini Omni 🆕",
+                callback_data="video_model_gemini_omni",
+            )
+        )
 
     prompt_done = bool(str(getattr(state, "video_prompt", "") or "").strip())
     rows = [
@@ -1801,8 +1831,8 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
     aspect_options = [
         ("16:9", "📺 16:9"), ("9:16", "📱 9:16"), ("1:1", "⬛ 1:1"), ("4:3", "🖼 4:3"),
     ]
-    if selected_model in ("veo31", "wan27"):
-        # Veo 3.1 и Wan 2.7 не поддерживают квадрат и 4:3.
+    if selected_model in ("veo31", "wan27", "gemini_omni"):
+        # Veo 3.1, Wan 2.7 и Gemini Omni не поддерживают квадрат и 4:3.
         aspect_options = [(ar, label) for ar, label in aspect_options if ar not in ("1:1", "4:3")]
     aspect_buttons = [
         InlineKeyboardButton(
@@ -5837,6 +5867,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Wan 2.7 умеет только 16:9/9:16 — см. комментарий у veo31 выше.
             if state.video_aspect_ratio not in ("16:9", "9:16"):
                 state.video_aspect_ratio = "16:9"
+        elif picked_model == "gemini_omni" and GEMINI_OMNI_ENABLED:
+            state.video_model = "gemini_omni"
+            # Gemini Omni не берёт отдельный quality-параметр — mode не показывается
+            # в video_kb (нет в списке моделей с mode_buttons), значение не важно.
+            if state.video_aspect_ratio not in ("16:9", "9:16"):
+                state.video_aspect_ratio = "16:9"
         else:
             state.video_model = "seedance2"
             if not state.video_mode:
@@ -7339,6 +7375,7 @@ def _studio_video_models() -> Dict[str, dict]:
         "kling3": {"enabled": KLING3_ENABLED, "cost_per_second": KLING3_COST_PER_SECOND},
         "veo31": {"enabled": VEO31_ENABLED, "cost_per_second": VEO31_COST_PER_SECOND},
         "wan27": {"enabled": WAN27_ENABLED, "cost_per_second": WAN27_COST_PER_SECOND},
+        "gemini_omni": {"enabled": GEMINI_OMNI_ENABLED, "cost_per_second": GEMINI_OMNI_COST_PER_SECOND},
     }
     return {code: m for code, m in models.items() if m["enabled"]}
 
@@ -7573,7 +7610,17 @@ async def _studio_generate_clip(app: Application, user_id: int, payload: dict) -
     if resolution not in get_seedance_mode_options(model_code):
         resolution = get_seedance_mode_options(model_code)[0]
 
-    task_id = await start_seedance_task(
+    # Провайдер-диспетчинг такой же, как в run_seedance: gemini_omni всегда
+    # EvoLink (нет у Zveno), seedance2/2_fast — по SEEDANCE_PROVIDER, остальные
+    # модели студии (kling3/veo31/wan27) — всегда Zveno. poll_seedance_task сам
+    # распознаёт префикс __EVOLINK__: — вызов ниже не меняется.
+    if model_code == "gemini_omni":
+        _studio_start_fn = start_gemini_omni_task_evolink
+    elif seedance_uses_evolink(model_code):
+        _studio_start_fn = start_seedance_task_evolink
+    else:
+        _studio_start_fn = start_seedance_task
+    task_id = await _studio_start_fn(
         prompt=video_prompt or "Animate this frame naturally, cartoon style",
         image_url=frame_url,
         user_id=user_id,
@@ -8229,18 +8276,37 @@ async def run_kling_motion_control(update: Update, context: ContextTypes.DEFAULT
             except Exception:
                 pass
 
+        use_evolink_motion = MOTION_CONTROL_PROVIDER == "evolink"
+        motion_provider_label = "EVOLINK" if use_evolink_motion else "MASHAGPT"
         try:
-            task_id = await start_kling_motion_control(
-                image_url=image_url,
-                motion_video_url=motion_video_url,
-                prompt=prompt_text,
-                user_id=user.id,
-            )
-            video_url = await poll_kling_animation_custom(
-                animation_id=task_id,
-                max_attempts=KLING_MOTION_MAX_POLL_ATTEMPTS,
-                poll_interval=KLING_MOTION_POLL_INTERVAL,
-            )
+            if use_evolink_motion:
+                raw_task_id = await start_kling_motion_control_evolink(
+                    image_url=image_url,
+                    motion_video_url=motion_video_url,
+                    prompt=prompt_text,
+                    user_id=user.id,
+                )
+                # start_kling_motion_control_evolink возвращает task_id с
+                # префиксом __EVOLINK__: (общий контракт _evolink_create_task) —
+                # poll_evolink_task ждёт «голый» id.
+                task_id = raw_task_id.split("__EVOLINK__:", 1)[1] if raw_task_id.startswith("__EVOLINK__:") else raw_task_id
+                video_url = await poll_evolink_task(
+                    task_id=task_id,
+                    max_attempts=KLING_MOTION_MAX_POLL_ATTEMPTS,
+                    poll_interval=KLING_MOTION_POLL_INTERVAL,
+                )
+            else:
+                task_id = await start_kling_motion_control(
+                    image_url=image_url,
+                    motion_video_url=motion_video_url,
+                    prompt=prompt_text,
+                    user_id=user.id,
+                )
+                video_url = await poll_kling_animation_custom(
+                    animation_id=task_id,
+                    max_attempts=KLING_MOTION_MAX_POLL_ATTEMPTS,
+                    poll_interval=KLING_MOTION_POLL_INTERVAL,
+                )
             video_bytes = await download_video_bytes_with_fallback(video_url)
             saved_path = save_video_debug_copy(video_bytes, user.id, "Kling Motion Control")
             if saved_path:
@@ -8258,7 +8324,7 @@ async def run_kling_motion_control(update: Update, context: ContextTypes.DEFAULT
                 user_id=user.id,
                 kind="video",
                 status="success",
-                provider="MASHAGPT",
+                provider=motion_provider_label,
                 cost=cost,
                 was_free=False,
                 references_count=1,
@@ -8284,7 +8350,7 @@ async def run_kling_motion_control(update: Update, context: ContextTypes.DEFAULT
                 user_id=user.id,
                 kind="video",
                 status="failed",
-                provider="MASHAGPT",
+                provider=motion_provider_label,
                 cost=cost,
                 was_free=False,
                 references_count=1,
@@ -8434,6 +8500,170 @@ def is_seedance_privacy_moderation_error(error_text: str) -> bool:
     return any(key in lowered for key in keys)
 
 
+# Слаги моделей Seedance 2.0/2.0-fast на стороне EvoLink (отличаются от Zveno-
+# слагов bytedance/seedance-2.0[-fast] — см. docs/specs/2026-07-31_evolink_video_provider.md).
+EVOLINK_SEEDANCE_MODEL_MAP = {
+    "seedance2": "seedance-2.0-image-to-video",
+    "seedance2_fast": "seedance-2.0-fast-image-to-video",
+}
+
+
+def build_evolink_url(path: str) -> str:
+    """EvoLink base уже включает /v1 (EVOLINK_API_BASE) — переиспользуем логику
+    build_zveno_url (совпадающий формат: origin + /v1/... без дублирования)."""
+    return build_zveno_url(EVOLINK_API_BASE, path)
+
+
+def _resolve_evolink_image_urls(
+    image_url: Optional[str],
+    image_urls: Optional[List[str]],
+    max_count: int,
+) -> List[str]:
+    """Общая логика подготовки картинок для EvoLink: собрать, обрезать до лимита,
+    резолвнуть __img__-рефы в data: URL (как в start_seedance_task)."""
+    combined: List[str] = []
+    for item in (image_urls or []):
+        if isinstance(item, str):
+            candidate = item.strip()
+            if candidate and candidate not in combined:
+                combined.append(candidate)
+    if image_url:
+        candidate = image_url.strip()
+        if candidate and candidate not in combined:
+            combined.append(candidate)
+    combined = combined[:max_count]
+    resolved: List[str] = []
+    for u in combined:
+        if _is_img_ref(u):
+            data_url = _ref_to_data_url(u)
+            if data_url:
+                resolved.append(data_url)
+            else:
+                logger.warning("EvoLink: dropping stale __img__ ref %s (cache miss)", u[:30])
+        else:
+            resolved.append(u)
+    return resolved
+
+
+async def _evolink_create_task(payload: dict, log_label: str, user_id: int) -> str:
+    """POST /v1/videos/generations — общая точка создания задачи для всех
+    моделей серии EvoLink (Seedance/Gemini Omni/Kling Motion Control).
+    Возвращает task_id с префиксом __EVOLINK__: (единая точка поллинга —
+    poll_seedance_task/poll_evolink_task)."""
+    if not EVOLINK_API_KEY:
+        raise Exception("EVOLINK_API_KEY is empty")
+    url = build_evolink_url("/v1/videos/generations")
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {EVOLINK_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=90),
+        ) as resp:
+            response_text = await resp.text()
+            if not (200 <= resp.status < 300):
+                raise Exception(f"{log_label} create failed: {resp.status}. {response_text[:500]}")
+            try:
+                data = json.loads(response_text)
+            except json.JSONDecodeError:
+                raise Exception(f"{log_label}: non-JSON response: {response_text[:200]}")
+            task_id = data.get("id")
+            if not task_id:
+                raise Exception(f"{log_label}: task id missing in response: {data}")
+            usage = data.get("usage") or {}
+            # credits_reserved — сырая единица EvoLink, НЕ наша изюминка/₽. Логируем
+            # для будущей сверки цены по реальному счёту (ТЗ прямо запрещает
+            # выводить формулу цены из этого числа сейчас).
+            logger.info(
+                "%s task created: task_id=%s model=%s credits_reserved(raw)=%s billing_rule=%s user_id=%s",
+                log_label, task_id, payload.get("model"),
+                usage.get("credits_reserved"), usage.get("billing_rule"), user_id,
+            )
+            return f"__EVOLINK__:{task_id}"
+
+
+async def poll_evolink_task(
+    task_id: str,
+    max_attempts: int,
+    poll_interval: int,
+    status_callback=None,
+) -> str:
+    """Универсальный поллер EvoLink: GET /v1/tasks/{id} — один и тот же формат
+    для Seedance/Gemini Omni/Kling Motion Control (см. docs/specs/2026-07-31_evolink_video_provider.md).
+    task_id — «голый» id EvoLink, БЕЗ префикса __EVOLINK__: (снимает его вызывающий,
+    см. poll_seedance_task)."""
+    if not EVOLINK_API_KEY:
+        raise Exception("EVOLINK_API_KEY is empty")
+    url = build_evolink_url(f"/v1/tasks/{task_id}")
+    headers = {"Authorization": f"Bearer {EVOLINK_API_KEY}"}
+    async with aiohttp.ClientSession() as session:
+        for attempt in range(max_attempts):
+            if status_callback and attempt > 0 and attempt % 8 == 0:
+                elapsed_min = (attempt * poll_interval) // 60
+                try:
+                    await status_callback(f"⏳ Генерация видео... прошло ~{elapsed_min} мин.")
+                except Exception:
+                    pass
+            await asyncio.sleep(poll_interval)
+            try:
+                async with session.get(
+                    url,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as resp:
+                    response_text = await resp.text()
+                    if resp.status != 200:
+                        logger.warning(
+                            "EvoLink poll failed: status=%s task_id=%s body=%s",
+                            resp.status, task_id, response_text[:300],
+                        )
+                        continue
+                    try:
+                        data = json.loads(response_text)
+                    except json.JSONDecodeError:
+                        logger.warning("EvoLink poll: non-JSON response: %s", response_text[:200])
+                        continue
+            except Exception as e:
+                logger.warning("EvoLink poll request error: task_id=%s error=%s", task_id, e)
+                continue
+
+            status = str(data.get("status", "")).lower()
+            logger.info(
+                "EvoLink task %s: attempt=%s/%s status=%s progress=%s",
+                task_id, attempt + 1, max_attempts, status, data.get("progress"),
+            )
+
+            if status == "completed":
+                results = data.get("results")
+                video_url = None
+                if isinstance(results, list):
+                    for item in results:
+                        if isinstance(item, str) and item.strip().startswith("http"):
+                            video_url = item.strip()
+                            break
+                if not video_url:
+                    raise Exception(f"EvoLink task completed but results URL missing: {data}")
+                return video_url
+
+            if status in ("failed", "cancelled", "error"):
+                error = data.get("error")
+                code = None
+                message = None
+                if isinstance(error, dict):
+                    code = error.get("code")
+                    message = error.get("message")
+                detail_parts = [p for p in (code, message) if p]
+                detail = ": ".join(detail_parts) if detail_parts else f"EvoLink task failed with status {status}"
+                raise Exception(detail)
+
+            # "pending" / другие промежуточные статусы — просто ждём следующий тик.
+
+    raise Exception("Превышено время ожидания генерации видео (EvoLink)")
+
+
 async def start_seedance_task_evolink(
     prompt: str,
     image_url: Optional[str],
@@ -8446,29 +8676,107 @@ async def start_seedance_task_evolink(
     model_code: Optional[str] = None,
     aspect_ratio: str = "16:9",
 ) -> str:
-    """EvoLink-клиент для Seedance 2.0/2.0-fast — заглушка.
+    """EvoLink-клиент для Seedance 2.0/2.0-fast (image-to-video).
 
-    Реальный HTTP-клиент намеренно не написан: у нас нет ни ключа EvoLink
-    (Аня заводит аккаунт), ни спецификации их API под рукой — писать запрос
-    вслепую рискованнее, чем отложить. Как только ключ и доки появятся, эта
-    функция получает тело по образцу start_seedance_task (тот же контракт
-    возврата: task_id ИЛИ "__POLL_URL__:<url>"), а поллинг — либо переиспользует
-    poll_seedance_task с параметризацией base_url/ключа, либо получает
-    poll_seedance_task_evolink рядом. См. docs/specs/2026-07-31_evolink_video_provider.md.
-
-    SEEDANCE_PROVIDER по умолчанию "zveno" — эта функция вызывается только
-    если владелец явно выставит SEEDANCE_PROVIDER=evolink в окружении, что
-    само по себе намеренная эксплуатационная попытка до готовности клиента.
+    Тот же контракт возврата, что и start_seedance_task (строка task_id,
+    здесь — с префиксом __EVOLINK__:, который poll_seedance_task умеет
+    распознавать и делегировать в poll_evolink_task — вызывающий код
+    (run_seedance/_studio_generate_clip) не меняется).
     """
-    logger.error(
-        "start_seedance_task_evolink called but EvoLink client not implemented yet — "
-        "ключ ещё не выдан (SEEDANCE_PROVIDER=evolink). user_id=%s model_code=%s",
-        user_id, model_code,
+    resolved_model_code = model_code if model_code in EVOLINK_SEEDANCE_MODEL_MAP else "seedance2"
+    model_value = EVOLINK_SEEDANCE_MODEL_MAP[resolved_model_code]
+
+    combined_image_urls = _resolve_evolink_image_urls(image_url, image_urls, MAX_SEEDANCE_IMAGE_REFERENCES)
+    if not combined_image_urls:
+        raise Exception("EvoLink Seedance: нет ни одного фото-референса (image-to-video требует минимум 1 фото)")
+
+    duration_val = normalize_seedance_duration(
+        int(duration if duration is not None else SEEDANCE_DURATION), resolved_model_code,
     )
-    raise NotImplementedError(
-        "EvoLink client not implemented yet — ключ ещё не выдан. "
-        "Откати SEEDANCE_PROVIDER=zveno."
+    quality = normalize_seedance_mode(mode or SEEDANCE_MODE)
+    if resolved_model_code == "seedance2_fast" and quality == "1080p":
+        # EvoLink Seedance 2.0-fast не умеет 1080p (только обычный тариф) —
+        # фолбэк на 720p вместо отправки заведомо невалидного запроса.
+        logger.warning("EvoLink seedance2_fast: 1080p не поддержан, фолбэк на 720p")
+        quality = "720p"
+
+    prompt_text = build_seedance_prompt_with_refs((prompt or "").strip(), len(combined_image_urls))
+
+    payload = {
+        "model": model_value,
+        "prompt": prompt_text,
+        "image_urls": combined_image_urls,
+        "duration": duration_val,
+        "aspect_ratio": aspect_ratio,
+        "quality": quality,
+        "generate_audio": True,
+    }
+    return await _evolink_create_task(payload, "EvoLink Seedance", user_id)
+
+
+async def start_gemini_omni_task_evolink(
+    prompt: str,
+    image_url: Optional[str],
+    user_id: int,
+    duration: Optional[int] = None,
+    endpoint: Optional[str] = None,
+    mode: Optional[str] = None,
+    model_slug: Optional[str] = None,
+    image_urls: Optional[List[str]] = None,
+    model_code: Optional[str] = None,
+    aspect_ratio: str = "16:9",
+) -> str:
+    """Gemini Omni Flash (EvoLink) — новый продукт, которого нет у Zveno.
+
+    Одно фото (не мультиреференс, не reference-to-video) — image-to-video.
+    Сигнатура совпадает с start_seedance_task/start_seedance_task_evolink,
+    чтобы run_seedance мог вызывать её как drop-in для model_code=gemini_omni."""
+    combined_image_urls = _resolve_evolink_image_urls(image_url, image_urls, max_count=1)
+    if not combined_image_urls:
+        raise Exception("Gemini Omni: нужно фото (image-to-video)")
+
+    duration_val = normalize_seedance_duration(
+        int(duration if duration is not None else GEMINI_OMNI_DURATION), "gemini_omni",
     )
+    aspect = aspect_ratio if aspect_ratio in ("16:9", "9:16", "auto") else "16:9"
+    prompt_text = (prompt or "").strip() or "Animate this photo naturally with subtle camera movement."
+
+    payload = {
+        "model": GEMINI_OMNI_MODEL,
+        "prompt": prompt_text,
+        "image_urls": combined_image_urls,
+        "duration": duration_val,
+        "aspect_ratio": aspect,
+    }
+    return await _evolink_create_task(payload, "EvoLink Gemini Omni", user_id)
+
+
+async def start_kling_motion_control_evolink(
+    image_url: str,
+    motion_video_url: str,
+    prompt: str,
+    user_id: int,
+) -> str:
+    """Kling Motion Control через EvoLink (kling-v3-motion-control) — см.
+    docs/specs/2026-07-31_evolink_video_provider.md. Переключается флагом
+    MOTION_CONTROL_PROVIDER=evolink, независимым от SEEDANCE_PROVIDER."""
+    quality = "1080p" if str(KLING_MOTION_MODE).lower() == "1080p" else "720p"
+    payload: dict = {
+        "model": "kling-v3-motion-control",
+        "image_urls": [image_url],
+        "video_urls": [motion_video_url],
+        "model_params": {
+            # "image": персонаж/внешность берётся с фото — у нас всегда есть и
+            # фото, и референс-видео, это и есть наш флоу «своё фото + чужое движение».
+            "character_orientation": "image",
+            "keep_sound": True,
+        },
+        "quality": quality,
+    }
+    prompt_clean = (prompt or "").strip()
+    if prompt_clean:
+        payload["prompt"] = prompt_clean[:2500]
+    return await _evolink_create_task(payload, "EvoLink Kling Motion Control", user_id)
 
 
 async def start_seedance_task(
@@ -8969,6 +9277,10 @@ async def poll_seedance_task(
         fal_response_url = parts[2] if len(parts) > 2 else ""
         return await _poll_seedance_fal(fal_status_url, fal_response_url, max_attempts, poll_interval, status_callback)
 
+    if task_id.startswith("__EVOLINK__:"):
+        raw_task_id = task_id.split("__EVOLINK__:", 1)[1].strip()
+        return await poll_evolink_task(raw_task_id, max_attempts, poll_interval, status_callback)
+
     if not ZVENO_API_KEY:
         raise Exception("ZVENO_API_KEY is empty")
 
@@ -9345,18 +9657,24 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             selected_model_slug = WAN27_MODEL
         elif selected_model == "seedance2_fast":
             selected_model_slug = SEEDANCE_FAST_MODEL
+        elif selected_model == "gemini_omni":
+            selected_model_slug = GEMINI_OMNI_MODEL
         else:
             selected_model_slug = SEEDANCE_MODEL
 
         # Провайдер-флаг (docs/specs/2026-07-31_evolink_video_provider.md): только
         # Seedance 2.0/2.0-fast умеют переключаться на EvoLink, остальные модели
         # (Kling 3.0/Веo 3.1/Wan 2.7) всегда идут через Zveno — SEEDANCE_PROVIDER
-        # их не касается. Дефолт "zveno" не меняет НИЧЕГО в поведении.
+        # их не касается. Дефолт "zveno" не меняет НИЧЕГО в поведении. Gemini
+        # Omni — новый продукт, которого у Zveno нет вообще, поэтому всегда
+        # через EvoLink независимо от SEEDANCE_PROVIDER.
+        is_gemini_omni = selected_model == "gemini_omni"
         use_evolink = seedance_uses_evolink(selected_model)
-        selected_provider_label = "EVOLINK" if use_evolink else "ZVENO"
+        selected_provider_label = "EVOLINK" if (use_evolink or is_gemini_omni) else "ZVENO"
 
-        # Seedance работает только от фото; Kling 3.0, Veo 3.1 и Wan 2.7 умеют text-to-video.
-        if selected_model in {"seedance2", "seedance2_fast"} and len(video_images) < 1:
+        # Seedance и Gemini Omni работают только от фото (image-to-video);
+        # Kling 3.0, Veo 3.1 и Wan 2.7 умеют text-to-video.
+        if selected_model in {"seedance2", "seedance2_fast", "gemini_omni"} and len(video_images) < 1:
             await reply_target.reply_text(
                 "Загрузи хотя бы 1 фото-ференс и запусти снова.",
                 reply_markup=video_kb(state),
@@ -9393,9 +9711,10 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
         # Обработка рефа (сетка) нужна только Seedance (реф внешности).
-        # Kling/Veo/Wan используют картинку как первый кадр или референс-стиль —
-        # обработка ломает кадр, да и детектор реальных лиц у них не ByteDance-овский.
-        if video_images and selected_model not in ("kling3", "veo31", "wan27"):
+        # Kling/Veo/Wan/Gemini Omni используют картинку как первый кадр или
+        # референс-стиль — обработка ломает кадр, да и детектор реальных лиц
+        # у них не ByteDance-овский.
+        if video_images and selected_model not in ("kling3", "veo31", "wan27", "gemini_omni"):
             processed_refs = await apply_grid_overlay_to_refs(video_images)
             failed_count = sum(1 for r in processed_refs if r is None)
             if failed_count:
@@ -9466,7 +9785,12 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             video_url = None
             last_seedance_error: Optional[Exception] = None
             for seedance_attempt in range(1, max_seedance_attempts + 1):
-                _start_task_fn = start_seedance_task_evolink if use_evolink else start_seedance_task
+                if is_gemini_omni:
+                    _start_task_fn = start_gemini_omni_task_evolink
+                elif use_evolink:
+                    _start_task_fn = start_seedance_task_evolink
+                else:
+                    _start_task_fn = start_seedance_task
                 task_id = await _start_task_fn(
                     prompt=active_prompt,
                     image_url=video_images[0] if video_images else None,

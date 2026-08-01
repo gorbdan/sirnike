@@ -6,23 +6,32 @@
 
 - [ ] P1 · Провайдер EvoLink — Gemini Omni, Kling Motion Control, перевод Seedance.
       Полное ТЗ: [docs/specs/2026-07-31_evolink_video_provider.md](../specs/2026-07-31_evolink_video_provider.md).
-      **Блокер: ждём от Ани API-ключ EvoLink** (карта зарубежная есть, топ-ап будет) —
-      до ключа не начинать реальные тестовые генерации/включение в проде.
-      2026-07-31: сделано без ключа то, что можно подготовить заранее —
-      `EVOLINK_API_BASE`/`EVOLINK_API_KEY`/`SEEDANCE_PROVIDER` в config.py (дефолт
-      `"zveno"`, ноль изменений поведения — тест 14.1–14.9 в test_new_features.py);
-      `start_seedance_task_evolink` — явная заглушка (`NotImplementedError` +
-      лог), вызывается только если `SEEDANCE_PROVIDER=evolink` явно выставлен;
-      `start_kling_motion_control` параметризован `api_base`/`api_key` (дефолты
-      = MashaGPT, поведение не изменилось) для будущего переключения одной
-      правкой вызова; кнопка «🕺 Видео с движением» доведена до рабочего флоу
-      (video_menu_kb → motion_start → референс-видео → фото → новая функция
-      `run_kling_motion_control`, полный цикл списание/поллинг/лог/рефанд по
-      образцу run_seedance) — фича физически достижима из UI при
-      `MOTION_CONTROL_ENABLED=1` (по умолчанию всё ещё 0, скрыта).
-      Осознанно НЕ сделано (следующий заход, после ключа): Gemini Omni с нуля,
-      реальный HTTP-клиент EvoLink (нет доков по эндпоинту под рукой), любые
-      тестовые генерации на EvoLink, переключение прода на EvoLink.
+      2026-07-31 (заход 1, без ключа): `EVOLINK_API_BASE`/`EVOLINK_API_KEY`/
+      `SEEDANCE_PROVIDER` в config.py (дефолт `"zveno"`, ноль изменений
+      поведения); `start_seedance_task_evolink` — явная заглушка; кнопка
+      «🕺 Видео с движением» доведена до рабочего UI-флоу (за `MOTION_CONTROL_ENABLED`,
+      по умолчанию 0).
+      2026-07-31 (заход 2, ключ выдан): реальный HTTP-клиент EvoLink —
+      `start_seedance_task_evolink`/`poll_evolink_task` (create `POST /v1/videos/generations`
+      + поллинг `GET /v1/tasks/{id}`, единая точка диспетчинга через префикс
+      `__EVOLINK__:` в `poll_seedance_task`, чтобы `run_seedance`/`_studio_generate_clip`
+      не переписывать); Gemini Omni Flash — новая видео-модель с нуля
+      (`GEMINI_OMNI_ENABLED` дефолт `0` — выключена до ручного ревью качества
+      Аней/маркетологом, `video_kb`/`get_video_model`/`_studio_video_models`
+      по образцу kling3/veo31, только image-to-video, 1 фото); Kling Motion
+      Control через EvoLink (`kling-v3-motion-control`, `model_params.character_orientation=image`)
+      за независимым флагом `MOTION_CONTROL_PROVIDER` (дефолт `"mashagpt"`) —
+      `MOTION_CONTROL_ENABLED` по-прежнему `0`, фича ещё не готова к продакшену
+      вне зависимости от провайдера. EvoLink duration/quality границы учтены
+      отдельно от Zveno (Seedance EvoLink 4–15 сек, seedance2_fast без 1080p).
+      Цена для юзера НЕ менялась (calc_seedance_cost не тронут) — cырые
+      `credits_reserved` из ответов EvoLink только логируются (TODO сверить
+      по первому реальному счёту). НЕ делались реальные (платные) вызовы к
+      EvoLink — весь новый код покрыт моками (test_new_features.py, Блок 15,
+      260→300 тестов). Осталось по ТЗ до продакшена: живые тестовые генерации
+      на EvoLink и ревью качества (Аня/маркетолог) — «не продолжать без ок»;
+      затем неделя наблюдения `/video_errors`/`/pnl` перед переключением
+      `SEEDANCE_PROVIDER=evolink` в проде.
 - [ ] P0 · Библиотека стилей: «Использовать» падает с общей ошибкой на карточках
       из раздела «Новинки» (находка №1 [audits/2026-07-31_live_bot_ux_test.txt](../../audits/2026-07-31_live_bot_ux_test.txt),
       воспроизведено дважды подряд). Причина — pl_use_/pl_usen_ (SirNike.py:5227–5248)

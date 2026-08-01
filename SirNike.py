@@ -7915,11 +7915,27 @@ async def _studio_run_job(app: Application, job: dict) -> None:
 async def _studio_poll_loop(app: Application) -> None:
     global _studio_semaphore
     _studio_semaphore = asyncio.Semaphore(STUDIO_CONCURRENCY)
-    # Прайс — при старте (источник правды по тарифам, ревизия п.5)
-    await _studio_api("prices.push", {"prices": _studio_price_feed()})
+    # Прайс — источник правды по тарифам (ревизия п.5). Пуш при старте может
+    # упасть на разовом сбое Cloudflare (живой прод 2026-08-01: status=500 с
+    # HTML-страницей ошибки CF) — раньше это значило «корзина студии живёт со
+    # старым прайсом до следующего рестарта бота». Теперь ретраим в поллинг-
+    # цикле, пока пуш не пройдёт.
+    prices_pushed = await _studio_api("prices.push", {"prices": _studio_price_feed()}) is not None
+    if not prices_pushed:
+        logger.warning("studio prices.push failed on startup — will retry in poll loop")
     logger.info("studio poll loop started: %s (every %ss)", STUDIO_API_BASE, STUDIO_POLL_INTERVAL)
+    _prices_retry_backoff = 0  # тиков до следующей попытки (растёт до ~2 мин)
     while True:
         try:
+            if not prices_pushed:
+                if _prices_retry_backoff <= 0:
+                    prices_pushed = await _studio_api("prices.push", {"prices": _studio_price_feed()}) is not None
+                    if prices_pushed:
+                        logger.info("studio prices.push succeeded on retry")
+                    else:
+                        _prices_retry_backoff = min(_prices_retry_backoff * 2 + 4, 30)
+                else:
+                    _prices_retry_backoff -= 1
             data = await _studio_api("poll", {"limit": STUDIO_CONCURRENCY * 2})
             for job in (data or {}).get("jobs") or []:
                 jid = str(job.get("id") or "")

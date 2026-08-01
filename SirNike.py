@@ -336,6 +336,9 @@ class UserState:
     video_duration: Optional[int] = None
     video_mode: Optional[str] = None
     video_model: str = "seedance2_fast"
+    # Юзер уже выбирал модель в этой сессии — вход в «Видео для Reels» сразу
+    # открывает полную панель, без повторного пикера (ТЗ video_panel_declutter).
+    video_model_picked: bool = False
     video_aspect_ratio: str = "9:16"
     # Тумблер сетки «детектор лиц» (video_kb) — ломает ByteDance real-face
     # детектор Seedance ценой лёгкой сетки на кадре. Дефолт наследуется от env
@@ -1785,49 +1788,6 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
             )
         )
 
-    model_buttons = [
-        InlineKeyboardButton(
-            ("● " if selected_model == "seedance2" else "") + "Seedance 2",
-            callback_data="video_model_seedance2",
-        )
-    ]
-    if SEEDANCE_FAST_ENABLED:
-        model_buttons.append(
-            InlineKeyboardButton(
-                ("● " if selected_model == "seedance2_fast" else "") + "Seedance 2 Fast (бета)",
-                callback_data="video_model_seedance2_fast",
-            )
-        )
-    model_buttons_extra = []
-    if KLING3_ENABLED:
-        model_buttons_extra.append(
-            InlineKeyboardButton(
-                ("● " if selected_model == "kling3" else "") + "Kling 3.0 🆕",
-                callback_data="video_model_kling3",
-            )
-        )
-    if VEO31_ENABLED:
-        model_buttons_extra.append(
-            InlineKeyboardButton(
-                ("● " if selected_model == "veo31" else "") + "Veo 3.1 🆕",
-                callback_data="video_model_veo31",
-            )
-        )
-    if WAN27_ENABLED:
-        model_buttons_extra.append(
-            InlineKeyboardButton(
-                ("● " if selected_model == "wan27" else "") + "Wan 2.7 🆕",
-                callback_data="video_model_wan27",
-            )
-        )
-    if GEMINI_OMNI_ENABLED:
-        model_buttons_extra.append(
-            InlineKeyboardButton(
-                ("● " if selected_model == "gemini_omni" else "") + "Gemini Omni 🆕",
-                callback_data="video_model_gemini_omni",
-            )
-        )
-
     prompt_done = bool(str(getattr(state, "video_prompt", "") or "").strip())
     rows = [
         # Шаги: галочка, когда заполнено (счётчик фото живёт прямо в шаге)
@@ -1850,10 +1810,10 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
         rows.append(delete_buttons[:3])
         if len(delete_buttons) > 3:
             rows.append(delete_buttons[3:6])
-    # Модель
-    rows.append(model_buttons)
-    if model_buttons_extra:
-        rows.append(model_buttons_extra)
+    # Модель уже написана текстом в шапке (video_status_text, «Модель: …») —
+    # вместо дублирующего блока кнопок-переключателей одна кнопка смены
+    # (ТЗ video_panel_declutter, тап возвращает в пикер тем же сообщением).
+    rows.append([InlineKeyboardButton("🔄 Сменить модель", callback_data="video_change_model")])
     # Режим качества
     if selected_model in ("seedance2", "seedance2_fast", "kling3", "wan27"):
         mode_buttons = []
@@ -3193,7 +3153,14 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE,
         state.waiting_for_video_image = True
         state.waiting_for_motion_video = False
         # Сначала только выбор модели — см. комментарий у video_cb == "video"
-        # в button_handler (тот же флоу, инлайн-путь).
+        # в button_handler (тот же флоу, инлайн-путь). Модель уже выбрана в
+        # этой сессии — сразу полная панель (ТЗ video_panel_declutter).
+        if state.video_model_picked:
+            await update.message.reply_text(
+                video_status_text(state),
+                reply_markup=video_kb(state),
+            )
+            return True
         await update.message.reply_text(
             "🎬 Видео для Reels\n\n"
             "Можно сразу отправлять текст описания и фото — сохраню в черновик.\n"
@@ -5565,6 +5532,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "video_set_video",
         "video_start",
         "video_facegrid_toggle",
+        "video_change_model",
         "seedance_retry",
     }
     is_video_callback = (
@@ -5795,7 +5763,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # (редактированием этого же сообщения) уже после выбора, см.
         # video_model_picker_kb и ветку video_cb.startswith("video_model_")
         # ниже (решение Ани 2026-07-31, было 2 сообщения сразу со всеми
-        # настройками).
+        # настройками). Уже выбирал модель в этой сессии — пикер не повторяем,
+        # сразу полная панель (ТЗ video_panel_declutter).
+        if state.video_model_picked:
+            await query.message.reply_text(
+                video_status_text(state),
+                reply_markup=video_kb(state),
+            )
+            return
         await query.message.reply_text(
             "🎬 Видео для Reels\n\n"
             "Можно сразу отправлять текст описания и фото — сохраню в черновик.\n"
@@ -5942,7 +5917,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state.video_model = "seedance2"
             if not state.video_mode:
                 state.video_mode = normalize_seedance_mode(SEEDANCE_MODE)
+        state.video_model_picked = True
         await update_video_panel(query, video_status_text(state), video_kb(state))
+        return
+
+    if video_cb == "video_change_model":
+        state = get_or_init_state(context)
+        state.video_session_active = True
+        await update_video_panel(query, "🎬 Видео для Reels\n\nВыбери модель:", video_model_picker_kb())
         return
 
     if video_cb.startswith("video_mode_"):
@@ -6233,6 +6215,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_state = UserState()
         if isinstance(prev_state, UserState):
             new_state.image_model = prev_state.image_model
+            # Выбор видео-модели — тоже липкая настройка: иначе каждый
+            # «◀️ В меню» снова гонит юзера через пикер моделей.
+            new_state.video_model = prev_state.video_model
+            new_state.video_model_picked = prev_state.video_model_picked
         context.user_data["state"] = new_state
         await query.message.reply_text(
             "Готово — текущее описание и фото очищены.\n"

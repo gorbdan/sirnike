@@ -4,12 +4,21 @@
 
 ## Очередь
 
-- [ ] P1 · Видео-панель — не спрашивать модель дважды, убрать кнопки-модели
+- [x] P1 · Видео-панель — не спрашивать модель дважды, убрать кнопки-модели
       из полной панели (там уже есть текстом). Макет утверждён Аней. Полное
       ТЗ: [docs/specs/2026-07-31_video_panel_declutter.md](../specs/2026-07-31_video_panel_declutter.md).
       Первая задача под новое правило разделения (docs/roles/backend.md,
       docs/roles/frontend.md, 2026-07-31) — SirNike.py теперь целиком зона
       бэкенда, фронтенд только пишет ТЗ.
+      Сделано 2026-08-01: `video_model_picked` в UserState (ставится в ветке
+      `video_model_*`, переносится через `reset` вместе с `video_model` как
+      липкая настройка); оба входа в видео (инлайн `video` + reply
+      MENU_BTN_VIDEO) при выбранной модели шлют сразу полную панель; блок
+      кнопок-моделей из `video_kb` удалён, вместо него «🔄 Сменить модель»
+      (`video_change_model`, edit-in-place, добавлен в video_callbacks).
+      Тесты: 3.1–3.3/15.36–15.37 переписаны под новую структуру, новые
+      3.38 и 7.7d–7.7g (пропуск пикера, смена модели, перенос через reset).
+      302→307 PASS.
 - [ ] P1 · Провайдер EvoLink — Gemini Omni, Kling Motion Control, перевод Seedance.
       Полное ТЗ: [docs/specs/2026-07-31_evolink_video_provider.md](../specs/2026-07-31_evolink_video_provider.md).
       2026-07-31 (заход 1, без ключа): `EVOLINK_API_BASE`/`EVOLINK_API_KEY`/

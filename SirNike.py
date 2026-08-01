@@ -23,6 +23,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    PicklePersistence,
     TypeHandler,
     filters,
 )
@@ -11313,13 +11314,48 @@ async def preview_refs(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Реф {i}: не удалось отправить")
 
 
+def log_provider_config() -> None:
+    """Громкая сводка провайдеров при старте — один прод-инцидент 2026-08-01
+    (AI_PROVIDER тихо потерялся в BotHost при правке других env-переменных,
+    фото неделю молча шли через YesAPI вместо Zveno, обнаружилось только по
+    жалобе на NOT_ENOUGH_RPOINTS) показал, что такие расхождения нужно ловить
+    в логах на старте, а не через юзерские тикеты."""
+    photo_provider = AI_PROVIDER
+    video_provider = "evolink" if SEEDANCE_PROVIDER == "evolink" else "zveno"
+    motion_provider = MOTION_CONTROL_PROVIDER if MOTION_CONTROL_ENABLED else "off"
+    logger.info(
+        "providers: photo=%s video=%s motion=%s gemini_omni=%s studio=%s",
+        photo_provider, video_provider, motion_provider,
+        "on" if GEMINI_OMNI_ENABLED else "off",
+        "on" if STUDIO_ENABLED else "off",
+    )
+    provider_keys = {
+        "ZVENO": ZVENO_API_KEY, "MASHAGPT": MASHAGPT_API_KEY,
+        "YESAPI": NANO_API_KEY, "EVOLINK": EVOLINK_API_KEY,
+    }
+    if photo_provider not in provider_keys:
+        logger.warning("AI_PROVIDER=%s не распознан ни одним клиентом фото-генерации", photo_provider)
+    elif not provider_keys[photo_provider]:
+        logger.warning("AI_PROVIDER=%s, но ключ для него пуст — фото-генерация будет падать", photo_provider)
+    if video_provider == "evolink" and not EVOLINK_API_KEY:
+        logger.warning("SEEDANCE_PROVIDER=evolink, но EVOLINK_API_KEY пуст — видео будет падать")
+    if not ZVENO_API_KEY:
+        logger.warning("ZVENO_API_KEY пуст — видео (Seedance/Kling/Veo/Wan) недоступно вне зависимости от AI_PROVIDER")
+
+
 def main():
     init_db()
     purge_stale_avatar_refs()
 
+    # Черновики (фото/видео в процессе, ещё не запущенные) жили только в
+    # памяти процесса — каждый "Update from Git" стирал их всем юзерам
+    # посреди флоу. PicklePersistence переживает рестарт; UserState — plain
+    # dataclass без блокировок/сокетов, пиклится как есть.
+    persistence = PicklePersistence(filepath=os.path.join(DATA_DIR, "bot_persistence.pickle"))
     app = (
         Application.builder()
         .token(TOKEN)
+        .persistence(persistence)
         .post_init(post_init)
         .post_shutdown(post_shutdown)
         .build()
@@ -11376,6 +11412,7 @@ def main():
 
     logger.info("Бот запускается...")
     logger.info("build=%s", BUILD_ID)
+    log_provider_config()
     logger.info("db path: %s", DB_NAME)
     if DB_NAME != SEED_DB_NAME and os.path.exists(SEED_DB_NAME):
         logger.info(

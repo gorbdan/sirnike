@@ -1724,6 +1724,42 @@ S.GEMINI_OMNI_ENABLED = _orig_gemini_enabled
 # 15.45 MOTION_CONTROL_PROVIDER дефолт — mashagpt (ноль изменений поведения)
 check("15.45 дефолт MOTION_CONTROL_PROVIDER = mashagpt", S.MOTION_CONTROL_PROVIDER == "mashagpt", S.MOTION_CONTROL_PROVIDER)
 
+# 15.46 log_provider_config: громкая сводка провайдеров при старте, с warning
+# на рассинхроне AI_PROVIDER/ключа (прод-инцидент 2026-08-01: AI_PROVIDER
+# потерялся в BotHost, фото неделю молча шли через YesAPI вместо Zveno).
+import logging as _logging  # noqa: E402
+
+
+class _ListLogHandler(_logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.records = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+
+_log_handler = _ListLogHandler()
+S.logger.addHandler(_log_handler)
+_orig_ai_provider = S.AI_PROVIDER
+_orig_zveno_key = S.ZVENO_API_KEY
+
+S.AI_PROVIDER = "MASHAGPT"
+S.log_provider_config()
+_warnings46 = [r.getMessage() for r in _log_handler.records if r.levelno >= _logging.WARNING]
+check("15.46 AI_PROVIDER без ключа -> warning про пустой ключ",
+      any("MASHAGPT" in w and "ключ" in w for w in _warnings46), str(_warnings46))
+
+_log_handler.records.clear()
+S.AI_PROVIDER = _orig_ai_provider
+S.ZVENO_API_KEY = ""
+S.log_provider_config()
+_warnings46b = [r.getMessage() for r in _log_handler.records if r.levelno >= _logging.WARNING]
+check("15.47 пустой ZVENO_API_KEY -> warning про недоступное видео",
+      any("ZVENO_API_KEY" in w for w in _warnings46b), str(_warnings46b))
+S.ZVENO_API_KEY = _orig_zveno_key
+S.logger.removeHandler(_log_handler)
+
 # ════════════════ ИТОГ ════════════════
 print()
 print(f"PASS: {len(PASS)}  FAIL: {len(FAIL)}")

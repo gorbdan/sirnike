@@ -195,6 +195,12 @@ check("3.36 пикер модели видео: только модели + на
       and "video_model_seedance2" in pcbs, str(pcbs))
 check("3.37 пикер модели видео: нет кнопок длительности/формата/качества",
       not any(c.startswith(("video_duration_", "video_aspect_", "video_mode_")) for c in pcbs), str(pcbs))
+# ТЗ 2026-08-01: сетка 2 в ряд — не по одной модели на всю ширину. Последний
+# ряд — «В меню» отдельно; ряды моделей не шире 2 кнопок.
+_prow_sizes = [len(r) for r in pkb.inline_keyboard]
+check("3.37b пикер: ряды моделей по 2 кнопки, «В меню» отдельным рядом",
+      all(n <= 2 for n in _prow_sizes[:-1]) and _prow_sizes[-1] == 1
+      and any(n == 2 for n in _prow_sizes[:-1]), str(_prow_sizes))
 
 # ТЗ video_panel_declutter: пикер не показывается повторно, если модель уже
 # выбиралась в этой сессии; «Сменить модель» возвращает в пикер; reset

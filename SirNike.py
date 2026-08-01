@@ -9962,10 +9962,13 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=seedance_retry_kb(),
                 )
                 return
-            if "insufficient_funds" in error_text or "insufficient funds" in error_text:
+            if any(k in error_text for k in (
+                "insufficient_funds", "insufficient funds",
+                "insufficient_quota", "insufficient credits", "insufficient_credits",
+            )):
                 await reply_target.reply_text(
                     f"Не удалось выполнить {selected_model_label}.\n"
-                    "У провайдера видео сейчас закончился баланс (insufficient funds).\n"
+                    "У провайдера видео сейчас закончился баланс.\n"
                     "Списанные изюминки возвращены на баланс."
                 )
                 await reply_target.reply_text(

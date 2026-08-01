@@ -182,6 +182,17 @@ check("3.35 текст заполненного фото-черновика по
 stxt = S.video_status_text(st4)
 check("3.10 статус-текст содержит Kling 3.0 и стоимость", "Kling 3.0" in stxt and "изюминок" in stxt)
 
+# Экран выбора модели видео (первый шаг «🎬 Видео для Reels», решение Ани
+# 2026-07-31) — только модели + назад, БЕЗ длительности/формата/качества,
+# которые появляются лишь после выбора (та же панель video_kb, редактированием).
+pkb = S.video_model_picker_kb()
+pcbs = [b.callback_data for row in pkb.inline_keyboard for b in row if b.callback_data]
+check("3.36 пикер модели видео: только модели + назад, без настроек",
+      all(c.startswith("video_model_") or c == "avatar_back_menu" for c in pcbs)
+      and "video_model_seedance2" in pcbs, str(pcbs))
+check("3.37 пикер модели видео: нет кнопок длительности/формата/качества",
+      not any(c.startswith(("video_duration_", "video_aspect_", "video_mode_")) for c in pcbs), str(pcbs))
+
 kb6 = S.result_actions_kb(user_id=123, bot_username="TestBot")
 cbs6 = [b.callback_data for row in kb6.inline_keyboard for b in row if b.callback_data]
 check("3.11 result_actions с user_id содержит animate_last", "animate_last" in cbs6, str(cbs6))

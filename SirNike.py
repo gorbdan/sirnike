@@ -56,6 +56,7 @@ from config import (
     EVOLINK_API_BASE,
     EVOLINK_API_KEY,
     SEEDANCE_PROVIDER,
+    SEEDANCE_FACE_GRID,
     MOTION_CONTROL_PROVIDER,
     GEMINI_OMNI_ENABLED,
     GEMINI_OMNI_MODEL,
@@ -336,6 +337,10 @@ class UserState:
     video_mode: Optional[str] = None
     video_model: str = "seedance2_fast"
     video_aspect_ratio: str = "9:16"
+    # Тумблер сетки «детектор лиц» (video_kb) — ломает ByteDance real-face
+    # детектор Seedance ценой лёгкой сетки на кадре. Дефолт наследуется от env
+    # SEEDANCE_FACE_GRID (по умолчанию выкл). См. run_seedance / get_face_grid.
+    video_face_grid: bool = field(default_factory=lambda: SEEDANCE_FACE_GRID)
     video_session_active: bool = False
     waiting_for_video_prompt: bool = False
     waiting_for_video_image: bool = False
@@ -1053,6 +1058,19 @@ def get_video_model(state: UserState) -> str:
     if state.video_model == "gemini_omni" and GEMINI_OMNI_ENABLED:
         return "gemini_omni"
     return "seedance2"
+
+
+def video_model_uses_face_grid(model_code: str) -> bool:
+    """Сетка «детектор лиц» применима только к Seedance 2 / 2 Fast — только их
+    режет ByteDance-детектор реальных лиц. Kling/Veo/Wan/Gemini Omni берут фото
+    как первый кадр/референс-стиль, сетка им ломает кадр."""
+    return model_code in ("seedance2", "seedance2_fast")
+
+
+def get_face_grid(state: UserState) -> bool:
+    """Per-user состояние тумблера сетки «детектор лиц». Дефолт — env
+    SEEDANCE_FACE_GRID (getattr-фолбэк на случай старого состояния без поля)."""
+    return bool(getattr(state, "video_face_grid", SEEDANCE_FACE_GRID))
 
 
 def get_video_model_label(model_code: str) -> str:
@@ -1849,6 +1867,17 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
             )
         if mode_buttons:
             rows.append(mode_buttons)
+    # Тумблер сетки «детектор лиц» — только Seedance 2/2 Fast (их режет
+    # ByteDance-детектор реальных лиц). Вкл = защита от отказа модерации ценой
+    # лёгкой сетки на кадре; выкл = чистый кадр, но реальное фото может резаться.
+    if video_model_uses_face_grid(selected_model):
+        face_grid_on = get_face_grid(state)
+        rows.append([
+            InlineKeyboardButton(
+                "🟢 Детектор лиц: вкл" if face_grid_on else "⚪️ Детектор лиц: выкл",
+                callback_data="video_facegrid_toggle",
+            )
+        ])
     # Формат (aspect ratio)
     selected_aspect = getattr(state, "video_aspect_ratio", "16:9")
     aspect_options = [
@@ -1920,6 +1949,11 @@ def video_status_text(state: UserState) -> str:
     # Подсказка «с чего начать» — только пока черновик пуст (правило UI_STYLE:
     # не рассказывать про заполненные шаги).
     hint_line = "" if (prompt_done or video_images) else "Хватит одного: описание или фото 👇\n"
+    # Строка тумблера «детектор лиц» — только у Seedance (у остальных моделей
+    # сетка не применяется, строка бы вводила в заблуждение).
+    face_grid_line = ""
+    if video_model_uses_face_grid(selected_model):
+        face_grid_line = f"Детектор лиц: {'вкл 🟢 (защита от отказа модерации)' if get_face_grid(state) else 'выкл ⚪️ (чистый кадр)'}\n"
     return (
         "🎬 Видео для Reels\n\n"
         f"{hint_line}"
@@ -1928,6 +1962,7 @@ def video_status_text(state: UserState) -> str:
         f"Фото: {image_state}\n"
         f"Формат: {_aspect_label}\n"
         f"Качество: {seedance_mode_ui_label(selected_mode)}\n"
+        f"{face_grid_line}"
         f"Длительность: {selected_duration} сек\n"
         f"Стоимость: {selected_cost} изюминок\n"
         f"Результат: обычно через {eta_min}–{eta_max} мин"
@@ -5529,6 +5564,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "video_clear_images",
         "video_set_video",
         "video_start",
+        "video_facegrid_toggle",
         "seedance_retry",
     }
     is_video_callback = (
@@ -5797,6 +5833,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Фото очищены ✅\n\n" + video_status_text(state),
             video_kb(state),
         )
+        return
+
+    if video_cb == "video_facegrid_toggle":
+        state = get_or_init_state(context)
+        state.video_session_active = True
+        state.video_face_grid = not get_face_grid(state)
+        await update_video_panel(query, video_status_text(state), video_kb(state))
         return
 
     if video_cb.startswith("video_aspect_"):
@@ -9732,11 +9775,13 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
-        # Обработка рефа (сетка) нужна только Seedance (реф внешности).
-        # Kling/Veo/Wan/Gemini Omni используют картинку как первый кадр или
-        # референс-стиль — обработка ломает кадр, да и детектор реальных лиц
-        # у них не ByteDance-овский.
-        if video_images and selected_model not in ("kling3", "veo31", "wan27", "gemini_omni"):
+        # Обработка рефа (сетка «детектор лиц») нужна только Seedance (реф
+        # внешности) и только когда включён per-user тумблер (get_face_grid,
+        # дефолт из env SEEDANCE_FACE_GRID — по умолчанию ВЫКЛ). Тумблер живёт
+        # в video_kb (video_facegrid_toggle). Kling/Veo/Wan/Gemini Omni берут
+        # картинку как первый кадр/референс-стиль — обработка ломает кадр, да и
+        # детектор реальных лиц у них не ByteDance-овский.
+        if get_face_grid(state) and video_images and video_model_uses_face_grid(selected_model):
             processed_refs = await apply_grid_overlay_to_refs(video_images)
             failed_count = sum(1 for r in processed_refs if r is None)
             if failed_count:
@@ -11224,8 +11269,12 @@ async def preview_refs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not video_images:
         await update.message.reply_text("Рефов нет. Добавь фото в Seedance-панели сначала.")
         return
+    toggle_state = "ВКЛ 🟢" if get_face_grid(state) else "ВЫКЛ ⚪️"
+    env_default = "вкл" if SEEDANCE_FACE_GRID else "выкл"
     await update.message.reply_text(
-        f"Обрабатываю {len(video_images)} реф(ов) — сетка…"
+        f"Обрабатываю {len(video_images)} реф(ов) — превью сетки «детектор лиц». "
+        f"Твой тумблер сейчас: {toggle_state} (env-дефолт SEEDANCE_FACE_GRID: {env_default}). "
+        "Превью всегда рисует сетку — в реальной генерации она накладывается только при включённом тумблере."
     )
     try:
         processed = await apply_grid_overlay_to_refs(video_images)

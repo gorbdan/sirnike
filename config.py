@@ -75,6 +75,15 @@ SEEDANCE_PROVIDER = os.getenv("SEEDANCE_PROVIDER", "zveno").strip().lower()
 # этого флага — фича ещё не готова к продакшену в принципе (см. ТЗ EvoLink).
 MOTION_CONTROL_PROVIDER = os.getenv("MOTION_CONTROL_PROVIDER", "mashagpt").strip().lower()
 
+# «Детектор лиц» — сетка-оверлей поверх фото-рефов Seedance. Ломает детектор
+# реальных лиц у ByteDance (Seedance режет фотографии живых людей как «real
+# person»). Сетка заметно портит кадр, поэтому вынесена в вариант и по умолчанию
+# ВЫКЛЮЧЕНА: фото уходит в Seedance как есть, без сетки. Включить обратно (если
+# модерация снова начнёт резать реальные лица) — одной env-переменной без
+# редеплоя логики: SEEDANCE_FACE_GRID=on|1|true|yes. Флаг не касается
+# Kling/Veo/Wan/Gemini Omni — у них другой (не ByteDance) детектор.
+SEEDANCE_FACE_GRID = os.getenv("SEEDANCE_FACE_GRID", "0").strip().lower() in ("1", "true", "yes", "on")
+
 # Gemini Omni Flash (EvoLink) — новый продукт, которого нет у Zveno/MashaGPT.
 # Выключен по умолчанию до ручного ревью качества генераций Аней/маркетологом
 # (ТЗ EvoLink, п.2 порядка работ: «не продолжать без ок»).

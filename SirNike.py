@@ -56,6 +56,7 @@ from config import (
     EVOLINK_API_BASE,
     EVOLINK_API_KEY,
     SEEDANCE_PROVIDER,
+    SEEDANCE_FACE_GRID,
     MOTION_CONTROL_PROVIDER,
     GEMINI_OMNI_ENABLED,
     GEMINI_OMNI_MODEL,
@@ -9732,11 +9733,13 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
-        # Обработка рефа (сетка) нужна только Seedance (реф внешности).
+        # Обработка рефа (сетка «детектор лиц») нужна только Seedance (реф
+        # внешности) и только когда флаг SEEDANCE_FACE_GRID включён. По
+        # умолчанию флаг ВЫКЛ — сетка убрана, фото уходит в Seedance как есть.
         # Kling/Veo/Wan/Gemini Omni используют картинку как первый кадр или
         # референс-стиль — обработка ломает кадр, да и детектор реальных лиц
         # у них не ByteDance-овский.
-        if video_images and selected_model not in ("kling3", "veo31", "wan27", "gemini_omni"):
+        if SEEDANCE_FACE_GRID and video_images and selected_model not in ("kling3", "veo31", "wan27", "gemini_omni"):
             processed_refs = await apply_grid_overlay_to_refs(video_images)
             failed_count = sum(1 for r in processed_refs if r is None)
             if failed_count:
@@ -11224,8 +11227,10 @@ async def preview_refs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not video_images:
         await update.message.reply_text("Рефов нет. Добавь фото в Seedance-панели сначала.")
         return
+    grid_state = "ВКЛ" if SEEDANCE_FACE_GRID else "ВЫКЛ (в реальной генерации сетка не накладывается)"
     await update.message.reply_text(
-        f"Обрабатываю {len(video_images)} реф(ов) — сетка…"
+        f"Обрабатываю {len(video_images)} реф(ов) — сетка «детектор лиц» превью. "
+        f"Флаг SEEDANCE_FACE_GRID: {grid_state}"
     )
     try:
         processed = await apply_grid_overlay_to_refs(video_images)

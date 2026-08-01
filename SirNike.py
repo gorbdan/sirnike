@@ -1755,17 +1755,20 @@ def video_model_picker_kb() -> InlineKeyboardMarkup:
     через update_video_panel (button_handler, ветка video_cb.startswith
     ("video_model_")) — новое сообщение не шлётся, ничего дублировать не
     пришлось."""
-    rows = [[InlineKeyboardButton("Seedance 2", callback_data="video_model_seedance2")]]
+    buttons = [InlineKeyboardButton("Seedance 2", callback_data="video_model_seedance2")]
     if SEEDANCE_FAST_ENABLED:
-        rows.append([InlineKeyboardButton("Seedance 2 Fast (бета)", callback_data="video_model_seedance2_fast")])
+        buttons.append(InlineKeyboardButton("Seedance 2 Fast (бета)", callback_data="video_model_seedance2_fast"))
     if KLING3_ENABLED:
-        rows.append([InlineKeyboardButton("Kling 3.0 🆕", callback_data="video_model_kling3")])
+        buttons.append(InlineKeyboardButton("Kling 3.0 🆕", callback_data="video_model_kling3"))
     if VEO31_ENABLED:
-        rows.append([InlineKeyboardButton("Veo 3.1 🆕", callback_data="video_model_veo31")])
+        buttons.append(InlineKeyboardButton("Veo 3.1 🆕", callback_data="video_model_veo31"))
     if WAN27_ENABLED:
-        rows.append([InlineKeyboardButton("Wan 2.7 🆕", callback_data="video_model_wan27")])
+        buttons.append(InlineKeyboardButton("Wan 2.7 🆕", callback_data="video_model_wan27"))
     if GEMINI_OMNI_ENABLED:
-        rows.append([InlineKeyboardButton("Gemini Omni 🆕", callback_data="video_model_gemini_omni")])
+        buttons.append(InlineKeyboardButton("Gemini Omni 🆕", callback_data="video_model_gemini_omni"))
+    # Сетка 2 в ряд, не по модели на всю ширину (ТЗ 2026-08-01: 6 полноширинных
+    # кнопок подряд на живом скриншоте прода — «бардак»).
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
     rows.append([InlineKeyboardButton("◀️ В меню", callback_data="avatar_back_menu")])
     return InlineKeyboardMarkup(rows)
 

@@ -1336,6 +1336,129 @@ if _shutil.which("ffmpeg") and _shutil.which("ffprobe"):
 else:
     check("13.23 stitch: ffmpeg недоступен локально, склейка не проверена", True)
 
+# ════════════════ БЛОК 14: EvoLink провайдер-флаг + Motion Control UI ════════════════
+print("Блок 14: EvoLink провайдер-флаг + Motion Control UI")
+
+# 14.1 дефолт SEEDANCE_PROVIDER="zveno" — ноль изменений поведения
+check("14.1 дефолт SEEDANCE_PROVIDER = zveno", S.SEEDANCE_PROVIDER == "zveno", S.SEEDANCE_PROVIDER)
+check("14.2 seedance2 на zveno -> use_evolink=False", S.seedance_uses_evolink("seedance2") is False)
+check("14.3 seedance2_fast на zveno -> use_evolink=False", S.seedance_uses_evolink("seedance2_fast") is False)
+
+_orig_seedance_provider = S.SEEDANCE_PROVIDER
+S.SEEDANCE_PROVIDER = "evolink"
+check("14.4 seedance2 на evolink -> use_evolink=True", S.seedance_uses_evolink("seedance2") is True)
+check("14.5 seedance2_fast на evolink -> use_evolink=True", S.seedance_uses_evolink("seedance2_fast") is True)
+check("14.6 kling3 игнорирует SEEDANCE_PROVIDER даже на evolink",
+      S.seedance_uses_evolink("kling3") is False)
+check("14.7 veo31 игнорирует SEEDANCE_PROVIDER даже на evolink",
+      S.seedance_uses_evolink("veo31") is False)
+check("14.8 wan27 игнорирует SEEDANCE_PROVIDER даже на evolink",
+      S.seedance_uses_evolink("wan27") is False)
+S.SEEDANCE_PROVIDER = _orig_seedance_provider
+check("14.9 SEEDANCE_PROVIDER восстановлен в zveno после теста", S.SEEDANCE_PROVIDER == "zveno")
+
+# 14.10 EvoLink-клиент — явная заглушка, не тихий noop
+try:
+    asyncio.run(S.start_seedance_task_evolink(
+        prompt="тест", image_url=None, user_id=1, model_code="seedance2",
+    ))
+    check("14.10 start_seedance_task_evolink кидает NotImplementedError", False)
+except NotImplementedError:
+    check("14.10 start_seedance_task_evolink кидает NotImplementedError", True)
+
+# 14.11 MOTION_CONTROL_ENABLED=0 по умолчанию — кнопка скрыта в video_menu_kb
+check("14.11 MOTION_CONTROL_ENABLED выключен по умолчанию", S.MOTION_CONTROL_ENABLED is False, S.MOTION_CONTROL_ENABLED)
+kb_video_menu = S.video_menu_kb(user_id=1)
+cbs_vm = [b.callback_data for row in kb_video_menu.inline_keyboard for b in row]
+check("14.12 кнопка motion_start скрыта при выключенном флаге", "motion_start" not in cbs_vm, str(cbs_vm))
+
+# 14.13 при включённом флаге кнопка появляется
+_orig_motion_flag = S.MOTION_CONTROL_ENABLED
+S.MOTION_CONTROL_ENABLED = True
+kb_video_menu2 = S.video_menu_kb(user_id=1)
+cbs_vm2 = [b.callback_data for row in kb_video_menu2.inline_keyboard for b in row]
+check("14.13 кнопка motion_start видна при включённом флаге", "motion_start" in cbs_vm2, str(cbs_vm2))
+
+# 14.14 motion_start запускает waiting_for_motion_video, сбрасывая обычный видео-режим
+update, context, query = make_update_context("motion_start", user_id=1401)
+context.user_data["state"] = S.UserState(video_session_active=True, waiting_for_video_image=True)
+asyncio.run(S.button_handler(update, context))
+st14 = context.user_data.get("state")
+check("14.14 motion_start взводит waiting_for_motion_video",
+      st14 and st14.waiting_for_motion_video is True, str(st14))
+check("14.15 motion_start взводит motion_control_active",
+      st14 and st14.motion_control_active is True)
+check("14.16 motion_start гасит обычный видео-режим (video_session_active)",
+      st14 and st14.video_session_active is False)
+
+# 14.17 handle_video: референс-видео добавлен -> просит фото (не video_kb Seedance)
+video_message = types.SimpleNamespace(
+    video=types.SimpleNamespace(file_id="vid1"),
+    reply_text=AsyncMock(),
+)
+update = types.SimpleNamespace(
+    message=video_message,
+    effective_user=types.SimpleNamespace(id=1402, username="test"),
+    effective_chat=types.SimpleNamespace(id=1402),
+    effective_message=video_message,
+)
+st14b = S.UserState(motion_control_active=True, waiting_for_motion_video=True)
+context = types.SimpleNamespace(user_data={"state": st14b}, application=None, bot=AsyncMock())
+context.bot.get_file = AsyncMock(return_value=types.SimpleNamespace(file_path="videos/file1.mp4"))
+asyncio.run(S.handle_video(update, context))
+check("14.18 waiting_for_motion_video сброшен после видео", st14b.waiting_for_motion_video is False)
+check("14.19 waiting_for_motion_image взведён (ждём фото следующим шагом)",
+      st14b.waiting_for_motion_image is True)
+check("14.20 motion_video_url сохранён", bool(st14b.motion_video_url), st14b.motion_video_url)
+video_texts = [c.args[0] for c in video_message.reply_text.await_args_list]
+check("14.21 просит прислать фото (не показывает video_kb)",
+      any("фото" in t.lower() for t in video_texts), str(video_texts))
+
+# 14.22 handle_photo: фото после видео с движением запускает run_kling_motion_control
+started_motion = []
+
+
+async def fake_run_motion(update, context):
+    started_motion.append(True)
+
+
+_orig_run_motion = S.run_kling_motion_control
+S.run_kling_motion_control = fake_run_motion
+st14c = S.UserState(waiting_for_motion_image=True, motion_video_url="https://example.com/motion.mp4")
+photo_message_motion = types.SimpleNamespace(
+    photo=[types.SimpleNamespace(file_id="ph_motion")],
+    caption=None, media_group_id=None, reply_text=AsyncMock(),
+)
+update = types.SimpleNamespace(
+    message=photo_message_motion,
+    effective_user=types.SimpleNamespace(id=1403, username="test"),
+    effective_chat=types.SimpleNamespace(id=1403),
+    effective_message=photo_message_motion,
+)
+context = types.SimpleNamespace(user_data={"state": st14c}, application=types.SimpleNamespace(create_task=lambda c: (started_motion.append("task"), c.close())), bot=AsyncMock())
+context.bot.get_file = AsyncMock(return_value=types.SimpleNamespace(
+    download_to_memory=AsyncMock(side_effect=lambda out: out.write(base64.b64decode(ok_png_b64)))
+))
+asyncio.run(S.handle_photo(update, context))
+check("14.23 waiting_for_motion_image сброшен после фото", st14c.waiting_for_motion_image is False)
+check("14.24 motion_image_url сохранён", bool(st14c.motion_image_url), st14c.motion_image_url)
+check("14.25 run_kling_motion_control запущен (create_task)", "task" in started_motion, str(started_motion))
+S.processing_user_ids.discard(1403)
+S.run_kling_motion_control = _orig_run_motion
+
+# 14.26 deactivate_video_session гасит motion-состояние вместе с обычным видео
+st14d = S.UserState(
+    motion_control_active=True, waiting_for_motion_video=True,
+    waiting_for_motion_image=True, motion_video_url="x", motion_image_url="y",
+)
+S.deactivate_video_session(st14d)
+check("14.27 deactivate_video_session гасит motion_control_active", st14d.motion_control_active is False)
+check("14.28 deactivate_video_session гасит waiting_for_motion_image", st14d.waiting_for_motion_image is False)
+check("14.29 deactivate_video_session чистит motion_video_url/motion_image_url",
+      st14d.motion_video_url is None and st14d.motion_image_url is None)
+
+S.MOTION_CONTROL_ENABLED = _orig_motion_flag
+
 # ════════════════ ИТОГ ════════════════
 print()
 print(f"PASS: {len(PASS)}  FAIL: {len(FAIL)}")

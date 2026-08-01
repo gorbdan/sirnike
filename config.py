@@ -60,6 +60,15 @@ ZVENO_API_KEY = os.getenv("ZVENO_API_KEY", "")
 ZVENO_IMAGE_MODEL = os.getenv("ZVENO_IMAGE_MODEL", "google/gemini-3.1-flash-image-preview")
 ZVENO_CHAT_MODEL = os.getenv("ZVENO_CHAT_MODEL", "google/gemini-2.5-flash")
 
+# EvoLink — новый провайдер видео (см. docs/specs/2026-07-31_evolink_video_provider.md).
+# Заблокировано ключом (Аня заводит аккаунт) — EVOLINK_API_KEY пуст до выдачи ключа,
+# реальный HTTP-клиент ещё не написан (см. SirNike.py: start_seedance_task_evolink).
+EVOLINK_API_BASE = os.getenv("EVOLINK_API_BASE", "https://api.evolink.ai/v1")
+EVOLINK_API_KEY = os.getenv("EVOLINK_API_KEY", "")
+# "zveno" | "evolink" — переключатель провайдера ТОЛЬКО для Seedance 2.0/2.0-fast.
+# Дефолт "zveno" — путь отката без редеплоя логики, одна env-переменная.
+SEEDANCE_PROVIDER = os.getenv("SEEDANCE_PROVIDER", "zveno").strip().lower()
+
 PROMPT_WEBAPP_URL = os.getenv("PROMPT_WEBAPP_URL", "").strip()
 # Только стабильный домен: адреса вида https://<hash>.sirnike.pages.dev — снимок
 # одного деплоя, они никогда не обновляются

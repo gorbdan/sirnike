@@ -53,6 +53,9 @@ from config import (
     ZVENO_API_KEY,
     ZVENO_IMAGE_MODEL,
     ZVENO_CHAT_MODEL,
+    EVOLINK_API_BASE,
+    EVOLINK_API_KEY,
+    SEEDANCE_PROVIDER,
     PROMPT_WEBAPP_URL,
     PROMPT_LIBRARY_REMOTE_URL,
     REMOVE_BG_API_KEY,
@@ -332,6 +335,13 @@ class UserState:
     waiting_for_video_image: bool = False
     waiting_for_video_duration: bool = False
     waiting_for_motion_video: bool = False
+    # Kling Motion Control — отдельный мини-флоу (не Seedance): референс-видео
+    # с движением + одно фото юзера, см. docs/specs/2026-07-31_evolink_video_provider.md.
+    # Фича скрыта за MOTION_CONTROL_ENABLED (по умолчанию 0), но флоу должен
+    # быть рабочим для локального QA с флагом=1.
+    motion_control_active: bool = False
+    waiting_for_motion_image: bool = False
+    motion_image_url: Optional[str] = None
     image_model: str = "gemini"  # gemini | gpt5
     image_prompt: str = ""
     # Стиль помечен `style_extract` в prompt_library.json (сейчас — «Образ с
@@ -1006,6 +1016,12 @@ def deactivate_video_session(state: UserState) -> None:
     state.waiting_for_motion_video = False
     state.waiting_for_video_duration = False
     state.image_prompt = ""
+    # Motion Control — свой мини-флоу, гасим вместе с обычным видео-режимом,
+    # чтобы «В меню»/reset не оставляли юзера в подвешенном ожидании фото/видео.
+    state.motion_control_active = False
+    state.waiting_for_motion_image = False
+    state.motion_video_url = None
+    state.motion_image_url = None
 
 
 def get_video_model(state: UserState) -> str:
@@ -1042,6 +1058,15 @@ def get_video_model_blurb(model_code: str) -> str:
         "wan27": "живая мимика и жесты",
     }
     return blurbs.get(model_code, "")
+
+
+def seedance_uses_evolink(model_code: str) -> bool:
+    """Провайдер-флаг из docs/specs/2026-07-31_evolink_video_provider.md — только
+    Seedance 2.0/2.0-fast умеют переключаться на EvoLink; Kling 3.0/Veo 3.1/
+    Wan 2.7 всегда идут через Zveno вне зависимости от SEEDANCE_PROVIDER.
+    Дефолт SEEDANCE_PROVIDER="zveno" всегда возвращает False — ноль изменений
+    поведения, пока владелец явно не переключит env-переменную."""
+    return model_code in ("seedance2", "seedance2_fast") and SEEDANCE_PROVIDER == "evolink"
 
 
 def get_video_model_cost_per_second(model_code: str) -> float:
@@ -1314,6 +1339,11 @@ def photo_menu_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
 def video_menu_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     video_label = "🎬 Видео для Reels" if SEEDANCE_ENABLED else "🎬 Видео для Reels 🚧"
     rows = [[InlineKeyboardButton(video_label, callback_data="video")]]
+    # Kling Motion Control — новый продукт через EvoLink (см. docs/specs/
+    # 2026-07-31_evolink_video_provider.md). Скрыт фичефлагом, пока не готов
+    # к продакшену (нет API-ключа EvoLink) — но флоу за кнопкой рабочий.
+    if MOTION_CONTROL_ENABLED:
+        rows.append([InlineKeyboardButton("🕺 Видео с движением 🆕", callback_data="motion_start")])
     # Студия мультиков: ТОЛЬКО инлайн-кнопка (web_app) — вебапп, открытый
     # с нижней reply-кнопки, НЕ получает initData от Telegram (прод-аудит
     # 2026-07-28, platform=tdesktop: initData пуст всегда, initDataUnsafe
@@ -3513,6 +3543,24 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         caption = (update.message.caption or "").strip()
 
+        if state.waiting_for_motion_image:
+            # Kling Motion Control мини-флоу: ровно 1 фото, затем сразу запуск —
+            # не копим буфер, как в Seedance (waiting_for_video_image ниже).
+            user_m = update.effective_user
+            if user_m.id in queued_user_ids or user_m.id in processing_user_ids:
+                await update.message.reply_text("Уже выполняется другая задача. Подожди.")
+                return
+            state.motion_image_url = direct_url
+            state.waiting_for_motion_image = False
+            processing_user_ids.add(user_m.id)
+            try:
+                context.application.create_task(run_kling_motion_control(update, context))
+            except Exception:
+                processing_user_ids.discard(user_m.id)
+                logger.exception("create_task(run_kling_motion_control) failed for user=%s", user_m.id)
+                await update.message.reply_text("Не удалось запустить генерацию. Попробуй ещё раз.")
+            return
+
         if state.waiting_for_video_image:
             state.video_session_active = True
             current_refs = get_video_image_urls(state)
@@ -3588,6 +3636,16 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_file = await context.bot.get_file(video.file_id)
     state.motion_video_url = f"https://api.telegram.org/file/bot{TOKEN}/{tg_file.file_path}"
     state.waiting_for_motion_video = False
+
+    if state.motion_control_active:
+        # Kling Motion Control мини-флоу (не Seedance) — следующий шаг ждёт фото,
+        # video_kb() здесь неуместен (это UI для Seedance/Kling3/Veo/Wan).
+        state.waiting_for_motion_image = True
+        await update.message.reply_text(
+            "Видео с движением добавлено ✅\n\n"
+            "Теперь пришли своё фото — перенесу это движение на него."
+        )
+        return
 
     await update.message.reply_text(
         "Видео с движением добавлено ✅",
@@ -5728,6 +5786,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Для этой модели этот шаг не нужен.")
         return
 
+    if query.data == "motion_start":
+        if not MOTION_CONTROL_ENABLED:
+            await query.message.reply_text(video_unavailable_text(), reply_markup=main_menu_kb())
+            return
+        state = get_or_init_state(context)
+        deactivate_video_session(state)
+        state.motion_control_active = True
+        state.waiting_for_motion_video = True
+        await query.message.reply_text(
+            "🕺 Видео с движением\n\n"
+            "1. Пришли короткое референс-видео с движением, которое нужно повторить "
+            "(танец, жест, поворот и т.п.) — обычным видеофайлом.\n"
+            "2. Затем пришли своё фото — перенесу движение на него."
+        )
+        return
+
     if video_cb == "video_set_duration":
         state = get_or_init_state(context)
         state.video_session_active = True
@@ -7864,12 +7938,22 @@ async def start_kling_motion_control(
     motion_video_url: str,
     prompt: str,
     user_id: int,
+    api_base: str = MASHAGPT_API_BASE,
+    api_key: str = MASHAGPT_API_KEY,
 ) -> str:
+    """Kling Motion Control (kling-2-6-motion-control) — сейчас всегда зовётся с
+    дефолтами MashaGPT (не переключено на EvoLink, нет API-ключа). api_base/
+    api_key параметризованы заранее, чтобы включение EvoLink-провайдера потом
+    было одной правкой вызова (новый base/key), без переписывания тела функции —
+    см. docs/specs/2026-07-31_evolink_video_provider.md. Формат запроса EvoLink
+    ещё не сверен с MashaGPT — до этого функция реально работает только с
+    MashaGPT.
+    """
     if not KLING_MOTION_ENDPOINT:
         raise Exception("Эндпоинт видео-генерации не настроен (KLING_MOTION_ENDPOINT).")
 
-    if not MASHAGPT_API_KEY:
-        raise Exception("MASHAGPT_API_KEY is empty")
+    if not api_key:
+        raise Exception("API key is empty (MASHAGPT_API_KEY/api_key)")
 
     endpoint_path = (KLING_MOTION_ENDPOINT or "").strip()
     if "kling-v2-6-motion-control" in endpoint_path:
@@ -7892,13 +7976,13 @@ async def start_kling_motion_control(
     async with aiohttp.ClientSession() as session:
         last_error = None
         for endpoint in endpoint_candidates:
-            request_url = build_mashagpt_url(MASHAGPT_API_BASE, endpoint)
+            request_url = build_mashagpt_url(api_base, endpoint)
             logger.info(f"Video endpoint: {request_url}")
             async with session.post(
                 request_url,
                 headers={
-                    "x-api-key": MASHAGPT_API_KEY,
-                    "Authorization": f"Bearer {MASHAGPT_API_KEY}",
+                    "x-api-key": api_key,
+                    "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 },
                 json={
@@ -8092,6 +8176,138 @@ async def poll_kling_animation_custom(animation_id: str, max_attempts: int, poll
 
         raise Exception("Превышено время ожидания анимации")
 
+
+async def run_kling_motion_control(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Kling Motion Control — отдельный мини-флоу, НЕ переиспользует run_seedance
+    (разные провайдер/эндпоинт/параметры, ровно 1 фото + 1 референс-видео, без
+    длительности/режима/aspect ratio на выбор юзера). Гейт MOTION_CONTROL_ENABLED
+    уже проверен раньше (кнопка скрыта), сюда попадаем только если флаг включён
+    и юзер прошёл оба шага флоу (video_start -> motion_video_url, handle_photo ->
+    motion_image_url). См. docs/specs/2026-07-31_evolink_video_provider.md."""
+    user = None
+    try:
+        user = update.effective_user
+        reply_target = update.callback_query.message if update.callback_query else update.message
+        state = get_or_init_state(context)
+
+        image_url = state.motion_image_url
+        motion_video_url = state.motion_video_url
+        prompt_text = (state.video_prompt or "").strip()
+
+        if not image_url or not motion_video_url:
+            await reply_target.reply_text(
+                "Не хватает данных для запуска (фото или референс-видео). "
+                "Открой «🕺 Видео с движением» заново."
+            )
+            return
+
+        cost = KLING_MOTION_COST
+        bal = get_balance(user.id)
+        if bal < cost:
+            await reply_target.reply_text(
+                f"Не хватает изюминок.\nНужно: {cost}\nУ тебя: {bal}",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("💳 Купить изюминки", callback_data="show_buy")
+                ]])
+            )
+            return
+
+        if not spend_izyminki(user.id, cost):
+            await reply_target.reply_text("Не удалось списать изюминки. Попробуй ещё раз.")
+            return
+
+        state.motion_control_active = False
+        state.waiting_for_motion_video = False
+        state.waiting_for_motion_image = False
+
+        await reply_target.reply_text("Запускаю Kling Motion Control 🕺\nОбычно занимает пару минут.")
+        status_msg = await reply_target.reply_text("⏳ Генерирую видео…")
+
+        async def _edit_status(text: str) -> None:
+            try:
+                await status_msg.edit_text(text)
+            except Exception:
+                pass
+
+        try:
+            task_id = await start_kling_motion_control(
+                image_url=image_url,
+                motion_video_url=motion_video_url,
+                prompt=prompt_text,
+                user_id=user.id,
+            )
+            video_url = await poll_kling_animation_custom(
+                animation_id=task_id,
+                max_attempts=KLING_MOTION_MAX_POLL_ATTEMPTS,
+                poll_interval=KLING_MOTION_POLL_INTERVAL,
+            )
+            video_bytes = await download_video_bytes_with_fallback(video_url)
+            saved_path = save_video_debug_copy(video_bytes, user.id, "Kling Motion Control")
+            if saved_path:
+                logger.info(f"Video local copy saved: {saved_path}")
+
+            video_buffer = io.BytesIO(video_bytes)
+            video_buffer.name = "kling_motion_control.mp4"
+            await context.bot.send_video(
+                chat_id=update.effective_chat.id,
+                video=video_buffer,
+                supports_streaming=True,
+                caption="Готово 🕺\nKling Motion Control завершён.",
+            )
+            log_generation_event(
+                user_id=user.id,
+                kind="video",
+                status="success",
+                provider="MASHAGPT",
+                cost=cost,
+                was_free=False,
+                references_count=1,
+                prompt=prompt_text[:500] if prompt_text else None,
+                username=user.username,
+                model="kling_motion_control",
+                duration_sec=KLING_MOTION_DURATION,
+                charged_izyminki=cost,
+                refunded_izyminki=0,
+                is_admin_test=1 if user.id in ADMIN_IDS else 0,
+            )
+            context.application.create_task(
+                _post_to_results_channel(
+                    context.application, "video", video_bytes,
+                    f"🕺 Kling Motion Control\n👤 {'@' + user.username if user.username else 'id' + str(user.id)}",
+                    full_prompt=prompt_text,
+                )
+            )
+        except BaseException as e:
+            logger.exception("Kling Motion Control generation failed")
+            add_izyminki(user.id, cost)
+            log_generation_event(
+                user_id=user.id,
+                kind="video",
+                status="failed",
+                provider="MASHAGPT",
+                cost=cost,
+                was_free=False,
+                references_count=1,
+                model="kling_motion_control",
+                duration_sec=KLING_MOTION_DURATION,
+                charged_izyminki=cost,
+                refunded_izyminki=cost,
+                error_type=classify_generation_error(e),
+                error_message=str(e),
+                is_admin_test=1 if user.id in ADMIN_IDS else 0,
+            )
+            await reply_target.reply_text(
+                "Не удалось выполнить Kling Motion Control.\n"
+                "Временный технический сбой. Попробуй ещё раз позже.\n\n"
+                "Списанные изюминки возвращены на баланс."
+            )
+            if isinstance(e, asyncio.CancelledError):
+                raise
+    finally:
+        if user is not None:
+            processing_user_ids.discard(user.id)
+
+
 def extract_task_video_url(task_data: dict) -> Optional[str]:
     output = task_data.get("output")
     keys = ("url", "videoUrl", "video_url", "resultUrl", "result_url")
@@ -8216,6 +8432,43 @@ def is_seedance_privacy_moderation_error(error_text: str) -> bool:
         "may contain real person",
     ]
     return any(key in lowered for key in keys)
+
+
+async def start_seedance_task_evolink(
+    prompt: str,
+    image_url: Optional[str],
+    user_id: int,
+    duration: Optional[int] = None,
+    endpoint: Optional[str] = None,
+    mode: Optional[str] = None,
+    model_slug: Optional[str] = None,
+    image_urls: Optional[List[str]] = None,
+    model_code: Optional[str] = None,
+    aspect_ratio: str = "16:9",
+) -> str:
+    """EvoLink-клиент для Seedance 2.0/2.0-fast — заглушка.
+
+    Реальный HTTP-клиент намеренно не написан: у нас нет ни ключа EvoLink
+    (Аня заводит аккаунт), ни спецификации их API под рукой — писать запрос
+    вслепую рискованнее, чем отложить. Как только ключ и доки появятся, эта
+    функция получает тело по образцу start_seedance_task (тот же контракт
+    возврата: task_id ИЛИ "__POLL_URL__:<url>"), а поллинг — либо переиспользует
+    poll_seedance_task с параметризацией base_url/ключа, либо получает
+    poll_seedance_task_evolink рядом. См. docs/specs/2026-07-31_evolink_video_provider.md.
+
+    SEEDANCE_PROVIDER по умолчанию "zveno" — эта функция вызывается только
+    если владелец явно выставит SEEDANCE_PROVIDER=evolink в окружении, что
+    само по себе намеренная эксплуатационная попытка до готовности клиента.
+    """
+    logger.error(
+        "start_seedance_task_evolink called but EvoLink client not implemented yet — "
+        "ключ ещё не выдан (SEEDANCE_PROVIDER=evolink). user_id=%s model_code=%s",
+        user_id, model_code,
+    )
+    raise NotImplementedError(
+        "EvoLink client not implemented yet — ключ ещё не выдан. "
+        "Откати SEEDANCE_PROVIDER=zveno."
+    )
 
 
 async def start_seedance_task(
@@ -9095,6 +9348,13 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             selected_model_slug = SEEDANCE_MODEL
 
+        # Провайдер-флаг (docs/specs/2026-07-31_evolink_video_provider.md): только
+        # Seedance 2.0/2.0-fast умеют переключаться на EvoLink, остальные модели
+        # (Kling 3.0/Веo 3.1/Wan 2.7) всегда идут через Zveno — SEEDANCE_PROVIDER
+        # их не касается. Дефолт "zveno" не меняет НИЧЕГО в поведении.
+        use_evolink = seedance_uses_evolink(selected_model)
+        selected_provider_label = "EVOLINK" if use_evolink else "ZVENO"
+
         # Seedance работает только от фото; Kling 3.0, Veo 3.1 и Wan 2.7 умеют text-to-video.
         if selected_model in {"seedance2", "seedance2_fast"} and len(video_images) < 1:
             await reply_target.reply_text(
@@ -9206,7 +9466,8 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             video_url = None
             last_seedance_error: Optional[Exception] = None
             for seedance_attempt in range(1, max_seedance_attempts + 1):
-                task_id = await start_seedance_task(
+                _start_task_fn = start_seedance_task_evolink if use_evolink else start_seedance_task
+                task_id = await _start_task_fn(
                     prompt=active_prompt,
                     image_url=video_images[0] if video_images else None,
                     image_urls=video_images,
@@ -9289,7 +9550,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_id=user.id,
                 kind="video",
                 status="success",
-                provider="ZVENO",
+                provider=selected_provider_label,
                 cost=selected_cost,
                 was_free=False,
                 references_count=len(video_images),
@@ -9328,7 +9589,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_id=user.id,
                 kind="video",
                 status="failed",
-                provider="ZVENO",
+                provider=selected_provider_label,
                 cost=selected_cost,
                 was_free=False,
                 references_count=len(video_images),

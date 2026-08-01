@@ -425,6 +425,45 @@ check("6.5 при полном отказе картинка НЕ отправл
 check("6.6 изюминки возвращены", refunds == [(42, 5)], str(refunds))
 check("6.7 пользователю отправлено сообщение об ошибке", app2.bot.send_message.await_count >= 1)
 
+# 6.7b-d: MASHAGPT и YESAPI ветки generate_image_by_job — после рефакторинга
+# на общий _handle_generation_failure (дедуп ZVENO/MASHAGPT/YESAPI, 2026-08-01)
+# рефанд+сообщение+лог должны работать так же, как раньше по отдельности.
+_orig_ai_provider_b6 = S.AI_PROVIDER
+_orig_mashagpt_key = S.MASHAGPT_API_KEY
+
+# MASHAGPT: пустой ключ -> мгновенный Exception -> хвост отказа
+refunds.clear()
+S.AI_PROVIDER = "MASHAGPT"
+S.MASHAGPT_API_KEY = ""
+app_mg = types.SimpleNamespace(bot=AsyncMock(), create_task=lambda c: None)
+job_mg = S.GenerationJob(chat_id=1, user_id=43, prompt="тест", references=[], cost=7, image_model="gemini")
+asyncio.run(S.generate_image_by_job(app_mg, job_mg))
+check("6.7b MASHAGPT: изюминки возвращены при пустом ключе", refunds == [(43, 7)], str(refunds))
+check("6.7c MASHAGPT: юзеру отправлено сообщение об ошибке", app_mg.bot.send_message.await_count >= 1)
+S.MASHAGPT_API_KEY = _orig_mashagpt_key
+
+# YESAPI: провайдер по умолчанию (не ZVENO/MASHAGPT) -> HTTP 500 -> хвост отказа
+refunds.clear()
+S.AI_PROVIDER = "YESAPI"
+
+
+class FakeYesapiFailSession(FakeSession):
+    def post(self, url, headers=None, json=None, timeout=None, **kw):
+        return FakeResp(status=500, body={"success": False, "message": "internal error"})
+
+
+S.aiohttp.ClientSession = FakeYesapiFailSession
+_orig_sleep_b6 = S.asyncio.sleep
+S.asyncio.sleep = AsyncMock(return_value=None)  # пропускаем реальные 5с между попытками
+app_ya = types.SimpleNamespace(bot=AsyncMock(), create_task=lambda c: None)
+job_ya = S.GenerationJob(chat_id=1, user_id=44, prompt="тест", references=[], cost=9, image_model="gemini")
+asyncio.run(S.generate_image_by_job(app_ya, job_ya))
+S.asyncio.sleep = _orig_sleep_b6
+check("6.7d YESAPI: изюминки возвращены после 2 неудачных попыток", refunds == [(44, 9)], str(refunds))
+check("6.7e YESAPI: юзеру отправлено сообщение об ошибке", app_ya.bot.send_message.await_count >= 1)
+
+S.AI_PROVIDER = _orig_ai_provider_b6
+
 # 6.8: gpt5 в job -> первая модель gpt-5-image
 class FakeOkSession(FakeSession):
     def post(self, url, headers=None, json=None, timeout=None, **kw):

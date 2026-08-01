@@ -10222,6 +10222,78 @@ async def send_generation_result_by_url(
 # ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ (ВОРКЕР): MashaGPT, Zveno, Nano
 # ══════════════════════════════════════════════════════════════
 
+async def _handle_generation_failure(
+    app: Application,
+    *,
+    chat_id: int,
+    user_id: int,
+    job: "GenerationJob",
+    error: BaseException,
+    provider_label: str,
+    references: List[str],
+    refunded: bool,
+    generation_succeeded: bool = False,
+    use_moderation_message: bool = False,
+) -> bool:
+    """Единая точка отказа фото-генерации: возврат изюминок, сообщение юзеру,
+    log_generation_event. Была продублирована почти дословно в ZVENO/MASHAGPT/
+    YESAPI-ветках generate_image_by_job — правка в одном месте (как сегодняшний
+    фикс формулировки insufficient_quota) требовала находить и чинить N копий.
+    use_moderation_message сохраняет старое поведение 1:1 (только ZVENO её
+    показывал) — унификация текста для остальных провайдеров осознанно НЕ
+    сделана в этом рефакторинге, отдельная задача.
+    Возвращает актуальный refunded — вызывающий код обязан переприсвоить его."""
+    last_error_text = str(error) or repr(error)
+    logger.error(f"Generation debug | provider={provider_label} | user_id={user_id} | error={last_error_text}")
+
+    # generation_succeeded=True значит успех уже случился (файл мог уйти
+    # юзеру) до того, как что-то упало ПОСЛЕ этого — рефанд в таком случае
+    # был бы ошибочным двойным начислением.
+    if not generation_succeeded:
+        if getattr(job, "cost", 0) > 0 and not refunded:
+            add_izyminki(job.user_id, job.cost)
+            refunded = True
+        if getattr(job, "was_free", False) and not refunded:
+            restore_free_generation(job.user_id)
+            refunded = True
+
+    error_type = classify_generation_error(error)
+    if use_moderation_message and error_type == "moderation":
+        # Раньше юзер видел только общее "что-то пошло не так" — не понимал,
+        # что дело в фото/промте, и просто жал "Повторить" на той же
+        # комбинации (бессмысленно, отказ повторится). Явно называем причину.
+        failure_text = (
+            "Модель отклонила запрос фильтром безопасности 🚫\n"
+            "Попробуй другое фото и/или измени описание." + (
+                "\n\n✅ Изюминки не списаны (или возвращены) — баланс не пострадал."
+                if refunded else ""
+            )
+        )
+    else:
+        failure_text = generation_failure_user_text(refunded)
+    try:
+        await app.bot.send_message(chat_id=chat_id, text=failure_text, reply_markup=result_actions_kb())
+    except Exception:
+        logger.warning("Failed to send %s failure message to user %s", provider_label, user_id)
+    log_generation_event(
+        user_id=user_id,
+        kind="image",
+        status="failed",
+        provider=provider_label,
+        cost=getattr(job, "cost", 0),
+        was_free=getattr(job, "was_free", False),
+        references_count=len(references or []),
+        model=getattr(job, "image_model", None),
+        aspect_ratio=getattr(job, "aspect_ratio", None),
+        charged_izyminki=getattr(job, "cost", 0),
+        refunded_izyminki=getattr(job, "cost", 0) if refunded else 0,
+        error_type=error_type,
+        error_message=last_error_text,
+        is_admin_test=1 if user_id in ADMIN_IDS else 0,
+    )
+    return refunded
+
+
 async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
     chat_id = job.chat_id
     user_id = job.user_id
@@ -10696,56 +10768,11 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                     app.create_task(_send_img_to_channel())
             return
         except Exception as e:
-            last_error_text = str(e) or repr(e)
             logger.exception("Zveno generation failed")
-            logger.error(f"Generation debug | provider=ZVENO | user_id={user_id} | error={last_error_text}")
-
-            if not generation_succeeded:
-                if getattr(job, "cost", 0) > 0 and not refunded:
-                    add_izyminki(job.user_id, job.cost)
-                    refunded = True
-                if getattr(job, "was_free", False) and not refunded:
-                    restore_free_generation(job.user_id)
-                    refunded = True
-
-            error_type = classify_generation_error(e)
-            if error_type == "moderation":
-                # Раньше юзер видел только общее "что-то пошло не так" — не
-                # понимал, что дело в фото/промте, и просто жал "Повторить" на
-                # той же комбинации (бессмысленно, отказ повторится). Явно
-                # называем причину, чтобы было ясно, что менять.
-                failure_text = (
-                    "Модель отклонила запрос фильтром безопасности 🚫\n"
-                    "Попробуй другое фото и/или измени описание." + (
-                        "\n\n✅ Изюминки не списаны (или возвращены) — баланс не пострадал."
-                        if refunded else ""
-                    )
-                )
-            else:
-                failure_text = generation_failure_user_text(refunded)
-            try:
-                await app.bot.send_message(
-                    chat_id=chat_id,
-                    text=failure_text,
-                    reply_markup=result_actions_kb(),
-                )
-            except Exception:
-                logger.warning("Failed to send ZVENO failure message to user %s", user_id)
-            log_generation_event(
-                user_id=user_id,
-                kind="image",
-                status="failed",
-                provider="ZVENO",
-                cost=getattr(job, "cost", 0),
-                was_free=getattr(job, "was_free", False),
-                references_count=len(references or []),
-                model=getattr(job, "image_model", None),
-                aspect_ratio=getattr(job, "aspect_ratio", None),
-                charged_izyminki=getattr(job, "cost", 0),
-                refunded_izyminki=getattr(job, "cost", 0) if refunded else 0,
-                error_type=error_type,
-                error_message=last_error_text,
-                is_admin_test=1 if user_id in ADMIN_IDS else 0,
+            refunded = await _handle_generation_failure(
+                app, chat_id=chat_id, user_id=user_id, job=job, error=e,
+                provider_label="ZVENO", references=references, refunded=refunded,
+                generation_succeeded=generation_succeeded, use_moderation_message=True,
             )
             return
 
@@ -10992,41 +11019,11 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
 
 
         except Exception as e:
-            last_error_text = str(e) or repr(e)
             logger.exception("MashaGPT generation failed")
-            logger.error(f"Generation debug | provider=MASHAGPT | user_id={user_id} | error={last_error_text}")
-
-            if not generation_succeeded:
-                if getattr(job, "cost", 0) > 0 and not refunded:
-                    add_izyminki(job.user_id, job.cost)
-                    refunded = True
-                if getattr(job, "was_free", False) and not refunded:
-                    restore_free_generation(job.user_id)
-                    refunded = True
-
-            try:
-                await app.bot.send_message(
-                    chat_id=chat_id,
-                    text=generation_failure_user_text(refunded),
-                    reply_markup=result_actions_kb(),
-                )
-            except Exception:
-                logger.warning("Failed to send MASHAGPT failure message to user %s", user_id)
-            log_generation_event(
-                user_id=user_id,
-                kind="image",
-                status="failed",
-                provider="MASHAGPT",
-                cost=getattr(job, "cost", 0),
-                was_free=getattr(job, "was_free", False),
-                references_count=len(references or []),
-                model=getattr(job, "image_model", None),
-                aspect_ratio=getattr(job, "aspect_ratio", None),
-                charged_izyminki=getattr(job, "cost", 0),
-                refunded_izyminki=getattr(job, "cost", 0) if refunded else 0,
-                error_type=classify_generation_error(e),
-                error_message=last_error_text,
-                is_admin_test=1 if user_id in ADMIN_IDS else 0,
+            refunded = await _handle_generation_failure(
+                app, chat_id=chat_id, user_id=user_id, job=job, error=e,
+                provider_label="MASHAGPT", references=references, refunded=refunded,
+                generation_succeeded=generation_succeeded,
             )
             return
 
@@ -11213,37 +11210,14 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
 
             break
 
-    # Если дошли сюда — обе попытки не удались
+    # Если дошли сюда — обе попытки не удались. Вся хвостовая логика (не
+    # только отправка сообщения) намеренно в try/except — у YesAPI-ветки
+    # это единственная защита от падения на log_generation_event и т.п.
     try:
-        if getattr(job, "cost", 0) > 0 and not refunded:
-            add_izyminki(job.user_id, job.cost)
-            refunded = True
-        if getattr(job, "was_free", False) and not refunded:
-            restore_free_generation(job.user_id)
-            refunded = True
-
-        logger.error(f"Generation debug | provider=YESAPI | user_id={user_id} | error={last_error_text}")
-
-        await app.bot.send_message(
-            chat_id=chat_id,
-            text=generation_failure_user_text(refunded),
-            reply_markup=result_actions_kb(),
-        )
-        log_generation_event(
-            user_id=user_id,
-            kind="image",
-            status="failed",
-            provider="YESAPI",
-            cost=getattr(job, "cost", 0),
-            was_free=getattr(job, "was_free", False),
-            references_count=len(references or []),
-            model=getattr(job, "image_model", None),
-            aspect_ratio=getattr(job, "aspect_ratio", None),
-            charged_izyminki=getattr(job, "cost", 0),
-            refunded_izyminki=getattr(job, "cost", 0) if refunded else 0,
-            error_type=classify_generation_error(last_error_text),
-            error_message=last_error_text,
-            is_admin_test=1 if user_id in ADMIN_IDS else 0,
+        refunded = await _handle_generation_failure(
+            app, chat_id=chat_id, user_id=user_id, job=job,
+            error=Exception(last_error_text), provider_label="YESAPI",
+            references=references, refunded=refunded,
         )
     except Exception:
         logger.exception("Failed to send final generation error message")

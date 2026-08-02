@@ -4,6 +4,44 @@
 
 ## Очередь
 
+- [x] P1 · Разбор монолита SirNike.py (227 функций, ~11.4k строк) на модули —
+      план из 5 фаз, эта запись закрывает только **фазу 1**. Ветка
+      `refactor/extract-video-providers`, ноль изменений поведения.
+      **Фаза 1 (сделано 2026-08-02)**: HTTP-клиенты видео-провайдеров вынесены
+      в новый `video_providers.py` (~1680 строк): Zveno (`start_seedance_task`,
+      `poll_seedance_task`, `_start_seedance_task_fal`/`_poll_seedance_fal` —
+      fal.ai фоллбэк), EvoLink (`start_seedance_task_evolink`,
+      `start_gemini_omni_task_evolink`, `start_kling_motion_control_evolink`,
+      `_evolink_create_task`, `poll_evolink_task`, `build_evolink_url`,
+      `_resolve_evolink_image_urls`, `EVOLINK_SEEDANCE_MODEL_MAP`,
+      `EVOLINK_SEEDANCE_MAX_IMAGES`), MashaGPT (`start_kling_motion_control`,
+      `poll_kling_animation_custom` — чистые HTTP-клиенты; `run_kling_motion_control`
+      с биллингом/Update/context остался в SirNike.py, это уровень бота, не
+      провайдера), общие хелперы (`build_seedance_prompt_with_refs`,
+      `build_zveno_url`, `build_mashagpt_url`, `normalize_seedance_mode`/
+      `_duration`, `get_seedance_duration_bounds`/`_options`,
+      `get_seedance_mode_options`, `seedance_mode_ui_label`,
+      `seedance_uses_evolink`, `is_seedance_privacy_moderation_error`,
+      `extract_task_video_url`/`_reference_count`, `_data_url_to_jpeg_rgb`).
+      `video_providers.py` НЕ импортирует SirNike.py (циклический импорт
+      запрещён по ТЗ) — недостающие бот-уровневые зависимости (резолв
+      `__img__`-рефов из in-memory кэша фото, сборка reference sheet для
+      Wan-модели, аплоад на freeimage/catbox, а также два патчимых тестами
+      значения `EVOLINK_API_KEY`/`SEEDANCE_PROVIDER`) прокинуты через
+      `video_providers.configure(...)`, вызванный один раз из SirNike.py сразу
+      после того, как нужные хелперы определены. `MAX_SEEDANCE_IMAGE_REFERENCES`/
+      `SEEDANCE_VIDEO_REFERENCE_MODE` заодно переехали из SirNike.py в
+      config.py (единственные два места чтения были в обоих новых и старом
+      модуле — логичнее держать в конфиге, как остальные env-константы).
+      `test_new_features.py` не тронут вообще — только `S.` обращения,
+      которые продолжают резолвиться через `from video_providers import (...)`
+      в SirNike.py. 327/327 PASS, `py_compile` OK на обоих файлах.
+      **Осталось (фазы 2–5, отдельные заходы)**: 2) фото-провайдер-клиенты
+      (Zveno/MashaGPT/YesAPI image) в отдельный модуль тем же паттерном;
+      3) студийный воркер (`_studio_*`) в отдельный модуль; 4) `button_handler`
+      (1310+ строк одной if-цепочкой) — таблица диспетчинга по `callback_data`
+      вместо линейной цепочки; 5) миграция `test_new_features.py` (1850 строк,
+      327 самодельных проверок) на pytest.
 - [x] P0 · Живой прод-баг 2026-08-02: EvoLink Seedance (`SEEDANCE_PROVIDER=evolink`)
       падал с 400 `invalid_parameter` на 3+ референсных фото. Первый заход
       (коммит на этой же ветке) — обрезка списка до 2 фото — оказался

@@ -1648,6 +1648,20 @@ try:
 except Exception as e:
     check("15.11 start_seedance_task_evolink без фото падает", "фото" in str(e).lower())
 
+# 15.11b живой прод-баг 2026-08-02: EvoLink *-image-to-video принимает только
+# первый+последний кадр (2 фото) — 4 фото давали 400 invalid_parameter.
+# Бот обязан обрезать САМ, не полагаясь на провайдера вернуть понятную ошибку.
+evo_calls.clear()
+asyncio.run(S.start_seedance_task_evolink(
+    prompt="тест", image_url=None, user_id=1, model_code="seedance2",
+    image_urls=[f"https://example.com/ref{i}.jpg" for i in range(4)],
+))
+p15_11b = evo_calls[0]["payload"]
+check("15.11b EvoLink Seedance: 4 фото обрезаны до 2 (первый+последний кадр)",
+      p15_11b.get("image_urls") == ["https://example.com/ref0.jpg", "https://example.com/ref1.jpg"],
+      str(p15_11b.get("image_urls")))
+check("15.11c EVOLINK_SEEDANCE_MAX_IMAGES = 2", S.EVOLINK_SEEDANCE_MAX_IMAGES == 2)
+
 # 15.12 poll_seedance_task делегирует __EVOLINK__: в poll_evolink_task -> completed -> results[0]
 _evo_poll_queue.clear()
 _evo_poll_queue.append({"status": "pending", "progress": 20})

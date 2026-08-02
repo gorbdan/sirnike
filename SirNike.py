@@ -8577,6 +8577,12 @@ EVOLINK_SEEDANCE_MODEL_MAP = {
     "seedance2": "seedance-2.0-image-to-video",
     "seedance2_fast": "seedance-2.0-fast-image-to-video",
 }
+# EvoLink's *-image-to-video модели принимают строго ПЕРВЫЙ и ПОСЛЕДНИЙ
+# кадр — не мультиреференс, как у Zveno-Seedance (там до
+# MAX_SEEDANCE_IMAGE_REFERENCES, обычно 9). Живой прод 2026-08-02: юзер
+# загрузил 4 фото, EvoLink ответил 400 invalid_parameter ("only supports
+# 2 image(s)... first and last frame images only").
+EVOLINK_SEEDANCE_MAX_IMAGES = 2
 
 
 def build_evolink_url(path: str) -> str:
@@ -8602,6 +8608,11 @@ def _resolve_evolink_image_urls(
         candidate = image_url.strip()
         if candidate and candidate not in combined:
             combined.append(candidate)
+    if len(combined) > max_count:
+        logger.warning(
+            "EvoLink: обрезано %s фото-референсов до лимита модели %s",
+            len(combined) - max_count, max_count,
+        )
     combined = combined[:max_count]
     resolved: List[str] = []
     for u in combined:
@@ -8757,7 +8768,7 @@ async def start_seedance_task_evolink(
     resolved_model_code = model_code if model_code in EVOLINK_SEEDANCE_MODEL_MAP else "seedance2"
     model_value = EVOLINK_SEEDANCE_MODEL_MAP[resolved_model_code]
 
-    combined_image_urls = _resolve_evolink_image_urls(image_url, image_urls, MAX_SEEDANCE_IMAGE_REFERENCES)
+    combined_image_urls = _resolve_evolink_image_urls(image_url, image_urls, EVOLINK_SEEDANCE_MAX_IMAGES)
     if not combined_image_urls:
         raise Exception("EvoLink Seedance: нет ни одного фото-референса (image-to-video требует минимум 1 фото)")
 

@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """Блок 10b: «Новинки» с рассинхроном cat_idx/item_idx — резолв title по промту."""
 import asyncio
+import json
+import os
+import tempfile
 
 from test_helpers import S, make_webapp_update_context
 
@@ -45,3 +48,39 @@ def test_block_11b_empty_prompt_no_template_fallback():
     assert applied is True and any(
         "Библиотек" in t or "не удалось" in t.lower() for t in texts
     ), f"10b.4 юзер получает честный отказ, не тишину: {texts}"
+
+
+def test_block_11c_load_prompt_library_preserves_raw_order():
+    # Живой прод-баг 2026-08-02: load_prompt_library() раньше пересортировывал
+    # категории (видео вперёд), а вебапп считает cat_idx/item_idx по СЫРОМУ
+    # порядку файла (flattenLibrary() в app.js) — как только не-видео
+    # категория оказывалась в файле раньше видео-категории, индексы у бота
+    # и вебаппа расходились: "карточка устарела"/пустой промт для ЛЮБОГО
+    # стиля после точки расхождения. Регрессия: категория без видео перед
+    # видео-категорией в сыром JSON -> индексы всё равно совпадают 1-в-1.
+    raw_library = [
+        {"title": "Фото-категория без видео", "items": [
+            {"title": "Фото А", "prompt": "photo prompt A", "kind": "image"},
+        ]},
+        {"title": "Видео-категория", "items": [
+            {"title": "Видео А", "prompt": "video prompt A", "kind": "video"},
+        ]},
+    ]
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, encoding="utf-8",
+    ) as f:
+        json.dump(raw_library, f)
+        tmp_path = f.name
+    try:
+        orig_path = S.PROMPT_LIBRARY_PRIMARY_PATH
+        S.PROMPT_LIBRARY_PRIMARY_PATH = tmp_path
+        try:
+            loaded = S.load_prompt_library()
+        finally:
+            S.PROMPT_LIBRARY_PRIMARY_PATH = orig_path
+        assert [c["title"] for c in loaded] == ["Фото-категория без видео", "Видео-категория"], (
+            f"11c: категории пересортированы, индексы разойдутся с вебаппом: "
+            f"{[c['title'] for c in loaded]}"
+        )
+    finally:
+        os.unlink(tmp_path)

@@ -5,14 +5,28 @@
 ## Очередь
 
 - [x] P0 · Живой прод-баг 2026-08-02: EvoLink Seedance (`SEEDANCE_PROVIDER=evolink`)
-      падал с 400 `invalid_parameter` на 3+ референсных фото — EvoLink
-      `*-image-to-video` принимает строго 2 фото (первый+последний кадр),
-      не мультиреференс, как у Zveno (`MAX_SEEDANCE_IMAGE_REFERENCES`, до 9).
-      `start_seedance_task_evolink` передавал `MAX_SEEDANCE_IMAGE_REFERENCES`
-      в `_resolve_evolink_image_urls` вместо провайдер-специфичного лимита.
-      Фикс: новая константа `EVOLINK_SEEDANCE_MAX_IMAGES = 2`, обрезка с
-      warning-логом на числе отброшенных фото. Тесты 15.11b–15.11c.
-      316/316.
+      падал с 400 `invalid_parameter` на 3+ референсных фото. Первый заход
+      (коммит на этой же ветке) — обрезка списка до 2 фото — оказался
+      неполным фиксом, ловящим симптом, а не причину. По просьбе Ани
+      («изучи лучше всю документацию evolink сам, мы что-то упускаем»)
+      прочитала полный sitemap доков EvoLink (`docs/llms.txt`) и нашла:
+      у EvoLink Seedance это ДВА разных API, не один, как у Zveno —
+      `*-image-to-video` (строго 2 фото, first+last frame) и отдельная
+      `*-reference-to-video` (мультиреференс до 9 фото — ровно то, что нужно
+      боту для multi-character промтов). Бот стучался не в тот эндпоинт.
+      Настоящий фикс: `EVOLINK_SEEDANCE_MODEL_MAP` переключён на
+      `seedance-2.0-reference-to-video`/`seedance-2.0-fast-reference-to-video`,
+      `EVOLINK_SEEDANCE_MAX_IMAGES` возвращён на 9 (как у Zveno). Заодно
+      нашла вторую проблему в тех же доках: EvoLink требует теги `@image1`/
+      `@image2` (нижний регистр) для привязки фото к ролям в промте, а
+      `build_seedance_prompt_with_refs` везде генерировала `[Image1]` —
+      формат Zveno. Функция получила параметр `tag_format` ("bracket"
+      дефолт для Zveno, "at" для EvoLink) — Zveno-путь не тронут. Заодно
+      расширила `classify_generation_error` кодами из
+      `docs/en/api-manual/task-management/error-codes` (EvoLink пишет их с
+      подчёркиванием — `service_unavailable`, старый keyword "service
+      unavailable" с пробелом их не ловил). Тесты 15.11b–15.11f, 15.15b–c.
+      316→327.
 - [x] P1 · Самоинициированное тех-ревью 2026-08-01 (по запросу Ани «предложи
       изменения по коду, структуре и логике») — сделаны 3 быстрых пункта из
       предложенных 7 (остальные 4 — структурные, отдельная задача разбора

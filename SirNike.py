@@ -1160,12 +1160,16 @@ def classify_generation_error(error: object) -> str:
         return "no_balance"
     if any(k in text for k in (
         "download", "скачать изображение", "скачать видео", "не удалось скачать", "result_url пуст",
-        "url missing", "url пустой",
+        "url missing", "url пустой", "image_processing_error", "image_dimension_mismatch",
     )):
         return "download_error"
     if any(k in text for k in (
         "api", "provider", "server", "сервер", "генерац", "status", "5xx",
         "500", "502", "503", "504", "bad gateway", "service unavailable",
+        # EvoLink-специфичные коды (docs/en/api-manual/task-management/error-codes) —
+        # с подчёркиванием, не пробелом, поэтому "service unavailable" их не ловит.
+        "service_unavailable", "service_error", "resource_exhausted",
+        "generation_failed_no_content", "resource_not_found",
     )):
         return "provider_error"
     return "unknown"
@@ -8507,7 +8511,13 @@ def extract_task_reference_count(task_like: dict) -> int:
     return _count(source.get("image_url"))
 
 
-def build_seedance_prompt_with_refs(prompt_text: str, refs_count: int) -> str:
+def build_seedance_prompt_with_refs(prompt_text: str, refs_count: int, tag_format: str = "bracket") -> str:
+    """tag_format различается по провайдеру: Zveno понимает [Image1]/[Image2]
+    (везде в этом файле), EvoLink требует @image1/@image2 в нижнем регистре
+    (доки EvoLink, video-series/seedance2.0/*-reference-to-video: "Tag numbers
+    follow the order of the corresponding URL array... the first image_urls
+    item is @image1"). Разный формат — разные плейсхолдеры, иначе автотекст
+    привязки ссылается на теги, которых модель не узнаёт."""
     text = (prompt_text or "").strip()
     if not text:
         text = "Cinematic video with coherent action and stable character identity."
@@ -8515,12 +8525,12 @@ def build_seedance_prompt_with_refs(prompt_text: str, refs_count: int) -> str:
     if refs_count <= 0:
         return text
 
-    has_any_placeholder = any(f"[Image{i}]" in text for i in range(1, refs_count + 1))
-    placeholders = ", ".join([f"[Image{i}]" for i in range(1, refs_count + 1)])
+    tag = (lambda i: f"[Image{i}]") if tag_format == "bracket" else (lambda i: f"@image{i}")
+    placeholders = ", ".join([tag(i) for i in range(1, refs_count + 1)])
 
     if refs_count == 1:
         binding = (
-            "Use [Image1] as the main character identity reference. "
+            f"Use {tag(1)} as the main character identity reference. "
             "Preserve face, body, hair, clothes, and style."
         )
     else:
@@ -8531,9 +8541,6 @@ def build_seedance_prompt_with_refs(prompt_text: str, refs_count: int) -> str:
             "If they show different people, treat them as separate characters. "
             "Preserve each character's face, body, hair, clothes, and style."
         )
-
-    if has_any_placeholder:
-        return f"{binding}\n{text}"
 
     return f"{binding}\n{text}"
 
@@ -8573,16 +8580,21 @@ def is_seedance_privacy_moderation_error(error_text: str) -> bool:
 
 # Слаги моделей Seedance 2.0/2.0-fast на стороне EvoLink (отличаются от Zveno-
 # слагов bytedance/seedance-2.0[-fast] — см. docs/specs/2026-07-31_evolink_video_provider.md).
+# *-reference-to-video, НЕ *-image-to-video: у EvoLink (в отличие от Zveno,
+# где один эндпоинт ест что угодно) это два разных API — image-to-video
+# принимает строго 2 фото (первый+последний кадр), а reference-to-video —
+# мультиреференс до 9 фото, ровно то, что нужно боту (multi-character
+# промты вида «[Image1] — персонаж А, [Image2] — персонаж Б, ...»). Живой
+# прод 2026-08-02: юзер загрузил 4 фото на image-to-video, EvoLink ответил
+# 400 invalid_parameter ("only supports 2 image(s)... first and last frame
+# images only") — переключение модели, а не обрезка списка, полный фикс.
 EVOLINK_SEEDANCE_MODEL_MAP = {
-    "seedance2": "seedance-2.0-image-to-video",
-    "seedance2_fast": "seedance-2.0-fast-image-to-video",
+    "seedance2": "seedance-2.0-reference-to-video",
+    "seedance2_fast": "seedance-2.0-fast-reference-to-video",
 }
-# EvoLink's *-image-to-video модели принимают строго ПЕРВЫЙ и ПОСЛЕДНИЙ
-# кадр — не мультиреференс, как у Zveno-Seedance (там до
-# MAX_SEEDANCE_IMAGE_REFERENCES, обычно 9). Живой прод 2026-08-02: юзер
-# загрузил 4 фото, EvoLink ответил 400 invalid_parameter ("only supports
-# 2 image(s)... first and last frame images only").
-EVOLINK_SEEDANCE_MAX_IMAGES = 2
+# Доки EvoLink (seedance2.0/*-reference-to-video): "0–9 images" — тот же
+# потолок, что у Zveno-Seedance (MAX_SEEDANCE_IMAGE_REFERENCES).
+EVOLINK_SEEDANCE_MAX_IMAGES = 9
 
 
 def build_evolink_url(path: str) -> str:
@@ -8758,7 +8770,8 @@ async def start_seedance_task_evolink(
     model_code: Optional[str] = None,
     aspect_ratio: str = "16:9",
 ) -> str:
-    """EvoLink-клиент для Seedance 2.0/2.0-fast (image-to-video).
+    """EvoLink-клиент для Seedance 2.0/2.0-fast (reference-to-video —
+    мультиреференс до 9 фото, не image-to-video с потолком в 2).
 
     Тот же контракт возврата, что и start_seedance_task (строка task_id,
     здесь — с префиксом __EVOLINK__:, который poll_seedance_task умеет
@@ -8770,7 +8783,7 @@ async def start_seedance_task_evolink(
 
     combined_image_urls = _resolve_evolink_image_urls(image_url, image_urls, EVOLINK_SEEDANCE_MAX_IMAGES)
     if not combined_image_urls:
-        raise Exception("EvoLink Seedance: нет ни одного фото-референса (image-to-video требует минимум 1 фото)")
+        raise Exception("EvoLink Seedance: нет ни одного фото-референса (reference-to-video требует минимум 1 фото)")
 
     duration_val = normalize_seedance_duration(
         int(duration if duration is not None else SEEDANCE_DURATION), resolved_model_code,
@@ -8782,7 +8795,10 @@ async def start_seedance_task_evolink(
         logger.warning("EvoLink seedance2_fast: 1080p не поддержан, фолбэк на 720p")
         quality = "720p"
 
-    prompt_text = build_seedance_prompt_with_refs((prompt or "").strip(), len(combined_image_urls))
+    # EvoLink требует @image1/@image2 (нижний регистр), не [Image1] — доки
+    # video-series/seedance2.0/*-reference-to-video, см. комментарий у
+    # build_seedance_prompt_with_refs.
+    prompt_text = build_seedance_prompt_with_refs((prompt or "").strip(), len(combined_image_urls), tag_format="at")
 
     payload = {
         "model": model_value,

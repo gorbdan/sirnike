@@ -169,6 +169,17 @@ SEEDANCE_FAST_MODE = os.getenv("SEEDANCE_FAST_MODE", "720p")
 SEEDANCE_FAST_COST_PER_SECOND = float(
     os.getenv("SEEDANCE_FAST_COST_PER_SECOND", "5.4")
 )
+try:
+    MAX_SEEDANCE_IMAGE_REFERENCES = max(
+        1,
+        min(9, int(os.getenv("SEEDANCE_MAX_IMAGE_REFERENCES", "9")))
+    )
+except Exception:
+    MAX_SEEDANCE_IMAGE_REFERENCES = 9
+# Seedance behavior mode:
+# - "character": use input_references to preserve characters from photos
+# - "timeline": use frame_images as first/last frame interpolation
+SEEDANCE_VIDEO_REFERENCE_MODE = os.getenv("SEEDANCE_VIDEO_REFERENCE_MODE", "character").strip().lower()
 
 # Kling 3.0 (kwaivgi) через Zveno Videos API — те же эндпоинты, что Seedance.
 # Закупка Zveno: 12.10 руб/сек (zveno.ai/models, 2026-06-11) — тариф 8.0 изюм/сек даёт маржу ~x3.3 как у Seedance.

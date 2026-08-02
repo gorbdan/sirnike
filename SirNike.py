@@ -4937,6 +4937,729 @@ async def _reply_after_callback(
 # ══════════════════════════════════════════════════════════════
 # ОБРАБОТЧИК КНОПОК: button_handler и вся логика callback
 # ══════════════════════════════════════════════════════════════
+# ОБРАБОТЧИКИ CALLBACK-ВЕТОК (dispatch table): каждая функция —
+# 1:1 копия тела бывшей if-ветки button_handler, без изменений логики
+# (фаза 4 разбора монолита). Порядок функций не важен — порядок
+# ВЫЗОВА сохранён в button_handler (см. ниже: точные совпадения —
+# через словари QDATA_EXACT_HANDLERS/VIDEO_EXACT_HANDLERS, префиксные
+# (.startswith) — оставлены inline if-цепочкой, порядок как в
+# оригинале).
+# ══════════════════════════════════════════════════════════════
+
+async def _cb_pladm_open(update, context, query, user):
+    await query.message.reply_text(
+        "Кнопочный админ-редактор библиотеки открыт.",
+        reply_markup=prompt_library_admin_kb(),
+    )
+    return
+
+
+async def _cb_pladm_list(update, context, query, user):
+    await prompt_library_list(update, context)
+    return
+
+
+async def _cb_pladm_export(update, context, query, user):
+    await prompt_library_export(update, context)
+    return
+
+
+async def _cb_pladm_new(update, context, query, user):
+    context.user_data["pl_admin_mode"] = "new"
+    await query.message.reply_text("Отправь название новой категории одним сообщением.")
+    return
+
+
+async def _cb_pladm_rename(update, context, query, user):
+    context.user_data["pl_admin_mode"] = "rename_old"
+    await query.message.reply_text("Отправь текущее название категории.")
+    return
+
+
+async def _cb_pladm_delete(update, context, query, user):
+    context.user_data["pl_admin_mode"] = "delete"
+    await query.message.reply_text("Отправь название категории для удаления.")
+    return
+
+
+async def _cb_pladm_cancel(update, context, query, user):
+    context.user_data.pop("pl_admin_mode", None)
+    context.user_data.pop("pl_admin_rename_old", None)
+    await query.message.reply_text("Админ-режим закрыт.")
+    return
+
+
+async def _cb_noop(update, context, query, user):
+    await query.answer()
+    return
+
+
+async def _cb_pl_open_webapp(update, context, query, user):
+    logger.info(
+        "Prompt WebApp open requested: user_id=%s chat_id=%s",
+        update.effective_user.id if update.effective_user else "unknown",
+        update.effective_chat.id if update.effective_chat else "unknown",
+    )
+    if not PROMPT_WEBAPP_URL:
+        await query.message.reply_text(
+            "Выбери стиль из библиотеки 👇",
+            reply_markup=prompt_library_menu_kb(),
+        )
+        return
+    uid = update.effective_user.id if update.effective_user else None
+    await query.message.reply_text(
+        "Открывай библиотеку по кнопке ниже:",
+        reply_markup=webapp_open_kb(uid),
+    )
+    return
+
+
+async def _cb_pl_open(update, context, query, user):
+    await query.message.reply_text(
+        "Выбери категорию. Покажу лучшие стили с примерами 👇",
+        reply_markup=prompt_library_menu_kb(),
+    )
+    return
+
+
+async def _cb_plsave_cancel(update, context, query, user):
+    context.user_data.pop("pending_pl_save", None)
+    await query.message.reply_text("Сохранение в библиотеку отменено.", reply_markup=main_menu_kb())
+    return
+
+
+async def _cb_generate(update, context, query, user):
+    state = get_or_init_state(context)
+    was_in_video = state.video_session_active
+    deactivate_video_session(state)
+    if was_in_video and not state.prompt:
+        await query.message.reply_text(
+            "Режим видео закрыт. Напиши описание и нажми «✨ Сгенерировать фото»."
+        )
+        return
+    await run_generation(update, context)
+    return
+
+
+async def _cb_enhance_photo(update, context, query, user):
+    state = get_or_init_state(context)
+    deactivate_video_session(state)
+    state.prompt = ENHANCE_PHOTO_PROMPT
+    state.image_prompt = ""
+    state.style_extract = False
+    state.references = []  # старое фото не подмешиваем — нужно новое, для улучшения
+    state.image_model = "gemini"  # nano banana, фикс по требованию функции
+    await query.message.reply_text(
+        "Пришли фото, которое нужно улучшить 🖼️\n"
+        "Бот повысит качество и сделает его похожим на кадр от профессионального "
+        "фотографа — черты лица останутся прежними.",
+        reply_markup=ENHANCE_WAITING_KB,
+    )
+    return
+
+
+async def _cb_enhance_use_pending_text(update, context, query, user):
+    state = get_or_init_state(context)
+    pending_text = str(context.user_data.pop("enhance_pending_text", "") or "").strip()
+    if not pending_text:
+        await query.answer("Текст уже неактуален, напиши заново.", show_alert=True)
+        return
+    deactivate_video_session(state)
+    state.prompt = pending_text
+    state.style_extract = False
+    await query.message.reply_text(photo_draft_text(state, user.id), reply_markup=photo_draft_kb(state, user.id))
+    return
+
+
+async def _cb_menu_photo(update, context, query, user):
+    await query.message.reply_text(
+        "📸 Фото — выбери, что сделать:",
+        reply_markup=photo_menu_kb(user.id),
+    )
+    return
+
+
+async def _cb_menu_video(update, context, query, user):
+    await query.message.reply_text(
+        "🎬 Видео — выбери, что сделать:",
+        reply_markup=video_menu_kb(user.id),
+    )
+    return
+
+
+async def _cb_image_model_menu(update, context, query, user):
+    state = get_or_init_state(context)
+    await query.message.reply_text(
+        image_model_menu_text(state),
+        reply_markup=image_model_menu_kb(state),
+    )
+    return
+
+
+async def _cb_image_model_set(update, context, query, user):
+    state = get_or_init_state(context)
+    picked = "gpt5" if query.data == "image_model_set_gpt5" else "gemini"
+    if picked == "gpt5" and not GPT5_IMAGE_ENABLED:
+        await query.answer("GPT-5 Image временно недоступна.", show_alert=True)
+        return
+    state.image_model = picked
+    await query.answer(f"Модель: {get_image_model_label(picked)} ✅")
+    try:
+        await query.message.edit_text(
+            image_model_menu_text(state),
+            reply_markup=image_model_menu_kb(state),
+        )
+    except BadRequest:
+        pass
+    return
+
+
+async def _cb_generate_again(update, context, query, user):
+    state = get_or_init_state(context)
+    deactivate_video_session(state)
+    user_id = update.effective_user.id
+    saved_prompt = (last_generated_prompt.get(user_id) or "").strip()
+    if not saved_prompt:
+        await query.message.reply_text(
+            "Не нашла прошлое описание. Напиши новый текст и нажми «✨ Сгенерировать фото»."
+        )
+        return
+
+    state = get_or_init_state(context)
+    deactivate_video_session(state)
+    state.prompt = saved_prompt
+    state.style_extract = False
+    # Keep refs that are still usable: persistent URLs + __img__ refs still in cache.
+    # __img__ refs evaporate on bot restart, so drop the ones that no longer resolve.
+    saved_refs = [
+        r for r in (last_generation_references.get(user_id) or [])
+        if not _is_img_ref(r) or _resolve_image_bytes(r) is not None
+    ]
+    state.references = saved_refs
+    if not saved_refs:
+        avatar_url_repeat = get_avatar_url(user.id)
+        if not avatar_url_repeat:
+            await query.message.reply_text(
+                "ℹ️ Фото не сохранились (были загружены временно).\n"
+                "Генерирую без фото."
+            )
+    await run_generation(update, context)
+    return
+
+
+async def _cb_animate_last(update, context, query, user):
+    if not SEEDANCE_ENABLED:
+        await query.message.reply_text(video_unavailable_text(), reply_markup=main_menu_kb())
+        return
+    state = get_or_init_state(context)
+    last_img = last_generated_image_url.get(user.id)
+    if last_img and _is_img_ref(last_img) and _resolve_image_bytes(last_img) is None:
+        last_img = None
+    if not last_img:
+        await query.message.reply_text(
+            "Не нашла свежую генерацию — она могла устареть.\n"
+            "Сгенерируй картинку заново и нажми «Оживить 🎬» под результатом."
+        )
+        return
+    state.video_session_active = True
+    state.waiting_for_video_prompt = False
+    state.waiting_for_video_image = True
+    state.waiting_for_motion_video = False
+    set_video_image_urls(state, [last_img])
+    await query.message.reply_text(
+        "Картинка добавлена в видео-буфер 🎬\n"
+        "Можешь описать, что должно происходить в кадре, выбрать модель и длительность — "
+        "или сразу жми «🚀 Запустить видео»."
+    )
+    await query.message.reply_text(
+        video_status_text(state),
+        reply_markup=video_kb(state),
+    )
+    return
+
+
+async def _cb_motion_start(update, context, query, user):
+    if not MOTION_CONTROL_ENABLED:
+        await query.message.reply_text(video_unavailable_text(), reply_markup=main_menu_kb())
+        return
+    state = get_or_init_state(context)
+    deactivate_video_session(state)
+    state.motion_control_active = True
+    state.waiting_for_motion_video = True
+    await query.message.reply_text(
+        "🕺 Видео с движением\n\n"
+        "1. Пришли короткое референс-видео с движением, которое нужно повторить "
+        "(танец, жест, поворот и т.п.) — обычным видеофайлом.\n"
+        "2. Затем пришли своё фото — перенесу движение на него."
+    )
+    return
+
+
+async def _cb_seedance_retry(update, context, query, user):
+    user_r = update.effective_user
+    if user_r.id in queued_user_ids or user_r.id in processing_user_ids:
+        await query.answer("Уже выполняется другая задача. Подожди.", show_alert=False)
+        return
+    state = get_or_init_state(context)
+    # video_session_active гасит run_seedance после валидаций — см. video_start.
+    processing_user_ids.add(user_r.id)
+    try:
+        context.application.create_task(run_seedance(update, context))
+    except Exception:
+        processing_user_ids.discard(user_r.id)
+        logger.exception("create_task(run_seedance retry) failed for user=%s", user_r.id)
+        await query.answer("Не удалось запустить генерацию. Попробуй ещё раз.", show_alert=True)
+    return
+
+
+async def _cb_avatar_actions(update, context, query, user):
+    await query.message.reply_text(
+        "🪄 AI-аватар — это ты в любом образе\n\n"
+        "Пришли 3–8 своих фото, и нейросеть сгенерирует аватар и запомнит твою внешность.\n"
+        "После этого в каждой генерации будешь появляться именно ты — "
+        "хоть в образе киберпанк-воина, хоть на обложке журнала.\n\n"
+        "Если загружено несколько аватаров (👩/👨/🧒) — кнопками ниже "
+        "выбери, каким генерировать (● текущий).\n\n"
+        "Это то, чего нет у большинства конкурентов 💪",
+        reply_markup=avatar_actions_kb(user.id),
+    )
+    return
+
+
+async def _cb_avatar_use(update, context, query, user):
+    chosen = query.data.rsplit("_", 1)[-1]
+    if not get_avatar_urls(user.id).get(chosen):
+        await query.answer("Такой аватар ещё не загружен.", show_alert=True)
+        return
+    set_active_avatar_kind(user.id, chosen)
+    await query.answer(f"Генерирую как: {avatar_kind_label(chosen)} ✅")
+    try:
+        await query.message.edit_reply_markup(reply_markup=avatar_actions_kb(user.id))
+    except BadRequest:
+        pass
+    return
+
+
+async def _cb_avatar_gen_refsheet(update, context, query, user):
+    # Фото принимаются сразу, до выбора типа — порядок действий (сначала
+    # фото или сначала тип) юзеру не важен, и фото больше не улетают в
+    # обычный фото-черновик, если тип ещё не выбран (макет утверждён
+    # Аней 2026-07-15).
+    state = get_or_init_state(context)
+    deactivate_video_session(state)
+    state.prompt = AVATAR_REFSHEET_PROMPT
+    state.style_extract = False
+    state.references = []
+    state.avatar_photos = []
+    state.avatar_status_msg_id = None
+    state.pending_avatar_kind = ""
+    state.generating_avatar = True
+    await query.message.reply_text(
+        "Создаём аватар 🪄\n\n"
+        "Пришли 3–6 фото, где хорошо видно лицо, и выбери, для кого аватар 👇\n"
+        "Фото можно слать прямо сейчас — не потеряются.",
+        reply_markup=avatar_gen_kind_kb(),
+    )
+    return
+
+
+async def _cb_avatar_gen_kind(update, context, query, user):
+    state = get_or_init_state(context)
+    avatar_kind = query.data.rsplit("_", 1)[-1]
+    # Тип можно тапнуть, даже если приём фото ещё не был включён явно
+    # (например, повторный тап из старого сообщения) — не теряем то,
+    # что юзер уже успел прислать.
+    if not state.generating_avatar:
+        deactivate_video_session(state)
+        state.prompt = AVATAR_REFSHEET_PROMPT
+        state.style_extract = False
+        state.references = []
+        state.avatar_photos = []
+        state.avatar_status_msg_id = None
+        state.generating_avatar = True
+    state.pending_avatar_kind = avatar_kind
+    await query.answer(f"Тип: {avatar_kind_label(avatar_kind)} ✅")
+    return
+
+
+async def _cb_avatar_gen_start(update, context, query, user):
+    state = get_or_init_state(context)
+    photos = list(state.avatar_photos)
+    if not photos:
+        await query.answer("Сначала отправь хотя бы одно фото.", show_alert=True)
+        return
+    if not state.pending_avatar_kind:
+        await query.answer("Сначала выбери тип аватара 👆", show_alert=True)
+        return
+
+    if user.id in queued_user_ids or user.id in processing_user_ids:
+        await query.answer("Сырник уже занят другой задачей. Подожди.", show_alert=True)
+        return
+
+    # Charge for avatar generation like a normal image
+    avatar_cost = BASE_GENERATION_COST
+    avatar_use_free = try_use_free_generation(user.id, FREE_GENERATIONS_PER_DAY)
+    avatar_paid = False
+    if not avatar_use_free:
+        bal = get_balance(user.id)
+        if bal < avatar_cost:
+            await query.message.reply_text(
+                f"Не хватает изюминок для генерации аватара.\n"
+                f"Нужно: {avatar_cost}\nУ тебя: {bal}",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("💳 Купить изюминки", callback_data="show_buy")
+                ]])
+            )
+            return
+        if not spend_izyminki(user.id, avatar_cost):
+            await query.message.reply_text("Не удалось списать изюминки. Попробуй ещё раз.")
+            return
+        avatar_paid = True
+
+    state.generating_avatar = False
+    state.avatar_photos = []
+    job = GenerationJob(
+        chat_id=update.effective_chat.id,
+        user_id=user.id,
+        prompt=AVATAR_REFSHEET_PROMPT,
+        references=photos,
+        cost=avatar_cost if avatar_paid else 0,
+        was_free=avatar_use_free,
+        save_as_avatar=True,
+        avatar_kind=getattr(state, "pending_avatar_kind", "female") or "female",
+    )
+    queued_user_ids.add(user.id)
+    try:
+        generation_queue.put_nowait(job)
+    except asyncio.QueueFull:
+        queued_user_ids.discard(user.id)
+        if avatar_paid:
+            add_izyminki(user.id, avatar_cost)
+        elif avatar_use_free:
+            restore_free_generation(user.id)
+        await query.message.reply_text("Сырник сейчас очень занят — очередь переполнена 😔 Попробуй через минуту.")
+        return
+    except BaseException:
+        queued_user_ids.discard(user.id)
+        if avatar_paid:
+            add_izyminki(user.id, avatar_cost)
+        elif avatar_use_free:
+            restore_free_generation(user.id)
+        logger.exception("Failed to enqueue avatar job for user=%s", user.id)
+        await query.message.reply_text("Не удалось запустить генерацию. Попробуй ещё раз.")
+        raise
+    # Сохраняем выбранную модель картинок при сбросе временного состояния.
+    new_state = UserState()
+    new_state.image_model = state.image_model
+    context.user_data["state"] = new_state
+    await query.message.reply_text(
+        f"Запускаю генерацию аватара по {len(photos)} фото… ✨",
+    )
+    return
+
+
+async def _cb_avatar_help(update, context, query, user):
+    await query.answer()
+    await query.message.reply_text(
+        "🪄 AI-аватар — это твоя внешность в боте.\n\n"
+        "Пришли 3–8 своих фото лица с разных ракурсов → "
+        "бот сгенерирует аватар и запомнит, как ты выглядишь → "
+        "дальше ты будешь появляться в любом образе на каждой картинке.\n\n"
+        "Аватар необязателен — без него тоже можно генерировать."
+    )
+    return
+
+
+async def _cb_avatar_back_menu(update, context, query, user):
+    await query.message.reply_text(
+        "Главное меню:",
+        reply_markup=main_menu_kb(user.id),
+    )
+    return
+
+
+async def _cb_menu_from_video(update, context, query, user):
+    state = get_or_init_state(context)
+    deactivate_video_session(state)
+    await query.message.reply_text(
+        "Главное меню:",
+        reply_markup=main_menu_kb(user.id),
+    )
+    return
+
+
+async def _cb_show_help(update, context, query, user):
+    # Единый источник справки — та же, что и команда /help.
+    await help_command(update, context)
+    return
+
+
+async def _cb_report_problem(update, context, query, user):
+    # Единая реализация с командой /report — один текст и один способ отмены.
+    await report_problem_command(update, context)
+    return
+
+
+async def _cb_bug_bounty(update, context, query, user):
+    await bug_bounty_command(update, context)
+    return
+
+
+async def _cb_report_cancel(update, context, query, user):
+    # Отмена репорта («🚨 Проблема» / «🐞 Баг-баунти») — снимает ТОЛЬКО
+    # режим ожидания репорта. Раньше кнопка висела на общем "reset" и
+    # передумавший жаловаться юзер молча терял черновик фото/стиля.
+    state = get_or_init_state(context)
+    state.waiting_for_problem_report = False
+    state.waiting_for_bug_report = False
+    state.pending_report_kind = ""
+    await query.message.reply_text(
+        "Ок, отменила. Твой черновик не тронут 👌",
+        reply_markup=main_menu_kb(user.id),
+    )
+    return
+
+
+async def _cb_reset(update, context, query, user):
+    # Сбрасываем только временные данные (описание/фото/видео-сессию).
+    # Липкие настройки-предпочтения переносим в новое состояние, иначе
+    # выбор модели картинок терялся при возврате в меню кнопкой «◀️ В меню».
+    prev_state = context.user_data.get("state")
+    new_state = UserState()
+    if isinstance(prev_state, UserState):
+        new_state.image_model = prev_state.image_model
+        # Выбор видео-модели — тоже липкая настройка: иначе каждый
+        # «◀️ В меню» снова гонит юзера через пикер моделей.
+        new_state.video_model = prev_state.video_model
+        new_state.video_model_picked = prev_state.video_model_picked
+    context.user_data["state"] = new_state
+    await query.message.reply_text(
+        "Готово — текущее описание и фото очищены.\n"
+        "Баланс и аватары на месте. Можно начинать заново!",
+        reply_markup=main_menu_kb(user.id),
+    )
+    return
+
+
+async def _cb_show_buy(update, context, query, user):
+    await buy(update, context)
+    return
+
+
+async def _cb_open_ref(update, context, query, user):
+    await referral(update, context)
+    return
+
+
+async def _cb_show_avatar(update, context, query, user):
+    avatars = get_avatar_urls(update.effective_user.id)
+    present = [(k, v) for k, v in avatars.items() if v]
+    if not present:
+        await query.message.reply_text("У тебя пока нет сохранённых аватаров.")
+        return
+    for kind, url in present:
+        try:
+            await query.message.reply_photo(
+                photo=url,
+                caption=f"Аватар: {avatar_kind_label(kind)}"
+            )
+        except Exception:
+            logger.warning("show_avatar: failed to send photo url=%s kind=%s", url[:60], kind)
+            clear_avatar_url(update.effective_user.id, kind)
+            await query.message.reply_text(
+                f"Аватар «{avatar_kind_label(kind)}» недоступен (ссылка протухла) и удалён.\n"
+                "Загрузи новый аватар через меню."
+            )
+
+
+async def _cb_video_open(update, context, query, user):
+    state = get_or_init_state(context)
+    state.video_session_active = True
+    state.waiting_for_video_prompt = False
+    state.waiting_for_video_image = True
+    state.waiting_for_motion_video = False
+
+    # Сначала только выбор модели — полная панель настроек открывается
+    # (редактированием этого же сообщения) уже после выбора, см.
+    # video_model_picker_kb и ветку video_cb.startswith("video_model_")
+    # ниже (решение Ани 2026-07-31, было 2 сообщения сразу со всеми
+    # настройками). Уже выбирал модель в этой сессии — пикер не повторяем,
+    # сразу полная панель (ТЗ video_panel_declutter).
+    if state.video_model_picked:
+        await query.message.reply_text(
+            video_status_text(state),
+            reply_markup=video_kb(state),
+        )
+        return
+    await query.message.reply_text(
+        "🎬 Видео для Reels\n\n"
+        "Можно сразу отправлять текст описания и фото — сохраню в черновик.\n"
+        "Выбери модель:",
+        reply_markup=video_model_picker_kb(),
+    )
+    return
+
+
+async def _cb_video_set_prompt(update, context, query, user):
+    state = get_or_init_state(context)
+    state.video_session_active = True
+    state.waiting_for_video_prompt = True
+    await query.message.reply_text("Напиши описание для видео одним сообщением.")
+    return
+
+
+async def _cb_video_set_image(update, context, query, user):
+    state = get_or_init_state(context)
+    state.video_session_active = True
+    state.waiting_for_video_image = True
+    await query.message.reply_text(
+        "Отправляй фото для видео (можно несколько подряд).\n"
+        f"Лимит: до {MAX_SEEDANCE_IMAGE_REFERENCES} фото.\n"
+        "Бот запомнит внешность с фото и перенесёт в видео.\n"
+        "Когда всё загрузишь, нажми «🚀 Запустить видео»."
+    )
+    return
+
+
+async def _cb_video_clear_images(update, context, query, user):
+    state = get_or_init_state(context)
+    set_video_image_urls(state, [])
+    state.waiting_for_video_image = True
+    state.video_session_active = True
+    await update_video_panel(
+        query,
+        "Фото очищены ✅\n\n" + video_status_text(state),
+        video_kb(state),
+    )
+    return
+
+
+async def _cb_video_facegrid_toggle(update, context, query, user):
+    state = get_or_init_state(context)
+    state.video_session_active = True
+    state.video_face_grid = not get_face_grid(state)
+    await update_video_panel(query, video_status_text(state), video_kb(state))
+    return
+
+
+async def _cb_video_set_video(update, context, query, user):
+    await query.message.reply_text("Для этой модели этот шаг не нужен.")
+    return
+
+
+async def _cb_video_set_duration(update, context, query, user):
+    state = get_or_init_state(context)
+    state.video_session_active = True
+    state.waiting_for_video_duration = True
+    dur_min, dur_max = get_seedance_duration_bounds(get_video_model(state))
+    await query.message.reply_text(
+        f"Напиши число секунд от {dur_min} до {dur_max} одним сообщением."
+    )
+    return
+
+
+async def _cb_video_change_model(update, context, query, user):
+    state = get_or_init_state(context)
+    state.video_session_active = True
+    await update_video_panel(query, "🎬 Видео для Reels\n\nВыбери модель:", video_model_picker_kb())
+    return
+
+
+async def _cb_video_start(update, context, query, user):
+    user_vs = update.effective_user
+    if user_vs.id in queued_user_ids or user_vs.id in processing_user_ids:
+        await query.answer("Уже выполняется другая задача. Подожди.", show_alert=False)
+        return
+    state = get_or_init_state(context)
+    logger.info(
+        "video_start: user=%s animation_source_urls=%s video_prompt=%r",
+        user_vs.id, state.animation_source_urls, state.video_prompt,
+    )
+    if not state.animation_source_urls and not (state.video_prompt or "").strip():
+        msg_date = getattr(query.message, "date", None)
+        if msg_date and msg_date.replace(tzinfo=None) < BOT_START_TIME:
+            await query.message.reply_text(
+                "Бот перезапускался и сессия сброшена.\n"
+                "Открой «🎬 Видео для Reels», добавь фото и описание — и запускай.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🎬 Видео для Reels", callback_data="video")],
+                ]),
+            )
+            return
+    # НЕ гасим video_session_active/waiting_for_video_image здесь: run_seedance
+    # деактивирует видео-режим сам, ПОСЛЕ валидаций и списания. Если погасить
+    # до запуска, early-return («нужно описание или фото») оставляет флаги
+    # выключенными — следующее сообщение молча уходит в фото-флоу, хотя
+    # видео-панель на экране (регресс из audits/2026-07-02_qa_live_retest №2).
+    # Add to processing_user_ids BEFORE create_task to close the race window
+    processing_user_ids.add(user_vs.id)
+    try:
+        context.application.create_task(run_seedance(update, context))
+    except Exception:
+        processing_user_ids.discard(user_vs.id)
+        logger.exception("create_task(run_seedance) failed for user=%s", user_vs.id)
+        await query.answer("Не удалось запустить генерацию. Попробуй ещё раз.", show_alert=True)
+    return
+
+
+QDATA_EXACT_HANDLERS = {
+    "pladm_open": _cb_pladm_open,
+    "pladm_list": _cb_pladm_list,
+    "pladm_export": _cb_pladm_export,
+    "pladm_new": _cb_pladm_new,
+    "pladm_rename": _cb_pladm_rename,
+    "pladm_delete": _cb_pladm_delete,
+    "pladm_cancel": _cb_pladm_cancel,
+    "noop": _cb_noop,
+    "pl_open_webapp": _cb_pl_open_webapp,
+    "pl_open": _cb_pl_open,
+    "plsave_cancel": _cb_plsave_cancel,
+    "generate": _cb_generate,
+    "enhance_photo": _cb_enhance_photo,
+    "enhance_use_pending_text": _cb_enhance_use_pending_text,
+    "menu_photo": _cb_menu_photo,
+    "menu_video": _cb_menu_video,
+    "image_model_menu": _cb_image_model_menu,
+    "image_model_set_gemini": _cb_image_model_set,
+    "image_model_set_gpt5": _cb_image_model_set,
+    "generate_again": _cb_generate_again,
+    "animate_last": _cb_animate_last,
+    "motion_start": _cb_motion_start,
+    "seedance_retry": _cb_seedance_retry,
+    "avatar_actions": _cb_avatar_actions,
+    "avatar_use_female": _cb_avatar_use,
+    "avatar_use_male": _cb_avatar_use,
+    "avatar_use_child": _cb_avatar_use,
+    "avatar_gen_refsheet": _cb_avatar_gen_refsheet,
+    "avatar_gen_kind_female": _cb_avatar_gen_kind,
+    "avatar_gen_kind_male": _cb_avatar_gen_kind,
+    "avatar_gen_kind_child": _cb_avatar_gen_kind,
+    "avatar_gen_start": _cb_avatar_gen_start,
+    "avatar_help": _cb_avatar_help,
+    "avatar_back_menu": _cb_avatar_back_menu,
+    "menu_from_video": _cb_menu_from_video,
+    "show_help": _cb_show_help,
+    "report_problem": _cb_report_problem,
+    "bug_bounty": _cb_bug_bounty,
+    "report_cancel": _cb_report_cancel,
+    "reset": _cb_reset,
+    "show_buy": _cb_show_buy,
+    "open_ref": _cb_open_ref,
+    "show_avatar": _cb_show_avatar,
+}
+
+VIDEO_EXACT_HANDLERS = {
+    "video": _cb_video_open,
+    "video_set_prompt": _cb_video_set_prompt,
+    "video_set_image": _cb_video_set_image,
+    "video_clear_images": _cb_video_clear_images,
+    "video_facegrid_toggle": _cb_video_facegrid_toggle,
+    "video_set_video": _cb_video_set_video,
+    "video_set_duration": _cb_video_set_duration,
+    "video_change_model": _cb_video_change_model,
+    "video_start": _cb_video_start,
+}
+
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -4955,41 +5678,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("У тебя нет доступа к этой операции.")
         return
 
-    if query.data == "pladm_open":
-        await query.message.reply_text(
-            "Кнопочный админ-редактор библиотеки открыт.",
-            reply_markup=prompt_library_admin_kb(),
-        )
-        return
-
-    if query.data == "pladm_list":
-        await prompt_library_list(update, context)
-        return
-
-    if query.data == "pladm_export":
-        await prompt_library_export(update, context)
-        return
-
-    if query.data == "pladm_new":
-        context.user_data["pl_admin_mode"] = "new"
-        await query.message.reply_text("Отправь название новой категории одним сообщением.")
-        return
-
-    if query.data == "pladm_rename":
-        context.user_data["pl_admin_mode"] = "rename_old"
-        await query.message.reply_text("Отправь текущее название категории.")
-        return
-
-    if query.data == "pladm_delete":
-        context.user_data["pl_admin_mode"] = "delete"
-        await query.message.reply_text("Отправь название категории для удаления.")
-        return
-
-    if query.data == "pladm_cancel":
-        context.user_data.pop("pl_admin_mode", None)
-        context.user_data.pop("pl_admin_rename_old", None)
-        await query.message.reply_text("Админ-режим закрыт.")
-        return
+    if query.data in QDATA_EXACT_HANDLERS:
+        return await QDATA_EXACT_HANDLERS[query.data](update, context, query, user)
 
     if query.data.startswith("shc_"):
         # Витрина новичка: применяем выбранный стиль из библиотеки по индексам
@@ -5086,10 +5776,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer(f"Начислено {BUG_BOUNTY_REWARD} 🍇 пользователю {target_user_id} ✅")
         return
 
-    if query.data == "noop":
-        await query.answer()
-        return
-
     if query.data.startswith("support_reply_"):
         if not is_admin(update.effective_user.id):
             await query.message.reply_text("У тебя нет доступа к этой кнопке.")
@@ -5175,32 +5861,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             preview_text,
             reply_markup=prompt_history_preview_kb(item_id),
-        )
-        return
-
-    if query.data == "pl_open_webapp":
-        logger.info(
-            "Prompt WebApp open requested: user_id=%s chat_id=%s",
-            update.effective_user.id if update.effective_user else "unknown",
-            update.effective_chat.id if update.effective_chat else "unknown",
-        )
-        if not PROMPT_WEBAPP_URL:
-            await query.message.reply_text(
-                "Выбери стиль из библиотеки 👇",
-                reply_markup=prompt_library_menu_kb(),
-            )
-            return
-        uid = update.effective_user.id if update.effective_user else None
-        await query.message.reply_text(
-            "Открывай библиотеку по кнопке ниже:",
-            reply_markup=webapp_open_kb(uid),
-        )
-        return
-
-    if query.data == "pl_open":
-        await query.message.reply_text(
-            "Выбери категорию. Покажу лучшие стили с примерами 👇",
-            reply_markup=prompt_library_menu_kb(),
         )
         return
 
@@ -5371,11 +6031,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if query.data == "plsave_cancel":
-        context.user_data.pop("pending_pl_save", None)
-        await query.message.reply_text("Сохранение в библиотеку отменено.", reply_markup=main_menu_kb())
-        return
-
     if query.data.startswith("plsave_cat_"):
         pending = context.user_data.get("pending_pl_save")
         if not pending:
@@ -5456,6 +6111,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("Не удалось сохранить шаблон. Попробуй ещё раз.")
             return
 
+
     callback_data = query.data or ""
     video_cb = callback_data
     if callback_data.startswith("mc_"):
@@ -5489,146 +6145,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(video_unavailable_text(), reply_markup=main_menu_kb())
         return
 
-    if query.data == "generate":
-        state = get_or_init_state(context)
-        was_in_video = state.video_session_active
-        deactivate_video_session(state)
-        if was_in_video and not state.prompt:
-            await query.message.reply_text(
-                "Режим видео закрыт. Напиши описание и нажми «✨ Сгенерировать фото»."
-            )
-            return
-        await run_generation(update, context)
-        return
 
-    if query.data == "enhance_photo":
-        state = get_or_init_state(context)
-        deactivate_video_session(state)
-        state.prompt = ENHANCE_PHOTO_PROMPT
-        state.image_prompt = ""
-        state.style_extract = False
-        state.references = []  # старое фото не подмешиваем — нужно новое, для улучшения
-        state.image_model = "gemini"  # nano banana, фикс по требованию функции
-        await query.message.reply_text(
-            "Пришли фото, которое нужно улучшить 🖼️\n"
-            "Бот повысит качество и сделает его похожим на кадр от профессионального "
-            "фотографа — черты лица останутся прежними.",
-            reply_markup=ENHANCE_WAITING_KB,
-        )
-        return
-
-    if query.data == "enhance_use_pending_text":
-        state = get_or_init_state(context)
-        pending_text = str(context.user_data.pop("enhance_pending_text", "") or "").strip()
-        if not pending_text:
-            await query.answer("Текст уже неактуален, напиши заново.", show_alert=True)
-            return
-        deactivate_video_session(state)
-        state.prompt = pending_text
-        state.style_extract = False
-        await query.message.reply_text(photo_draft_text(state, user.id), reply_markup=photo_draft_kb(state, user.id))
-        return
-
-    if query.data == "menu_photo":
-        await query.message.reply_text(
-            "📸 Фото — выбери, что сделать:",
-            reply_markup=photo_menu_kb(user.id),
-        )
-        return
-
-    if query.data == "menu_video":
-        await query.message.reply_text(
-            "🎬 Видео — выбери, что сделать:",
-            reply_markup=video_menu_kb(user.id),
-        )
-        return
-
-    if query.data == "image_model_menu":
-        state = get_or_init_state(context)
-        await query.message.reply_text(
-            image_model_menu_text(state),
-            reply_markup=image_model_menu_kb(state),
-        )
-        return
-
-    if query.data in ("image_model_set_gemini", "image_model_set_gpt5"):
-        state = get_or_init_state(context)
-        picked = "gpt5" if query.data == "image_model_set_gpt5" else "gemini"
-        if picked == "gpt5" and not GPT5_IMAGE_ENABLED:
-            await query.answer("GPT-5 Image временно недоступна.", show_alert=True)
-            return
-        state.image_model = picked
-        await query.answer(f"Модель: {get_image_model_label(picked)} ✅")
-        try:
-            await query.message.edit_text(
-                image_model_menu_text(state),
-                reply_markup=image_model_menu_kb(state),
-            )
-        except BadRequest:
-            pass
-        return
-
-    if query.data == "generate_again":
-        state = get_or_init_state(context)
-        deactivate_video_session(state)
-        user_id = update.effective_user.id
-        saved_prompt = (last_generated_prompt.get(user_id) or "").strip()
-        if not saved_prompt:
-            await query.message.reply_text(
-                "Не нашла прошлое описание. Напиши новый текст и нажми «✨ Сгенерировать фото»."
-            )
-            return
-
-        state = get_or_init_state(context)
-        deactivate_video_session(state)
-        state.prompt = saved_prompt
-        state.style_extract = False
-        # Keep refs that are still usable: persistent URLs + __img__ refs still in cache.
-        # __img__ refs evaporate on bot restart, so drop the ones that no longer resolve.
-        saved_refs = [
-            r for r in (last_generation_references.get(user_id) or [])
-            if not _is_img_ref(r) or _resolve_image_bytes(r) is not None
-        ]
-        state.references = saved_refs
-        if not saved_refs:
-            avatar_url_repeat = get_avatar_url(user.id)
-            if not avatar_url_repeat:
-                await query.message.reply_text(
-                    "ℹ️ Фото не сохранились (были загружены временно).\n"
-                    "Генерирую без фото."
-                )
-        await run_generation(update, context)
-        return
-
-    if query.data == "animate_last":
-        if not SEEDANCE_ENABLED:
-            await query.message.reply_text(video_unavailable_text(), reply_markup=main_menu_kb())
-            return
-        state = get_or_init_state(context)
-        last_img = last_generated_image_url.get(user.id)
-        if last_img and _is_img_ref(last_img) and _resolve_image_bytes(last_img) is None:
-            last_img = None
-        if not last_img:
-            await query.message.reply_text(
-                "Не нашла свежую генерацию — она могла устареть.\n"
-                "Сгенерируй картинку заново и нажми «Оживить 🎬» под результатом."
-            )
-            return
-        state.video_session_active = True
-        state.waiting_for_video_prompt = False
-        state.waiting_for_video_image = True
-        state.waiting_for_motion_video = False
-        set_video_image_urls(state, [last_img])
-        await query.message.reply_text(
-            "Картинка добавлена в видео-буфер 🎬\n"
-            "Можешь описать, что должно происходить в кадре, выбрать модель и длительность — "
-            "или сразу жми «🚀 Запустить видео»."
-        )
-        await query.message.reply_text(
-            video_status_text(state),
-            reply_markup=video_kb(state),
-        )
-        return
+    if video_cb in VIDEO_EXACT_HANDLERS:
+        return await VIDEO_EXACT_HANDLERS[video_cb](update, context, query, user)
 
     if video_cb.startswith("video_longer_") or video_cb == "video_upgrade_seedance2":
         user_u = update.effective_user
@@ -5691,71 +6210,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("Не удалось запустить генерацию. Попробуй ещё раз.", show_alert=True)
         return
 
-    if video_cb == "video":
-        state = get_or_init_state(context)
-        state.video_session_active = True
-        state.waiting_for_video_prompt = False
-        state.waiting_for_video_image = True
-        state.waiting_for_motion_video = False
-
-        # Сначала только выбор модели — полная панель настроек открывается
-        # (редактированием этого же сообщения) уже после выбора, см.
-        # video_model_picker_kb и ветку video_cb.startswith("video_model_")
-        # ниже (решение Ани 2026-07-31, было 2 сообщения сразу со всеми
-        # настройками). Уже выбирал модель в этой сессии — пикер не повторяем,
-        # сразу полная панель (ТЗ video_panel_declutter).
-        if state.video_model_picked:
-            await query.message.reply_text(
-                video_status_text(state),
-                reply_markup=video_kb(state),
-            )
-            return
-        await query.message.reply_text(
-            "🎬 Видео для Reels\n\n"
-            "Можно сразу отправлять текст описания и фото — сохраню в черновик.\n"
-            "Выбери модель:",
-            reply_markup=video_model_picker_kb(),
-        )
-        return
-
-    if video_cb == "video_set_prompt":
-        state = get_or_init_state(context)
-        state.video_session_active = True
-        state.waiting_for_video_prompt = True
-        await query.message.reply_text("Напиши описание для видео одним сообщением.")
-        return
-
-    if video_cb == "video_set_image":
-        state = get_or_init_state(context)
-        state.video_session_active = True
-        state.waiting_for_video_image = True
-        await query.message.reply_text(
-            "Отправляй фото для видео (можно несколько подряд).\n"
-            f"Лимит: до {MAX_SEEDANCE_IMAGE_REFERENCES} фото.\n"
-            "Бот запомнит внешность с фото и перенесёт в видео.\n"
-            "Когда всё загрузишь, нажми «🚀 Запустить видео»."
-        )
-        return
-
-    if video_cb == "video_clear_images":
-        state = get_or_init_state(context)
-        set_video_image_urls(state, [])
-        state.waiting_for_video_image = True
-        state.video_session_active = True
-        await update_video_panel(
-            query,
-            "Фото очищены ✅\n\n" + video_status_text(state),
-            video_kb(state),
-        )
-        return
-
-    if video_cb == "video_facegrid_toggle":
-        state = get_or_init_state(context)
-        state.video_session_active = True
-        state.video_face_grid = not get_face_grid(state)
-        await update_video_panel(query, video_status_text(state), video_kb(state))
-        return
-
     if video_cb.startswith("video_aspect_"):
         state = get_or_init_state(context)
         state.video_session_active = True
@@ -5788,36 +6242,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query,
             f"Удалён референс #{idx} ✅\n{removed_text}\n\n{video_status_text(state)}",
             video_kb(state),
-        )
-        return
-
-    if video_cb == "video_set_video":
-        await query.message.reply_text("Для этой модели этот шаг не нужен.")
-        return
-
-    if query.data == "motion_start":
-        if not MOTION_CONTROL_ENABLED:
-            await query.message.reply_text(video_unavailable_text(), reply_markup=main_menu_kb())
-            return
-        state = get_or_init_state(context)
-        deactivate_video_session(state)
-        state.motion_control_active = True
-        state.waiting_for_motion_video = True
-        await query.message.reply_text(
-            "🕺 Видео с движением\n\n"
-            "1. Пришли короткое референс-видео с движением, которое нужно повторить "
-            "(танец, жест, поворот и т.п.) — обычным видеофайлом.\n"
-            "2. Затем пришли своё фото — перенесу движение на него."
-        )
-        return
-
-    if video_cb == "video_set_duration":
-        state = get_or_init_state(context)
-        state.video_session_active = True
-        state.waiting_for_video_duration = True
-        dur_min, dur_max = get_seedance_duration_bounds(get_video_model(state))
-        await query.message.reply_text(
-            f"Напиши число секунд от {dur_min} до {dur_max} одним сообщением."
         )
         return
 
@@ -5860,12 +6284,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update_video_panel(query, video_status_text(state), video_kb(state))
         return
 
-    if video_cb == "video_change_model":
-        state = get_or_init_state(context)
-        state.video_session_active = True
-        await update_video_panel(query, "🎬 Видео для Reels\n\nВыбери модель:", video_model_picker_kb())
-        return
-
     if video_cb.startswith("video_mode_"):
         state = get_or_init_state(context)
         state.video_session_active = True
@@ -5898,274 +6316,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update_video_panel(query, video_status_text(state), video_kb(state))
         return
 
-    if video_cb == "video_start":
-        user_vs = update.effective_user
-        if user_vs.id in queued_user_ids or user_vs.id in processing_user_ids:
-            await query.answer("Уже выполняется другая задача. Подожди.", show_alert=False)
-            return
-        state = get_or_init_state(context)
-        logger.info(
-            "video_start: user=%s animation_source_urls=%s video_prompt=%r",
-            user_vs.id, state.animation_source_urls, state.video_prompt,
-        )
-        if not state.animation_source_urls and not (state.video_prompt or "").strip():
-            msg_date = getattr(query.message, "date", None)
-            if msg_date and msg_date.replace(tzinfo=None) < BOT_START_TIME:
-                await query.message.reply_text(
-                    "Бот перезапускался и сессия сброшена.\n"
-                    "Открой «🎬 Видео для Reels», добавь фото и описание — и запускай.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🎬 Видео для Reels", callback_data="video")],
-                    ]),
-                )
-                return
-        # НЕ гасим video_session_active/waiting_for_video_image здесь: run_seedance
-        # деактивирует видео-режим сам, ПОСЛЕ валидаций и списания. Если погасить
-        # до запуска, early-return («нужно описание или фото») оставляет флаги
-        # выключенными — следующее сообщение молча уходит в фото-флоу, хотя
-        # видео-панель на экране (регресс из audits/2026-07-02_qa_live_retest №2).
-        # Add to processing_user_ids BEFORE create_task to close the race window
-        processing_user_ids.add(user_vs.id)
-        try:
-            context.application.create_task(run_seedance(update, context))
-        except Exception:
-            processing_user_ids.discard(user_vs.id)
-            logger.exception("create_task(run_seedance) failed for user=%s", user_vs.id)
-            await query.answer("Не удалось запустить генерацию. Попробуй ещё раз.", show_alert=True)
-        return
-
-    if query.data == "seedance_retry":
-        user_r = update.effective_user
-        if user_r.id in queued_user_ids or user_r.id in processing_user_ids:
-            await query.answer("Уже выполняется другая задача. Подожди.", show_alert=False)
-            return
-        state = get_or_init_state(context)
-        # video_session_active гасит run_seedance после валидаций — см. video_start.
-        processing_user_ids.add(user_r.id)
-        try:
-            context.application.create_task(run_seedance(update, context))
-        except Exception:
-            processing_user_ids.discard(user_r.id)
-            logger.exception("create_task(run_seedance retry) failed for user=%s", user_r.id)
-            await query.answer("Не удалось запустить генерацию. Попробуй ещё раз.", show_alert=True)
-        return
-
-    if query.data == "avatar_actions":
-        await query.message.reply_text(
-            "🪄 AI-аватар — это ты в любом образе\n\n"
-            "Пришли 3–8 своих фото, и нейросеть сгенерирует аватар и запомнит твою внешность.\n"
-            "После этого в каждой генерации будешь появляться именно ты — "
-            "хоть в образе киберпанк-воина, хоть на обложке журнала.\n\n"
-            "Если загружено несколько аватаров (👩/👨/🧒) — кнопками ниже "
-            "выбери, каким генерировать (● текущий).\n\n"
-            "Это то, чего нет у большинства конкурентов 💪",
-            reply_markup=avatar_actions_kb(user.id),
-        )
-        return
-
-    if query.data in {"avatar_use_female", "avatar_use_male", "avatar_use_child"}:
-        chosen = query.data.rsplit("_", 1)[-1]
-        if not get_avatar_urls(user.id).get(chosen):
-            await query.answer("Такой аватар ещё не загружен.", show_alert=True)
-            return
-        set_active_avatar_kind(user.id, chosen)
-        await query.answer(f"Генерирую как: {avatar_kind_label(chosen)} ✅")
-        try:
-            await query.message.edit_reply_markup(reply_markup=avatar_actions_kb(user.id))
-        except BadRequest:
-            pass
-        return
-
-    if query.data == "avatar_gen_refsheet":
-        # Фото принимаются сразу, до выбора типа — порядок действий (сначала
-        # фото или сначала тип) юзеру не важен, и фото больше не улетают в
-        # обычный фото-черновик, если тип ещё не выбран (макет утверждён
-        # Аней 2026-07-15).
-        state = get_or_init_state(context)
-        deactivate_video_session(state)
-        state.prompt = AVATAR_REFSHEET_PROMPT
-        state.style_extract = False
-        state.references = []
-        state.avatar_photos = []
-        state.avatar_status_msg_id = None
-        state.pending_avatar_kind = ""
-        state.generating_avatar = True
-        await query.message.reply_text(
-            "Создаём аватар 🪄\n\n"
-            "Пришли 3–6 фото, где хорошо видно лицо, и выбери, для кого аватар 👇\n"
-            "Фото можно слать прямо сейчас — не потеряются.",
-            reply_markup=avatar_gen_kind_kb(),
-        )
-        return
-
-    if query.data in {"avatar_gen_kind_female", "avatar_gen_kind_male", "avatar_gen_kind_child"}:
-        state = get_or_init_state(context)
-        avatar_kind = query.data.rsplit("_", 1)[-1]
-        # Тип можно тапнуть, даже если приём фото ещё не был включён явно
-        # (например, повторный тап из старого сообщения) — не теряем то,
-        # что юзер уже успел прислать.
-        if not state.generating_avatar:
-            deactivate_video_session(state)
-            state.prompt = AVATAR_REFSHEET_PROMPT
-            state.style_extract = False
-            state.references = []
-            state.avatar_photos = []
-            state.avatar_status_msg_id = None
-            state.generating_avatar = True
-        state.pending_avatar_kind = avatar_kind
-        await query.answer(f"Тип: {avatar_kind_label(avatar_kind)} ✅")
-        return
-
-    if query.data == "avatar_gen_start":
-        state = get_or_init_state(context)
-        photos = list(state.avatar_photos)
-        if not photos:
-            await query.answer("Сначала отправь хотя бы одно фото.", show_alert=True)
-            return
-        if not state.pending_avatar_kind:
-            await query.answer("Сначала выбери тип аватара 👆", show_alert=True)
-            return
-
-        if user.id in queued_user_ids or user.id in processing_user_ids:
-            await query.answer("Сырник уже занят другой задачей. Подожди.", show_alert=True)
-            return
-
-        # Charge for avatar generation like a normal image
-        avatar_cost = BASE_GENERATION_COST
-        avatar_use_free = try_use_free_generation(user.id, FREE_GENERATIONS_PER_DAY)
-        avatar_paid = False
-        if not avatar_use_free:
-            bal = get_balance(user.id)
-            if bal < avatar_cost:
-                await query.message.reply_text(
-                    f"Не хватает изюминок для генерации аватара.\n"
-                    f"Нужно: {avatar_cost}\nУ тебя: {bal}",
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("💳 Купить изюминки", callback_data="show_buy")
-                    ]])
-                )
-                return
-            if not spend_izyminki(user.id, avatar_cost):
-                await query.message.reply_text("Не удалось списать изюминки. Попробуй ещё раз.")
-                return
-            avatar_paid = True
-
-        state.generating_avatar = False
-        state.avatar_photos = []
-        job = GenerationJob(
-            chat_id=update.effective_chat.id,
-            user_id=user.id,
-            prompt=AVATAR_REFSHEET_PROMPT,
-            references=photos,
-            cost=avatar_cost if avatar_paid else 0,
-            was_free=avatar_use_free,
-            save_as_avatar=True,
-            avatar_kind=getattr(state, "pending_avatar_kind", "female") or "female",
-        )
-        queued_user_ids.add(user.id)
-        try:
-            generation_queue.put_nowait(job)
-        except asyncio.QueueFull:
-            queued_user_ids.discard(user.id)
-            if avatar_paid:
-                add_izyminki(user.id, avatar_cost)
-            elif avatar_use_free:
-                restore_free_generation(user.id)
-            await query.message.reply_text("Сырник сейчас очень занят — очередь переполнена 😔 Попробуй через минуту.")
-            return
-        except BaseException:
-            queued_user_ids.discard(user.id)
-            if avatar_paid:
-                add_izyminki(user.id, avatar_cost)
-            elif avatar_use_free:
-                restore_free_generation(user.id)
-            logger.exception("Failed to enqueue avatar job for user=%s", user.id)
-            await query.message.reply_text("Не удалось запустить генерацию. Попробуй ещё раз.")
-            raise
-        # Сохраняем выбранную модель картинок при сбросе временного состояния.
-        new_state = UserState()
-        new_state.image_model = state.image_model
-        context.user_data["state"] = new_state
-        await query.message.reply_text(
-            f"Запускаю генерацию аватара по {len(photos)} фото… ✨",
-        )
-        return
-
-    if query.data == "avatar_help":
-        await query.answer()
-        await query.message.reply_text(
-            "🪄 AI-аватар — это твоя внешность в боте.\n\n"
-            "Пришли 3–8 своих фото лица с разных ракурсов → "
-            "бот сгенерирует аватар и запомнит, как ты выглядишь → "
-            "дальше ты будешь появляться в любом образе на каждой картинке.\n\n"
-            "Аватар необязателен — без него тоже можно генерировать."
-        )
-        return
-
-    if query.data == "avatar_back_menu":
-        await query.message.reply_text(
-            "Главное меню:",
-            reply_markup=main_menu_kb(user.id),
-        )
-        return
-
-    if query.data == "menu_from_video":
-        state = get_or_init_state(context)
-        deactivate_video_session(state)
-        await query.message.reply_text(
-            "Главное меню:",
-            reply_markup=main_menu_kb(user.id),
-        )
-        return
-
-    if query.data == "show_help":
-        # Единый источник справки — та же, что и команда /help.
-        await help_command(update, context)
-        return
-
-    if query.data == "report_problem":
-        # Единая реализация с командой /report — один текст и один способ отмены.
-        await report_problem_command(update, context)
-        return
-
-    if query.data == "bug_bounty":
-        await bug_bounty_command(update, context)
-        return
-
-    if query.data == "report_cancel":
-        # Отмена репорта («🚨 Проблема» / «🐞 Баг-баунти») — снимает ТОЛЬКО
-        # режим ожидания репорта. Раньше кнопка висела на общем "reset" и
-        # передумавший жаловаться юзер молча терял черновик фото/стиля.
-        state = get_or_init_state(context)
-        state.waiting_for_problem_report = False
-        state.waiting_for_bug_report = False
-        state.pending_report_kind = ""
-        await query.message.reply_text(
-            "Ок, отменила. Твой черновик не тронут 👌",
-            reply_markup=main_menu_kb(user.id),
-        )
-        return
-
-    if query.data == "reset":
-        # Сбрасываем только временные данные (описание/фото/видео-сессию).
-        # Липкие настройки-предпочтения переносим в новое состояние, иначе
-        # выбор модели картинок терялся при возврате в меню кнопкой «◀️ В меню».
-        prev_state = context.user_data.get("state")
-        new_state = UserState()
-        if isinstance(prev_state, UserState):
-            new_state.image_model = prev_state.image_model
-            # Выбор видео-модели — тоже липкая настройка: иначе каждый
-            # «◀️ В меню» снова гонит юзера через пикер моделей.
-            new_state.video_model = prev_state.video_model
-            new_state.video_model_picked = prev_state.video_model_picked
-        context.user_data["state"] = new_state
-        await query.message.reply_text(
-            "Готово — текущее описание и фото очищены.\n"
-            "Баланс и аватары на месте. Можно начинать заново!",
-            reply_markup=main_menu_kb(user.id),
-        )
-        return
-    
     if query.data.startswith("promo_try_"):
         promo_id = query.data.replace("promo_try_", "", 1)
         promo = get_promo_broadcast(promo_id)
@@ -6187,14 +6337,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Готово ✨\nСтиль применён ✅",
             reply_markup=photo_draft_kb(state, update.effective_user.id),
         )
-        return
-
-    if query.data == "show_buy":
-        await buy(update, context)
-        return
-
-    if query.data == "open_ref":
-        await referral(update, context)
         return
 
     if query.data.startswith("buy_"):
@@ -6222,26 +6364,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise
         return
     
-    if query.data == "show_avatar":
-        avatars = get_avatar_urls(update.effective_user.id)
-        present = [(k, v) for k, v in avatars.items() if v]
-        if not present:
-            await query.message.reply_text("У тебя пока нет сохранённых аватаров.")
-            return
-        for kind, url in present:
-            try:
-                await query.message.reply_photo(
-                    photo=url,
-                    caption=f"Аватар: {avatar_kind_label(kind)}"
-                )
-            except Exception:
-                logger.warning("show_avatar: failed to send photo url=%s kind=%s", url[:60], kind)
-                clear_avatar_url(update.effective_user.id, kind)
-                await query.message.reply_text(
-                    f"Аватар «{avatar_kind_label(kind)}» недоступен (ссылка протухла) и удалён.\n"
-                    "Загрузи новый аватар через меню."
-                )
-        return
+
+
 
 
 # ══════════════════════════════════════════════════════════════

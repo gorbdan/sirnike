@@ -256,6 +256,7 @@ from db import (
     get_generation_history_item,
     delete_user_for_test,
     get_error_breakdown,
+    get_provider_comparison,
     get_studio_done_job,
     record_studio_done_job,
 )
@@ -6473,6 +6474,48 @@ async def video_errors(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_long_text(update.message, "\n".join(lines))
 
 
+async def provider_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сравнение провайдеров (Zveno/EvoLink/...) — success rate и реальная цена в ₽.
+    Использование: /provider_stats [days=7] [image|video]"""
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("У тебя нет доступа к этой команде.")
+        return
+
+    days = 7
+    kind = None
+    for arg in (context.args or []):
+        a = arg.strip().lower()
+        if a in ("image", "video"):
+            kind = a
+            continue
+        try:
+            days = max(1, min(int(a), 365))
+        except ValueError:
+            await update.message.reply_text("Использование: /provider_stats [дней=7] [image|video]")
+            return
+
+    rows = get_provider_comparison(days=days, kind=kind)
+    if not rows:
+        await update.message.reply_text(f"Данных за {days} дн. не найдено (kind={kind or 'все'}).")
+        return
+
+    lines = [f"Провайдеры за {days} дн. (kind={kind or 'все'}):\n"]
+    current_provider = None
+    for r in rows:
+        if r["provider"] != current_provider:
+            current_provider = r["provider"]
+            lines.append(f"\n📡 {current_provider}")
+        total = r["success"] + r["failed"]
+        cost = f" · ₽{r['api_cost_rub']}" if r["api_cost_rub"] else ""
+        per_success = f" (₽{r['cost_per_success_rub']}/успех)" if r["cost_per_success_rub"] else ""
+        lines.append(
+            f"• {r['model']}: ✅{r['success']} ❌{r['failed']} из {total} "
+            f"(SR {r['success_rate']}%){cost}{per_success}"
+        )
+    await send_long_text(update.message, "\n".join(lines))
+
+
 async def audience_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id):
@@ -9069,6 +9112,7 @@ def main():
     app.add_handler(CommandHandler("audience_stats", audience_stats))
     app.add_handler(CommandHandler("test_reset", test_reset))
     app.add_handler(CommandHandler("video_errors", video_errors))
+    app.add_handler(CommandHandler("provider_stats", provider_stats))
     app.add_handler(CommandHandler("pnl", pnl_report))
     app.add_handler(CommandHandler("template_stats", template_stats_report))
     app.add_handler(CommandHandler("pl_save", prompt_library_save_last))

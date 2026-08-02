@@ -864,6 +864,54 @@ def get_error_breakdown(days: int = 7, kind: Optional[str] = None, limit: int = 
     ]
 
 
+def get_provider_comparison(days: int = 7, kind: Optional[str] = None):
+    """Сравнение провайдеров (Zveno/EvoLink/MashaGPT/...) за период: success rate
+    и реальная цена в ₽ по каждому (provider, model). Нужно отдельно от /pnl,
+    потому что там группировка по (kind, model) — если одна и та же модель
+    в переходный период идёт то через старого, то через нового провайдера,
+    /pnl их смешивает и сравнить провайдеров напрямую нельзя."""
+    since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    with get_conn() as conn:
+        cur = conn.cursor()
+        params = [since]
+        kind_filter = ""
+        if kind:
+            kind_filter = "AND kind = ?"
+            params.append(kind)
+        cur.execute(
+            f"""
+            SELECT COALESCE(provider, 'unknown'),
+                   COALESCE(model, '—'),
+                   SUM(CASE WHEN status='success' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN status='failed'  THEN 1 ELSE 0 END),
+                   COALESCE(SUM(api_cost_rub), 0)
+            FROM generation_events
+            WHERE created_at >= ? AND COALESCE(is_admin_test,0)=0 {kind_filter}
+            GROUP BY COALESCE(provider, 'unknown'), COALESCE(model, '—')
+            ORDER BY COALESCE(provider, 'unknown'), (SUM(CASE WHEN status='success' THEN 1 ELSE 0 END)
+                     + SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END)) DESC
+            """,
+            params,
+        )
+        rows = cur.fetchall()
+
+    result = []
+    for provider, model, ok, fail, api_cost_rub in rows:
+        total = ok + fail
+        sr = round(100 * ok / total, 1) if total else 0.0
+        cost_per_success = round(api_cost_rub / ok, 2) if ok and api_cost_rub else None
+        result.append({
+            "provider": provider,
+            "model": model,
+            "success": ok,
+            "failed": fail,
+            "success_rate": sr,
+            "api_cost_rub": round(api_cost_rub, 2),
+            "cost_per_success_rub": cost_per_success,
+        })
+    return result
+
+
 def get_template_usage_counts(days: Optional[int] = None):
     """Кол-во применений каждого шаблона, сгруппировано по (category, item_title).
     days=None — за всё время."""

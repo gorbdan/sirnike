@@ -3833,7 +3833,31 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
             if not image_prompt:
                 image_prompt = str(item.get("image_prompt") or "").strip()
 
-    prompt = prompt or title
+    if not prompt:
+        # Ни индексы, ни полный скан библиотеки по содержимому не дали
+        # реального промта — раньше здесь был молчаливый откат на литерал
+        # title (по умолчанию "шаблон"), и он уходил В САМУ ГЕНЕРАЦИЮ как
+        # промт, а не только как текст в чате (живой прод 2026-08-02:
+        # video_prompt='шаблон' — юзер тратил изюминки на генерацию по
+        # бессмысленному промту). Честный отказ вместо мусорной генерации.
+        logger.warning(
+            "apply_webapp_prompt_payload_v2: пустой prompt после всех резолвов (action=%s, cat_idx/item_idx=%s/%s)",
+            action, payload.get("cat_idx", payload.get("ci")), payload.get("item_idx", payload.get("ii")),
+        )
+        if update.effective_message and update.effective_user:
+            if PROMPT_WEBAPP_URL:
+                retry_btn = InlineKeyboardButton(
+                    "📚 Библиотека стилей",
+                    web_app=WebAppInfo(url=get_prompt_webapp_url(update.effective_user.id)),
+                )
+            else:
+                retry_btn = InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open")
+            await update.effective_message.reply_text(
+                "Не удалось применить именно эту карточку (возможно, устарела).\n"
+                "Открой библиотеку и выбери стиль из категории заново:",
+                reply_markup=InlineKeyboardMarkup([[retry_btn]]),
+            )
+        return True
 
     # Свободный текст пользователя («свои пожелания к причёске/макияжу») —
     # вебапп присылает его отдельным полем note/n для шаблонов с input_hint,

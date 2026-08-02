@@ -88,7 +88,11 @@ SEEDANCE_FACE_GRID = os.getenv("SEEDANCE_FACE_GRID", "0").strip().lower() in ("1
 # Выключен по умолчанию до ручного ревью качества генераций Аней/маркетологом
 # (ТЗ EvoLink, п.2 порядка работ: «не продолжать без ок»).
 GEMINI_OMNI_ENABLED = os.getenv("GEMINI_OMNI_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
-GEMINI_OMNI_MODEL = os.getenv("GEMINI_OMNI_MODEL", "gemini-omni-flash-image-to-video")
+# reference-to-video, НЕ image-to-video: у EvoLink это два разных API для
+# Gemini Omni (как и для Seedance) — image-to-video берёт строго 1 фото,
+# reference-to-video — до 6 (живой прод 2026-08-02: тот же класс бага, что
+# уже чинили для Seedance, см. GEMINI_OMNI_MAX_IMAGES в video_providers.py).
+GEMINI_OMNI_MODEL = os.getenv("GEMINI_OMNI_MODEL", "gemini-omni-flash-reference-to-video")
 GEMINI_OMNI_DURATION = int(os.getenv("GEMINI_OMNI_DURATION", "10"))
 GEMINI_OMNI_DURATION_OPTIONS = os.getenv("GEMINI_OMNI_DURATION_OPTIONS", "5,8,10")
 # Ориентир ≈7.8 ₽/сек (курс ~90₽/$, публичная страница EvoLink на 2026-07-31,

@@ -173,7 +173,9 @@ def test_block_16_evolink_http_client():
         got = S.classify_generation_error(Exception(_code))
         assert got == _bucket, f"15.15c classify_generation_error({_code}) -> {_bucket}: got={got}"
 
-    # 15.16 Gemini Omni: payload — одно фото, model=gemini-omni-flash-image-to-video, duration клампится 3-10
+    # 15.16 Gemini Omni: payload — одно фото, model=gemini-omni-flash-reference-to-video
+    # (живой прод-баг 2026-08-02: image-to-video берёт строго 1 фото,
+    # reference-to-video — до 6, тот же класс бага/фикса, что у Seedance).
     evo_calls.clear()
     gomni_ref = asyncio.run(S.start_gemini_omni_task_evolink(
         prompt="оживи фото", image_url="https://example.com/photo.jpg", user_id=1,
@@ -181,7 +183,7 @@ def test_block_16_evolink_http_client():
     ))
     assert gomni_ref.startswith("__EVOLINK__:"), f"15.17 gemini omni возвращает __EVOLINK__: префикс: {gomni_ref}"
     p15_16 = evo_calls[0]["payload"]
-    assert p15_16.get("model") == "gemini-omni-flash-image-to-video", f"15.18 gemini omni: модель: {p15_16}"
+    assert p15_16.get("model") == "gemini-omni-flash-reference-to-video", f"15.18 gemini omni: модель: {p15_16}"
     assert p15_16.get("image_urls") == ["https://example.com/photo.jpg"], (
         "15.19 gemini omni: одно фото в image_urls"
     )

@@ -66,11 +66,48 @@
       тот же паттерн, что и у video_providers. `test_new_features.py` не
       тронут — только `S.` обращения продолжают резолвиться через
       `from photo_providers import (...)`. 327/327 PASS, `py_compile` OK.
-      **Осталось (фазы 3–5, отдельные заходы)**: 3) студийный воркер
-      (`_studio_*`) в отдельный модуль; 4) `button_handler` (1310+ строк
-      одной if-цепочкой) — таблица диспетчинга по `callback_data` вместо
-      линейной цепочки; 5) миграция `test_new_features.py` (1850 строк,
-      327 самодельных проверок) на pytest.
+      **Фаза 3 (сделано 2026-08-02)**: воркер «Студии нейромультиков» (17
+      функций `_studio_*`, ~500 строк) вынесен целиком в новый
+      `studio_worker.py` (~740 строк) — в отличие от фаз 1–2 (только
+      HTTP-клиент, биллинг/чат оставались в SirNike.py), тут вынесен ВЕСЬ
+      воркер очереди D1 (docs/specs/2026-07-20_cartoon_studio.md), включая
+      списание/возврат изюминок (`spend_izyminki`/`add_izyminki`) и доставку
+      результата (`app.bot.send_video`) — это самодостаточная подсистема
+      (свой journaling идемпотентности в `studio_done_jobs`), а не
+      переиспользуемый провайдер-клиент. Точка запуска (`asyncio.create_task
+      (_studio_poll_loop(app))` в `post_init`) осталась в SirNike.py, просто
+      импортирует функцию из нового модуля. `studio_worker.py` НЕ импортирует
+      SirNike.py, переиспользует `video_providers.py` (Seedance/EvoLink
+      клиенты) и `db.py` (`spend_izyminki`/`add_izyminki`/`get_balance`/
+      `get_studio_done_job`/`record_studio_done_job`/`get_avatar_urls`/
+      `get_active_avatar_kind`) напрямую; функции, оставшиеся в SirNike.py
+      (`calc_generation_cost`, `calc_seedance_cost`, `classify_generation_error`,
+      `is_admin`, `get_video_model_label`, `extract_chat_completion_text`,
+      `_extract_zveno_image_result`, `upload_image_bytes_to_imgbb`,
+      `upload_image_url_to_imgbb`, `download_video_bytes_with_fallback`, а
+      также флаги/тарифы моделей `SEEDANCE_*_ENABLED`/`*_COST_PER_SECOND`)
+      прокинуты через `studio_worker.configure(...)`. Обнаружился новый класс
+      проблемы, которого не было в фазах 1–2: внутри перенесённого блока
+      функции вызывают ДРУГ ДРУГА (`_studio_handle_job` → `_studio_api`/
+      `_studio_execute_job`/`_studio_semaphore`), а тесты изолируют
+      `_studio_handle_job` подменой этих соседей через `AsyncMock()` —
+      переприсваивание `S.имя = мок` больше не работает, т.к. LOAD_GLOBAL
+      внутри перенесённых функций резолвится в namespace `studio_worker.py`,
+      а не `SirNike.py`. Поправлено точечно в `test_new_features.py`: патчи
+      `_studio_api`/`_studio_execute_job`/`_studio_semaphore` переведены на
+      `studio_worker.имя` (не `S.имя`), сам вызов `S._studio_handle_job(...)`
+      не тронут — это тот же объект функции. Для констант-флагов
+      (`GEMINI_OMNI_ENABLED` и т.п.), которые тесты патчат через `S.`, — тот
+      же lazy-lambda трюк, что у `_get_evolink_api_key_hook`: SirNike.py
+      передаёт в `configure()` не значения, а lambda, резолвящую их как
+      globals() своего модуля в момент вызова. `test_new_features.py` иначе
+      не тронут — только `S.` обращения к остальным `_studio_*` продолжают
+      резолвиться через `from studio_worker import (...)`. 327/327 PASS,
+      `py_compile` OK на всех четырёх файлах. SirNike.py: 9445 → 8990 строк.
+      **Осталось (фазы 4–5, отдельные заходы)**: 4) `button_handler` (1310+
+      строк одной if-цепочкой) — таблица диспетчинга по `callback_data`
+      вместо линейной цепочки; 5) миграция `test_new_features.py` (1850+
+      строк, 327 самодельных проверок) на pytest.
 - [x] P0 · Живой прод-баг 2026-08-02: EvoLink Seedance (`SEEDANCE_PROVIDER=evolink`)
       падал с 400 `invalid_parameter` на 3+ референсных фото. Первый заход
       (коммит на этой же ветке) — обрезка списка до 2 фото — оказался

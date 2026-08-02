@@ -5323,6 +5323,25 @@ async def _cb_avatar_gen_start(update, context, query, user):
         await query.answer("Сырник уже занят другой задачей. Подожди.", show_alert=True)
         return
 
+    # Валидация ДО списания (как в run_generation, SirNike.py ~4720): __img__-рефы
+    # живут в in-memory кэше и умирают при рестарте/деплое. Без этой проверки
+    # protухшие рефы молча выпадали уже в generate_image_zveno — запрос уходил
+    # БЕЗ фото юзера, «успех» без рефанда, и случайное лицо сохранялось активным
+    # аватаром. Для аватара частичный набор фото тоже не годится (identity),
+    # поэтому при любой потере просим прислать всё заново.
+    stale_count = sum(
+        1 for p in photos if _is_img_ref(p) and _resolve_image_bytes(p) is None
+    )
+    if stale_count:
+        state.avatar_photos = []
+        state.avatar_status_msg_id = None
+        await query.answer()
+        await query.message.reply_text(
+            "Фото для аватара устарели — похоже, бот перезапускался и не сохранил их 😔\n"
+            "Пришли фото ещё раз и жми «Сгенерировать аватар». Изюминки не списаны."
+        )
+        return
+
     # Charge for avatar generation like a normal image
     avatar_cost = BASE_GENERATION_COST
     avatar_use_free = try_use_free_generation(user.id, FREE_GENERATIONS_PER_DAY)
@@ -8583,13 +8602,20 @@ async def send_generation_result_by_url(
         caption="\n".join(_caption_parts),
     )
 
-    await app.bot.send_document(
-        chat_id=chat_id,
-        document=doc_buffer,
-    )
-
-    if not (job and getattr(job, "save_as_avatar", False)):
-        await maybe_send_avatar_nudge(app, chat_id, user_id)
+    # После успешного send_photo результат ДОСТАВЛЕН — сбой в необязательном
+    # хвосте (файл-вложение, nudge) не должен превращать успех в «ошибку
+    # генерации»: вызывающий код по исключению отсюда решает про рефанд.
+    try:
+        await app.bot.send_document(
+            chat_id=chat_id,
+            document=doc_buffer,
+        )
+        if not (job and getattr(job, "save_as_avatar", False)):
+            await maybe_send_avatar_nudge(app, chat_id, user_id)
+    except Exception:
+        logger.exception(
+            "Post-delivery tail failed (photo already delivered): user=%s", user_id
+        )
 
 # ══════════════════════════════════════════════════════════════
 # ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ (ВОРКЕР): MashaGPT, Zveno, Nano
@@ -8619,9 +8645,9 @@ async def _handle_generation_failure(
     last_error_text = str(error) or repr(error)
     logger.error(f"Generation debug | provider={provider_label} | user_id={user_id} | error={last_error_text}")
 
-    # generation_succeeded=True значит успех уже случился (файл мог уйти
-    # юзеру) до того, как что-то упало ПОСЛЕ этого — рефанд в таком случае
-    # был бы ошибочным двойным начислением.
+    # generation_succeeded=True значит фото УЖЕ доставлено юзеру (флаг ставится
+    # только после успешной отправки), а упал лишь пост-доставочный хвост —
+    # рефанд в таком случае был бы ошибочным двойным начислением.
     if not generation_succeeded:
         if getattr(job, "cost", 0) > 0 and not refunded:
             add_izyminki(job.user_id, job.cost)
@@ -8644,10 +8670,13 @@ async def _handle_generation_failure(
         )
     else:
         failure_text = generation_failure_user_text(refunded)
-    try:
-        await app.bot.send_message(chat_id=chat_id, text=failure_text, reply_markup=result_actions_kb())
-    except Exception:
-        logger.warning("Failed to send %s failure message to user %s", provider_label, user_id)
+    if not generation_succeeded:
+        # При доставленном фото сообщение «что-то пошло не так» поверх
+        # полученного результата только путает — молча логируем хвостовой сбой.
+        try:
+            await app.bot.send_message(chat_id=chat_id, text=failure_text, reply_markup=result_actions_kb())
+        except Exception:
+            logger.warning("Failed to send %s failure message to user %s", provider_label, user_id)
     log_generation_event(
         user_id=user_id,
         kind="image",
@@ -8685,13 +8714,17 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 user_id=user_id,
                 image_model=getattr(job, "image_model", "gemini"),
             )
-            generation_succeeded = True
             _bounded_set(last_generated_prompt, user_id, prompt)
             _hist_url = image_url
             if _is_img_ref(_hist_url):
                 _hist_url = await _persist_image_ref(_hist_url) or _hist_url
             add_generation_history(user_id=user_id, prompt=prompt, image_url=_hist_url)
             await send_generation_result_by_url(app, chat_id, user_id, image_url, job=job)
+            # Флаг ставим ТОЛЬКО после фактической доставки фото юзеру: URL от
+            # провайдера — ещё не результат (он мог протухнуть/не скачаться/не
+            # отправиться в Telegram), а флаг блокирует рефанд в
+            # _handle_generation_failure.
+            generation_succeeded = True
             if getattr(job, "save_as_avatar", False):
                 persistent_avatar_url = await _persist_image_ref(image_url)
                 if persistent_avatar_url:
@@ -8772,13 +8805,14 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 references=references,
                 user_id=user_id,
             )
-            generation_succeeded = True
             _bounded_set(last_generated_prompt, user_id, prompt)
             _hist_url = image_url
             if _is_img_ref(_hist_url):
                 _hist_url = await _persist_image_ref(_hist_url) or _hist_url
             add_generation_history(user_id=user_id, prompt=prompt, image_url=_hist_url)
             await send_generation_result_by_url(app, chat_id, user_id, image_url, job=job)
+            # Как в ZVENO-ветке: флаг только после фактической доставки.
+            generation_succeeded = True
             if getattr(job, "save_as_avatar", False):
                 persistent_avatar_url = await _persist_image_ref(image_url)
                 if persistent_avatar_url:
@@ -8937,6 +8971,13 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                                     reply_markup=result_actions_kb(user_id=user_id, bot_username=yesapi_bot_username),
                                     caption="Сгенерировано: Nano Banana 2 ✨\nПовтори или измени описание — жми кнопки ниже"
                                 )
+                                # Фото доставлено. Раньше сбой в хвосте ниже
+                                # (документ/nudge/лог) улетал во внешний except
+                                # и на attempt=0 запускал ВСЮ генерацию заново:
+                                # дубль фото юзеру, повторный расход RPOINTS, а
+                                # при неудаче ретрая — ещё и рефанд за уже
+                                # доставленный результат.
+                                generation_succeeded = True
 
                                 await app.bot.send_document(
                                     chat_id=chat_id,
@@ -8988,6 +9029,13 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 raise Exception("Превышено время ожидания генерации")
 
         except Exception as e:
+            if generation_succeeded:
+                # Фото уже у юзера — упал только пост-доставочный хвост.
+                # Ретраить генерацию (дубль) или рефандить нельзя.
+                logger.exception(
+                    "YesAPI post-delivery tail failed (photo already delivered): user=%s", user_id
+                )
+                return
             last_error_text = str(e)
             logger.exception(f"Generation attempt {attempt + 1} failed")
 
@@ -9013,6 +9061,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
             app, chat_id=chat_id, user_id=user_id, job=job,
             error=Exception(last_error_text), provider_label="YESAPI",
             references=references, refunded=refunded,
+            generation_succeeded=generation_succeeded,
         )
     except Exception:
         logger.exception("Failed to send final generation error message")

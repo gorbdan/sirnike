@@ -621,16 +621,18 @@ def load_prompt_library() -> list:
                 if not isinstance(cat["items"], list):
                     raise ValueError("Category items must be list")
 
-            # Put video categories first, image categories after
-            def _cat_sort_key(cat: dict) -> int:
-                items = cat.get("items") or []
-                for it in items:
-                    raw = str(it.get("kind") or it.get("type") or it.get("target") or "").strip().lower()
-                    if raw in {"video", "video_prompt"}:
-                        return 0  # video category → front
-                return 1  # image category → back
-
-            data.sort(key=_cat_sort_key)
+            # НЕ пересортировывать категории (было: видео-категории вперёд).
+            # Контракт бот↔вебапп на cat_idx/item_idx завязан на СЫРОЙ порядок
+            # категорий в prompt_library.json (вебапп считает индексы по
+            # необработанному файлу, flattenLibrary() в app.js). Сортировка
+            # здесь молча расходилась с вебаппом, как только не-видео
+            # категория оказывалась в файле раньше видео-категории — «карточка
+            # устарела»/пустой промт для ЛЮБОГО стиля после точки расхождения
+            # (найдено 2026-08-02, живой лог: cat_idx=1 у вебаппа = «Seedance
+            # 2», у бота после сортировки cat_idx=1 = «Руферы»). Если порядок
+            # категорий для UI бота когда-нибудь понадобится другой — это
+            # задача вебаппа (сортировать при отображении, не трогая индексы),
+            # не бэкенда.
             return data
         except Exception as e:
             logger.exception(f"Failed to load prompt_library.json from {source_path}: {e}")

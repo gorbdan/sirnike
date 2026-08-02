@@ -4,6 +4,23 @@
 
 ## Очередь
 
+- [x] P0 · Живой прод-баг 2026-08-02, тот же класс, что уже чинили для
+      Seedance: `GEMINI_OMNI_MODEL` указывал на `gemini-omni-flash-image-to-video`
+      (строго 1 фото), а у EvoLink для Gemini Omni тоже есть отдельная
+      `gemini-omni-flash-reference-to-video` (доки: "1~6 reference images").
+      Найдено проактивно (Аня спросила «почему лимит 1, покопайся в
+      доках») до того, как кто-то успел словить обрезку — но заодно юзер
+      сообщил про `unknown_error: Task processing failed` на poll (лог со
+      старого прод-деплоя, ещё ДО фаз 1-5 разбора монолита — трасса
+      указывает на `SirNike.py:8754`, т.е. `Update from Git` не делался
+      с начала сессии). Фикс: `GEMINI_OMNI_MODEL` дефолт →
+      `gemini-omni-flash-reference-to-video`, `GEMINI_OMNI_MAX_IMAGES = 6`
+      (было `max_count=1`) в `video_providers.py`. Заодно
+      `poll_evolink_task`: исключение при `status in (failed/cancelled/error)`
+      теперь несёт `task_id` в тексте — раньше его негде было взять для
+      обращения в поддержку EvoLink (их `unknown_error` сам просит указать
+      task_id). Тест 15.16-15.18 поправлен под новую модель. 17/17 (pytest).
+
 - [x] P0 · Живой прод-баг 2026-08-02 (лог Ани, `video_prompt='шаблон'`):
       `apply_webapp_prompt_payload_v2` — если cat_idx/item_idx не резолвятся
       (карточка устарела) И payload не прислал prompt вовсе

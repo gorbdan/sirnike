@@ -704,6 +704,10 @@ EVOLINK_SEEDANCE_MODEL_MAP = {
 # Доки EvoLink (seedance2.0/*-reference-to-video): "0–9 images" — тот же
 # потолок, что у Zveno-Seedance (MAX_SEEDANCE_IMAGE_REFERENCES).
 EVOLINK_SEEDANCE_MAX_IMAGES = 9
+# Доки EvoLink (gemini-omni-flash/*-reference-to-video): "1~6 reference
+# images" — тот же класс бага/фикса, что у Seedance выше, найден по той же
+# логике (проверка sitemap доков вместо доверия одному прочитанному эндпоинту).
+GEMINI_OMNI_MAX_IMAGES = 6
 
 
 def build_evolink_url(path: str) -> str:
@@ -862,7 +866,11 @@ async def poll_evolink_task(
                     message = error.get("message")
                 detail_parts = [p for p in (code, message) if p]
                 detail = ": ".join(detail_parts) if detail_parts else f"EvoLink task failed with status {status}"
-                raise Exception(detail)
+                # task_id — без него нечем делиться с поддержкой EvoLink (их
+                # unknown_error прямо просит указать task_id), а traceback в
+                # логе бота его раньше не нёс — только предыдущая info-строка
+                # поллинга, которую легко потерять среди остальных логов.
+                raise Exception(f"{detail} (task_id={task_id})")
 
             # "pending" / другие промежуточные статусы — просто ждём следующий тик.
 
@@ -937,12 +945,14 @@ async def start_gemini_omni_task_evolink(
 ) -> str:
     """Gemini Omni Flash (EvoLink) — новый продукт, которого нет у Zveno.
 
-    Одно фото (не мультиреференс, не reference-to-video) — image-to-video.
-    Сигнатура совпадает с start_seedance_task/start_seedance_task_evolink,
-    чтобы run_seedance мог вызывать её как drop-in для model_code=gemini_omni."""
-    combined_image_urls = _resolve_evolink_image_urls(image_url, image_urls, max_count=1)
+    reference-to-video (до 6 фото), НЕ image-to-video (строго 1) — тот же
+    класс бага/фикса, что у Seedance (GEMINI_OMNI_MODEL уже указывает на
+    reference-to-video). Сигнатура совпадает с
+    start_seedance_task/start_seedance_task_evolink, чтобы run_seedance мог
+    вызывать её как drop-in для model_code=gemini_omni."""
+    combined_image_urls = _resolve_evolink_image_urls(image_url, image_urls, GEMINI_OMNI_MAX_IMAGES)
     if not combined_image_urls:
-        raise Exception("Gemini Omni: нужно фото (image-to-video)")
+        raise Exception("Gemini Omni: нужно хотя бы одно фото (reference-to-video)")
 
     duration_val = normalize_seedance_duration(
         int(duration if duration is not None else GEMINI_OMNI_DURATION), "gemini_omni",

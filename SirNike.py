@@ -166,6 +166,7 @@ from video_providers import (
     extract_task_reference_count,
     EVOLINK_SEEDANCE_MODEL_MAP,
     EVOLINK_SEEDANCE_MAX_IMAGES,
+    GEMINI_OMNI_MAX_IMAGES,
     build_evolink_url,
     poll_evolink_task,
     start_seedance_task_evolink,
@@ -1108,6 +1109,10 @@ def classify_generation_error(error: object) -> str:
     if any(k in text for k in (
         "insufficient_funds", "insufficient funds", "no_balance", "no balance",
         "недостаточно средств", "закончился баланс", "out of credits", "quota",
+        # YesAPI: внутренняя валюта RPOINTS (NOT_ENOUGH_RPOINTS) — раньше
+        # улетала в unknown и портила статистику ошибок (тот же класс
+        # инцидента, из-за которого появился log_provider_config).
+        "rpoints",
     )):
         return "no_balance"
     if any(k in text for k in (
@@ -3706,6 +3711,11 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
         state.video_prompt = prompt
         state.video_session_active = True
         state.waiting_for_video_image = True
+        # Правило AGENT_NOTES [2026-07-16]: любая прямая запись промта без
+        # резолва item обязана сбрасывать style_extract — иначе следующая
+        # ФОТО-генерация требует ровно 2 фото под чужой двух-референсный стиль.
+        # Image-ветка ниже это делает, видео-ветка была неучтённым путём.
+        state.style_extract = False
     else:
         deactivate_video_session(state)
         state.prompt = prompt
@@ -3805,19 +3815,29 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
     # Раньше в этом случае title откатывался к литералу «шаблон» (находка
     # «Шаблон «шаблон»» из аудитов 07-02/07-07/07-31).
     if item is None and prompt:
-        for cat_i, category in enumerate(PROMPT_LIBRARY):
-            for item_i, cand in enumerate(category.get("items") or []):
-                cand_prompt = str(cand.get("prompt") or "").strip()
-                if not cand_prompt:
-                    continue
-                _prefix_len = min(len(cand_prompt), len(prompt), 80)
-                if _prefix_len > 0 and cand_prompt[:_prefix_len] == prompt[:_prefix_len]:
-                    item = cand
-                    resolved_cat_idx = cat_i
-                    resolved_item_idx = item_i
-                    break
-            if item is not None:
-                break
+        # Два прохода: сначала сравнение по ВСЕЙ доступной длине промта
+        # (обрезанный payload — всё равно точный префикс полного промта),
+        # и только если не нашли — старый 80-символьный кэп как страховка
+        # от артефактов loose-парсера. Причина: в реальном prompt_library.json
+        # есть пары стилей с одинаковыми первыми 80 символами, но разным
+        # upload_hint — кэп в 80 отдавал юзеру подсказку и статистику ЧУЖОГО
+        # (соседнего) стиля (баг-ресерч 2026-08-02).
+        def _scan_library_by_prompt(prefix_cap):
+            for cat_i, category in enumerate(PROMPT_LIBRARY):
+                for item_i, cand in enumerate(category.get("items") or []):
+                    cand_prompt = str(cand.get("prompt") or "").strip()
+                    if not cand_prompt:
+                        continue
+                    _plen = min(len(cand_prompt), len(prompt))
+                    if prefix_cap:
+                        _plen = min(_plen, prefix_cap)
+                    if _plen > 0 and cand_prompt[:_plen] == prompt[:_plen]:
+                        return cand, cat_i, item_i
+            return None, None, None
+
+        item, resolved_cat_idx, resolved_item_idx = _scan_library_by_prompt(None)
+        if item is None:
+            item, resolved_cat_idx, resolved_item_idx = _scan_library_by_prompt(80)
 
     if item is not None:
         resolved_title = str(item.get("title") or "").strip()
@@ -5524,6 +5544,11 @@ async def _cb_show_avatar(update, context, query, user):
 
 async def _cb_video_open(update, context, query, user):
     state = get_or_init_state(context)
+    # Симметрия с аватарным входом (тот зовёт deactivate_video_session):
+    # вход в видео-флоу гасит незавершённый аватарный — иначе handle_photo
+    # проверяет generating_avatar ПЕРВЫМ и все фото молча уходят в
+    # avatar_photos вместо видео-референсов (баг-ресерч 2026-08-02).
+    state.generating_avatar = False
     state.video_session_active = True
     state.waiting_for_video_prompt = False
     state.waiting_for_video_image = True
@@ -5552,6 +5577,7 @@ async def _cb_video_open(update, context, query, user):
 
 async def _cb_video_set_prompt(update, context, query, user):
     state = get_or_init_state(context)
+    state.generating_avatar = False  # см. комментарий в _cb_video_open
     state.video_session_active = True
     state.waiting_for_video_prompt = True
     await query.message.reply_text("Напиши описание для видео одним сообщением.")
@@ -5560,6 +5586,7 @@ async def _cb_video_set_prompt(update, context, query, user):
 
 async def _cb_video_set_image(update, context, query, user):
     state = get_or_init_state(context)
+    state.generating_avatar = False  # см. комментарий в _cb_video_open
     state.video_session_active = True
     state.waiting_for_video_image = True
     await query.message.reply_text(
@@ -5760,9 +5787,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         title = _showcase_item_label(item)
+        _shc_kind = _showcase_item_kind(item)
+        # Витрина /start — первый экран каждого нового юзера, но её клики
+        # не попадали в template_usage_events вообще: топ-стили и статистика
+        # систематически недооценивали самый массовый вход (баг-ресерч 2026-08-02).
+        _log_template_usage_safe(user.id, title, _shc_kind, cat_idx=cat_idx, item_idx=item_idx)
         state = get_or_init_state(context)
         state.image_prompt = str(item.get("image_prompt") or "").strip()
-        if _showcase_item_kind(item) == "video":
+        if _shc_kind == "video":
             state.video_prompt = prompt
             state.video_session_active = True
             state.waiting_for_video_image = True
@@ -8130,6 +8162,16 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=video_kb(state),
             )
             return
+
+        # У Gemini Omni лимит провайдера ниже общего лимита загрузки (9):
+        # _resolve_evolink_image_urls молча обрежет до GEMINI_OMNI_MAX_IMAGES —
+        # честно предупреждаем, какие фото реально пойдут в работу
+        # (баг-ресерч 2026-08-02: раньше только warning в лог).
+        if is_gemini_omni and len(video_images) > GEMINI_OMNI_MAX_IMAGES:
+            await reply_target.reply_text(
+                f"Gemini Omni принимает максимум {GEMINI_OMNI_MAX_IMAGES} фото — "
+                f"возьму первые {GEMINI_OMNI_MAX_IMAGES} из {len(video_images)} загруженных."
+            )
 
         # Check balance BEFORE heavy image processing
         bal = get_balance(user.id)

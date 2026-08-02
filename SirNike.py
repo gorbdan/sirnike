@@ -3933,7 +3933,11 @@ def parse_webapp_payload_loose(raw_data: str) -> Optional[dict]:
     item_idx_match = re.search(r'"(?:item_idx|ii)"\s*:\s*(\d+)', text, flags=re.IGNORECASE)
 
     action = action_match.group(1).strip().lower() if action_match else "set_prompt"
-    title = title_match.group(1) if title_match else "шаблон"
+    # НЕ подставлять литерал «шаблон»: truthy-заглушка блокирует фолбэк-резолв
+    # честного лейбла через _showcase_item_label (гейт `if not raw_title:` в
+    # apply_webapp_prompt_payload_v2) — та же регрессия «Стиль „шаблон"» из
+    # аудитов 07-02/07-07/07-31, но через код-путь обрезанных payload.
+    title = title_match.group(1) if title_match else ""
     prompt_raw = prompt_match.group(1) if prompt_match else ""
 
     if prompt_raw:
@@ -3948,7 +3952,7 @@ def parse_webapp_payload_loose(raw_data: str) -> Optional[dict]:
 
     payload = {
         "action": action or "set_prompt",
-        "title": title or "шаблон",
+        "title": title,
         "prompt": prompt_raw.strip(),
     }
     if cat_idx_match:

@@ -1160,12 +1160,16 @@ def classify_generation_error(error: object) -> str:
         return "no_balance"
     if any(k in text for k in (
         "download", "скачать изображение", "скачать видео", "не удалось скачать", "result_url пуст",
-        "url missing", "url пустой",
+        "url missing", "url пустой", "image_processing_error", "image_dimension_mismatch",
     )):
         return "download_error"
     if any(k in text for k in (
         "api", "provider", "server", "сервер", "генерац", "status", "5xx",
         "500", "502", "503", "504", "bad gateway", "service unavailable",
+        # EvoLink-специфичные коды (docs/en/api-manual/task-management/error-codes) —
+        # с подчёркиванием, не пробелом, поэтому "service unavailable" их не ловит.
+        "service_unavailable", "service_error", "resource_exhausted",
+        "generation_failed_no_content", "resource_not_found",
     )):
         return "provider_error"
     return "unknown"
@@ -8507,7 +8511,13 @@ def extract_task_reference_count(task_like: dict) -> int:
     return _count(source.get("image_url"))
 
 
-def build_seedance_prompt_with_refs(prompt_text: str, refs_count: int) -> str:
+def build_seedance_prompt_with_refs(prompt_text: str, refs_count: int, tag_format: str = "bracket") -> str:
+    """tag_format различается по провайдеру: Zveno понимает [Image1]/[Image2]
+    (везде в этом файле), EvoLink требует @image1/@image2 в нижнем регистре
+    (доки EvoLink, video-series/seedance2.0/*-reference-to-video: "Tag numbers
+    follow the order of the corresponding URL array... the first image_urls
+    item is @image1"). Разный формат — разные плейсхолдеры, иначе автотекст
+    привязки ссылается на теги, которых модель не узнаёт."""
     text = (prompt_text or "").strip()
     if not text:
         text = "Cinematic video with coherent action and stable character identity."
@@ -8515,12 +8525,12 @@ def build_seedance_prompt_with_refs(prompt_text: str, refs_count: int) -> str:
     if refs_count <= 0:
         return text
 
-    has_any_placeholder = any(f"[Image{i}]" in text for i in range(1, refs_count + 1))
-    placeholders = ", ".join([f"[Image{i}]" for i in range(1, refs_count + 1)])
+    tag = (lambda i: f"[Image{i}]") if tag_format == "bracket" else (lambda i: f"@image{i}")
+    placeholders = ", ".join([tag(i) for i in range(1, refs_count + 1)])
 
     if refs_count == 1:
         binding = (
-            "Use [Image1] as the main character identity reference. "
+            f"Use {tag(1)} as the main character identity reference. "
             "Preserve face, body, hair, clothes, and style."
         )
     else:
@@ -8531,9 +8541,6 @@ def build_seedance_prompt_with_refs(prompt_text: str, refs_count: int) -> str:
             "If they show different people, treat them as separate characters. "
             "Preserve each character's face, body, hair, clothes, and style."
         )
-
-    if has_any_placeholder:
-        return f"{binding}\n{text}"
 
     return f"{binding}\n{text}"
 
@@ -8573,10 +8580,21 @@ def is_seedance_privacy_moderation_error(error_text: str) -> bool:
 
 # Слаги моделей Seedance 2.0/2.0-fast на стороне EvoLink (отличаются от Zveno-
 # слагов bytedance/seedance-2.0[-fast] — см. docs/specs/2026-07-31_evolink_video_provider.md).
+# *-reference-to-video, НЕ *-image-to-video: у EvoLink (в отличие от Zveno,
+# где один эндпоинт ест что угодно) это два разных API — image-to-video
+# принимает строго 2 фото (первый+последний кадр), а reference-to-video —
+# мультиреференс до 9 фото, ровно то, что нужно боту (multi-character
+# промты вида «[Image1] — персонаж А, [Image2] — персонаж Б, ...»). Живой
+# прод 2026-08-02: юзер загрузил 4 фото на image-to-video, EvoLink ответил
+# 400 invalid_parameter ("only supports 2 image(s)... first and last frame
+# images only") — переключение модели, а не обрезка списка, полный фикс.
 EVOLINK_SEEDANCE_MODEL_MAP = {
-    "seedance2": "seedance-2.0-image-to-video",
-    "seedance2_fast": "seedance-2.0-fast-image-to-video",
+    "seedance2": "seedance-2.0-reference-to-video",
+    "seedance2_fast": "seedance-2.0-fast-reference-to-video",
 }
+# Доки EvoLink (seedance2.0/*-reference-to-video): "0–9 images" — тот же
+# потолок, что у Zveno-Seedance (MAX_SEEDANCE_IMAGE_REFERENCES).
+EVOLINK_SEEDANCE_MAX_IMAGES = 9
 
 
 def build_evolink_url(path: str) -> str:
@@ -8602,6 +8620,11 @@ def _resolve_evolink_image_urls(
         candidate = image_url.strip()
         if candidate and candidate not in combined:
             combined.append(candidate)
+    if len(combined) > max_count:
+        logger.warning(
+            "EvoLink: обрезано %s фото-референсов до лимита модели %s",
+            len(combined) - max_count, max_count,
+        )
     combined = combined[:max_count]
     resolved: List[str] = []
     for u in combined:
@@ -8747,7 +8770,8 @@ async def start_seedance_task_evolink(
     model_code: Optional[str] = None,
     aspect_ratio: str = "16:9",
 ) -> str:
-    """EvoLink-клиент для Seedance 2.0/2.0-fast (image-to-video).
+    """EvoLink-клиент для Seedance 2.0/2.0-fast (reference-to-video —
+    мультиреференс до 9 фото, не image-to-video с потолком в 2).
 
     Тот же контракт возврата, что и start_seedance_task (строка task_id,
     здесь — с префиксом __EVOLINK__:, который poll_seedance_task умеет
@@ -8757,9 +8781,9 @@ async def start_seedance_task_evolink(
     resolved_model_code = model_code if model_code in EVOLINK_SEEDANCE_MODEL_MAP else "seedance2"
     model_value = EVOLINK_SEEDANCE_MODEL_MAP[resolved_model_code]
 
-    combined_image_urls = _resolve_evolink_image_urls(image_url, image_urls, MAX_SEEDANCE_IMAGE_REFERENCES)
+    combined_image_urls = _resolve_evolink_image_urls(image_url, image_urls, EVOLINK_SEEDANCE_MAX_IMAGES)
     if not combined_image_urls:
-        raise Exception("EvoLink Seedance: нет ни одного фото-референса (image-to-video требует минимум 1 фото)")
+        raise Exception("EvoLink Seedance: нет ни одного фото-референса (reference-to-video требует минимум 1 фото)")
 
     duration_val = normalize_seedance_duration(
         int(duration if duration is not None else SEEDANCE_DURATION), resolved_model_code,
@@ -8771,7 +8795,10 @@ async def start_seedance_task_evolink(
         logger.warning("EvoLink seedance2_fast: 1080p не поддержан, фолбэк на 720p")
         quality = "720p"
 
-    prompt_text = build_seedance_prompt_with_refs((prompt or "").strip(), len(combined_image_urls))
+    # EvoLink требует @image1/@image2 (нижний регистр), не [Image1] — доки
+    # video-series/seedance2.0/*-reference-to-video, см. комментарий у
+    # build_seedance_prompt_with_refs.
+    prompt_text = build_seedance_prompt_with_refs((prompt or "").strip(), len(combined_image_urls), tag_format="at")
 
     payload = {
         "model": model_value,
@@ -10222,6 +10249,78 @@ async def send_generation_result_by_url(
 # ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ (ВОРКЕР): MashaGPT, Zveno, Nano
 # ══════════════════════════════════════════════════════════════
 
+async def _handle_generation_failure(
+    app: Application,
+    *,
+    chat_id: int,
+    user_id: int,
+    job: "GenerationJob",
+    error: BaseException,
+    provider_label: str,
+    references: List[str],
+    refunded: bool,
+    generation_succeeded: bool = False,
+    use_moderation_message: bool = False,
+) -> bool:
+    """Единая точка отказа фото-генерации: возврат изюминок, сообщение юзеру,
+    log_generation_event. Была продублирована почти дословно в ZVENO/MASHAGPT/
+    YESAPI-ветках generate_image_by_job — правка в одном месте (как сегодняшний
+    фикс формулировки insufficient_quota) требовала находить и чинить N копий.
+    use_moderation_message сохраняет старое поведение 1:1 (только ZVENO её
+    показывал) — унификация текста для остальных провайдеров осознанно НЕ
+    сделана в этом рефакторинге, отдельная задача.
+    Возвращает актуальный refunded — вызывающий код обязан переприсвоить его."""
+    last_error_text = str(error) or repr(error)
+    logger.error(f"Generation debug | provider={provider_label} | user_id={user_id} | error={last_error_text}")
+
+    # generation_succeeded=True значит успех уже случился (файл мог уйти
+    # юзеру) до того, как что-то упало ПОСЛЕ этого — рефанд в таком случае
+    # был бы ошибочным двойным начислением.
+    if not generation_succeeded:
+        if getattr(job, "cost", 0) > 0 and not refunded:
+            add_izyminki(job.user_id, job.cost)
+            refunded = True
+        if getattr(job, "was_free", False) and not refunded:
+            restore_free_generation(job.user_id)
+            refunded = True
+
+    error_type = classify_generation_error(error)
+    if use_moderation_message and error_type == "moderation":
+        # Раньше юзер видел только общее "что-то пошло не так" — не понимал,
+        # что дело в фото/промте, и просто жал "Повторить" на той же
+        # комбинации (бессмысленно, отказ повторится). Явно называем причину.
+        failure_text = (
+            "Модель отклонила запрос фильтром безопасности 🚫\n"
+            "Попробуй другое фото и/или измени описание." + (
+                "\n\n✅ Изюминки не списаны (или возвращены) — баланс не пострадал."
+                if refunded else ""
+            )
+        )
+    else:
+        failure_text = generation_failure_user_text(refunded)
+    try:
+        await app.bot.send_message(chat_id=chat_id, text=failure_text, reply_markup=result_actions_kb())
+    except Exception:
+        logger.warning("Failed to send %s failure message to user %s", provider_label, user_id)
+    log_generation_event(
+        user_id=user_id,
+        kind="image",
+        status="failed",
+        provider=provider_label,
+        cost=getattr(job, "cost", 0),
+        was_free=getattr(job, "was_free", False),
+        references_count=len(references or []),
+        model=getattr(job, "image_model", None),
+        aspect_ratio=getattr(job, "aspect_ratio", None),
+        charged_izyminki=getattr(job, "cost", 0),
+        refunded_izyminki=getattr(job, "cost", 0) if refunded else 0,
+        error_type=error_type,
+        error_message=last_error_text,
+        is_admin_test=1 if user_id in ADMIN_IDS else 0,
+    )
+    return refunded
+
+
 async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
     chat_id = job.chat_id
     user_id = job.user_id
@@ -10696,56 +10795,11 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                     app.create_task(_send_img_to_channel())
             return
         except Exception as e:
-            last_error_text = str(e) or repr(e)
             logger.exception("Zveno generation failed")
-            logger.error(f"Generation debug | provider=ZVENO | user_id={user_id} | error={last_error_text}")
-
-            if not generation_succeeded:
-                if getattr(job, "cost", 0) > 0 and not refunded:
-                    add_izyminki(job.user_id, job.cost)
-                    refunded = True
-                if getattr(job, "was_free", False) and not refunded:
-                    restore_free_generation(job.user_id)
-                    refunded = True
-
-            error_type = classify_generation_error(e)
-            if error_type == "moderation":
-                # Раньше юзер видел только общее "что-то пошло не так" — не
-                # понимал, что дело в фото/промте, и просто жал "Повторить" на
-                # той же комбинации (бессмысленно, отказ повторится). Явно
-                # называем причину, чтобы было ясно, что менять.
-                failure_text = (
-                    "Модель отклонила запрос фильтром безопасности 🚫\n"
-                    "Попробуй другое фото и/или измени описание." + (
-                        "\n\n✅ Изюминки не списаны (или возвращены) — баланс не пострадал."
-                        if refunded else ""
-                    )
-                )
-            else:
-                failure_text = generation_failure_user_text(refunded)
-            try:
-                await app.bot.send_message(
-                    chat_id=chat_id,
-                    text=failure_text,
-                    reply_markup=result_actions_kb(),
-                )
-            except Exception:
-                logger.warning("Failed to send ZVENO failure message to user %s", user_id)
-            log_generation_event(
-                user_id=user_id,
-                kind="image",
-                status="failed",
-                provider="ZVENO",
-                cost=getattr(job, "cost", 0),
-                was_free=getattr(job, "was_free", False),
-                references_count=len(references or []),
-                model=getattr(job, "image_model", None),
-                aspect_ratio=getattr(job, "aspect_ratio", None),
-                charged_izyminki=getattr(job, "cost", 0),
-                refunded_izyminki=getattr(job, "cost", 0) if refunded else 0,
-                error_type=error_type,
-                error_message=last_error_text,
-                is_admin_test=1 if user_id in ADMIN_IDS else 0,
+            refunded = await _handle_generation_failure(
+                app, chat_id=chat_id, user_id=user_id, job=job, error=e,
+                provider_label="ZVENO", references=references, refunded=refunded,
+                generation_succeeded=generation_succeeded, use_moderation_message=True,
             )
             return
 
@@ -10992,41 +11046,11 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
 
 
         except Exception as e:
-            last_error_text = str(e) or repr(e)
             logger.exception("MashaGPT generation failed")
-            logger.error(f"Generation debug | provider=MASHAGPT | user_id={user_id} | error={last_error_text}")
-
-            if not generation_succeeded:
-                if getattr(job, "cost", 0) > 0 and not refunded:
-                    add_izyminki(job.user_id, job.cost)
-                    refunded = True
-                if getattr(job, "was_free", False) and not refunded:
-                    restore_free_generation(job.user_id)
-                    refunded = True
-
-            try:
-                await app.bot.send_message(
-                    chat_id=chat_id,
-                    text=generation_failure_user_text(refunded),
-                    reply_markup=result_actions_kb(),
-                )
-            except Exception:
-                logger.warning("Failed to send MASHAGPT failure message to user %s", user_id)
-            log_generation_event(
-                user_id=user_id,
-                kind="image",
-                status="failed",
-                provider="MASHAGPT",
-                cost=getattr(job, "cost", 0),
-                was_free=getattr(job, "was_free", False),
-                references_count=len(references or []),
-                model=getattr(job, "image_model", None),
-                aspect_ratio=getattr(job, "aspect_ratio", None),
-                charged_izyminki=getattr(job, "cost", 0),
-                refunded_izyminki=getattr(job, "cost", 0) if refunded else 0,
-                error_type=classify_generation_error(e),
-                error_message=last_error_text,
-                is_admin_test=1 if user_id in ADMIN_IDS else 0,
+            refunded = await _handle_generation_failure(
+                app, chat_id=chat_id, user_id=user_id, job=job, error=e,
+                provider_label="MASHAGPT", references=references, refunded=refunded,
+                generation_succeeded=generation_succeeded,
             )
             return
 
@@ -11213,37 +11237,14 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
 
             break
 
-    # Если дошли сюда — обе попытки не удались
+    # Если дошли сюда — обе попытки не удались. Вся хвостовая логика (не
+    # только отправка сообщения) намеренно в try/except — у YesAPI-ветки
+    # это единственная защита от падения на log_generation_event и т.п.
     try:
-        if getattr(job, "cost", 0) > 0 and not refunded:
-            add_izyminki(job.user_id, job.cost)
-            refunded = True
-        if getattr(job, "was_free", False) and not refunded:
-            restore_free_generation(job.user_id)
-            refunded = True
-
-        logger.error(f"Generation debug | provider=YESAPI | user_id={user_id} | error={last_error_text}")
-
-        await app.bot.send_message(
-            chat_id=chat_id,
-            text=generation_failure_user_text(refunded),
-            reply_markup=result_actions_kb(),
-        )
-        log_generation_event(
-            user_id=user_id,
-            kind="image",
-            status="failed",
-            provider="YESAPI",
-            cost=getattr(job, "cost", 0),
-            was_free=getattr(job, "was_free", False),
-            references_count=len(references or []),
-            model=getattr(job, "image_model", None),
-            aspect_ratio=getattr(job, "aspect_ratio", None),
-            charged_izyminki=getattr(job, "cost", 0),
-            refunded_izyminki=getattr(job, "cost", 0) if refunded else 0,
-            error_type=classify_generation_error(last_error_text),
-            error_message=last_error_text,
-            is_admin_test=1 if user_id in ADMIN_IDS else 0,
+        refunded = await _handle_generation_failure(
+            app, chat_id=chat_id, user_id=user_id, job=job,
+            error=Exception(last_error_text), provider_label="YESAPI",
+            references=references, refunded=refunded,
         )
     except Exception:
         logger.exception("Failed to send final generation error message")

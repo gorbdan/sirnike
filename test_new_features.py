@@ -425,6 +425,45 @@ check("6.5 при полном отказе картинка НЕ отправл
 check("6.6 изюминки возвращены", refunds == [(42, 5)], str(refunds))
 check("6.7 пользователю отправлено сообщение об ошибке", app2.bot.send_message.await_count >= 1)
 
+# 6.7b-d: MASHAGPT и YESAPI ветки generate_image_by_job — после рефакторинга
+# на общий _handle_generation_failure (дедуп ZVENO/MASHAGPT/YESAPI, 2026-08-01)
+# рефанд+сообщение+лог должны работать так же, как раньше по отдельности.
+_orig_ai_provider_b6 = S.AI_PROVIDER
+_orig_mashagpt_key = S.MASHAGPT_API_KEY
+
+# MASHAGPT: пустой ключ -> мгновенный Exception -> хвост отказа
+refunds.clear()
+S.AI_PROVIDER = "MASHAGPT"
+S.MASHAGPT_API_KEY = ""
+app_mg = types.SimpleNamespace(bot=AsyncMock(), create_task=lambda c: None)
+job_mg = S.GenerationJob(chat_id=1, user_id=43, prompt="тест", references=[], cost=7, image_model="gemini")
+asyncio.run(S.generate_image_by_job(app_mg, job_mg))
+check("6.7b MASHAGPT: изюминки возвращены при пустом ключе", refunds == [(43, 7)], str(refunds))
+check("6.7c MASHAGPT: юзеру отправлено сообщение об ошибке", app_mg.bot.send_message.await_count >= 1)
+S.MASHAGPT_API_KEY = _orig_mashagpt_key
+
+# YESAPI: провайдер по умолчанию (не ZVENO/MASHAGPT) -> HTTP 500 -> хвост отказа
+refunds.clear()
+S.AI_PROVIDER = "YESAPI"
+
+
+class FakeYesapiFailSession(FakeSession):
+    def post(self, url, headers=None, json=None, timeout=None, **kw):
+        return FakeResp(status=500, body={"success": False, "message": "internal error"})
+
+
+S.aiohttp.ClientSession = FakeYesapiFailSession
+_orig_sleep_b6 = S.asyncio.sleep
+S.asyncio.sleep = AsyncMock(return_value=None)  # пропускаем реальные 5с между попытками
+app_ya = types.SimpleNamespace(bot=AsyncMock(), create_task=lambda c: None)
+job_ya = S.GenerationJob(chat_id=1, user_id=44, prompt="тест", references=[], cost=9, image_model="gemini")
+asyncio.run(S.generate_image_by_job(app_ya, job_ya))
+S.asyncio.sleep = _orig_sleep_b6
+check("6.7d YESAPI: изюминки возвращены после 2 неудачных попыток", refunds == [(44, 9)], str(refunds))
+check("6.7e YESAPI: юзеру отправлено сообщение об ошибке", app_ya.bot.send_message.await_count >= 1)
+
+S.AI_PROVIDER = _orig_ai_provider_b6
+
 # 6.8: gpt5 в job -> первая модель gpt-5-image
 class FakeOkSession(FakeSession):
     def post(self, url, headers=None, json=None, timeout=None, **kw):
@@ -1583,7 +1622,7 @@ task_ref = asyncio.run(S.start_seedance_task_evolink(
 check("15.1 start_seedance_task_evolink возвращает __EVOLINK__: префикс",
       task_ref.startswith("__EVOLINK__:"), task_ref)
 p15_1 = evo_calls[0]["payload"]
-check("15.2 payload.model = seedance-2.0-image-to-video", p15_1.get("model") == "seedance-2.0-image-to-video", str(p15_1))
+check("15.2 payload.model = seedance-2.0-reference-to-video", p15_1.get("model") == "seedance-2.0-reference-to-video", str(p15_1))
 check("15.3 payload.image_urls содержит фото", p15_1.get("image_urls") == ["https://example.com/ref.jpg"], str(p15_1))
 check("15.4 payload.duration = 5", p15_1.get("duration") == 5)
 check("15.5 payload.aspect_ratio = 9:16", p15_1.get("aspect_ratio") == "9:16")
@@ -1598,8 +1637,8 @@ asyncio.run(S.start_seedance_task_evolink(
     duration=5, mode="1080p", model_code="seedance2_fast", aspect_ratio="16:9",
 ))
 p15_9 = evo_calls[0]["payload"]
-check("15.9 seedance2_fast: модель seedance-2.0-fast-image-to-video",
-      p15_9.get("model") == "seedance-2.0-fast-image-to-video", str(p15_9))
+check("15.9 seedance2_fast: модель seedance-2.0-fast-reference-to-video",
+      p15_9.get("model") == "seedance-2.0-fast-reference-to-video", str(p15_9))
 check("15.10 seedance2_fast: 1080p сфолбэчен на 720p", p15_9.get("quality") == "720p", str(p15_9.get("quality")))
 
 # 15.11 без фото — понятная ошибка, не молчаливый провал
@@ -1608,6 +1647,33 @@ try:
     check("15.11 start_seedance_task_evolink без фото падает", False)
 except Exception as e:
     check("15.11 start_seedance_task_evolink без фото падает", "фото" in str(e).lower())
+
+# 15.11b живой прод-баг 2026-08-02: изначальный фикс (обрезка до 2 фото)
+# был неполным — EvoLink *-image-to-video действительно берёт только
+# первый+последний кадр, НО у EvoLink есть отдельная *-reference-to-video
+# модель с мультиреференсом до 9 фото (ровно как у Zveno-Seedance) — её и
+# нужно было использовать вместо обрезки списка. 4 фото должны дойти ВСЕ.
+evo_calls.clear()
+asyncio.run(S.start_seedance_task_evolink(
+    prompt="тест", image_url=None, user_id=1, model_code="seedance2",
+    image_urls=[f"https://example.com/ref{i}.jpg" for i in range(4)],
+))
+p15_11b = evo_calls[0]["payload"]
+check("15.11b EvoLink Seedance: reference-to-video принимает все 4 фото (не обрезано)",
+      p15_11b.get("image_urls") == [f"https://example.com/ref{i}.jpg" for i in range(4)],
+      str(p15_11b.get("image_urls")))
+check("15.11c EVOLINK_SEEDANCE_MAX_IMAGES = 9 (как у Zveno, а не 2)", S.EVOLINK_SEEDANCE_MAX_IMAGES == 9)
+check("15.11d автопривязка референсов для EvoLink использует @imageN, не [ImageN]",
+      "@image1" in p15_11b.get("prompt", "") and "[Image1]" not in p15_11b.get("prompt", ""),
+      p15_11b.get("prompt"))
+
+# 15.11e build_seedance_prompt_with_refs: Zveno-путь (start_seedance_task)
+# по-прежнему шлёт [ImageN] — tag_format="bracket" не должен был затронуть
+# существующий провайдер.
+check("15.11e build_seedance_prompt_with_refs дефолт = bracket ([ImageN])",
+      "[Image1]" in S.build_seedance_prompt_with_refs("x", 1) and "@image1" not in S.build_seedance_prompt_with_refs("x", 1))
+check("15.11f build_seedance_prompt_with_refs tag_format=at -> @imageN",
+      "@image1" in S.build_seedance_prompt_with_refs("x", 1, tag_format="at"))
 
 # 15.12 poll_seedance_task делегирует __EVOLINK__: в poll_evolink_task -> completed -> results[0]
 _evo_poll_queue.clear()
@@ -1630,6 +1696,22 @@ except Exception as e:
     check("15.14 poll: failed кидает исключение", True)
     check("15.15 classify_generation_error -> moderation (content_policy_violation)",
           S.classify_generation_error(e) == "moderation", str(e))
+
+# 15.15b classify_generation_error знает EvoLink-специфичные коды (docs/en/
+# api-manual/task-management/error-codes) — с подчёркиванием, а не пробелом,
+# старые keyword'ы ("service unavailable") их не ловили.
+for _code, _bucket in (
+    ("service_unavailable", "provider_error"),
+    ("service_error", "provider_error"),
+    ("resource_exhausted", "provider_error"),
+    ("generation_failed_no_content", "provider_error"),
+    ("resource_not_found", "provider_error"),
+    ("image_processing_error", "download_error"),
+    ("image_dimension_mismatch", "download_error"),
+    ("quota_exceeded", "no_balance"),
+):
+    got = S.classify_generation_error(Exception(_code))
+    check(f"15.15c classify_generation_error({_code}) -> {_bucket}", got == _bucket, f"got={got}")
 
 # 15.16 Gemini Omni: payload — одно фото, model=gemini-omni-flash-image-to-video, duration клампится 3-10
 evo_calls.clear()

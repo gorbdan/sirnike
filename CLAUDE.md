@@ -23,7 +23,8 @@ Python-монолит: [SirNike.py](SirNike.py) (~8000 строк, python-telegr
   (Pillow 12, PTB 22.7 — без обходных версий). Пересоздать: `brew install python@3.11`
   → `/opt/homebrew/bin/python3.11 -m venv .venv` → `.venv/bin/pip install -r requirements.txt`.
   Полноценная прод-среда — Docker (локально Docker не установлен).
-- Тесты: `.venv/bin/python3 test_new_features.py` (без сети, мокает Telegram).
+- Тесты: `.venv/bin/pip install -r requirements-dev.txt` (разово) → `.venv/bin/python3 -m pytest tests/`
+  (без сети, мокает Telegram; 16 файлов `tests/test_block_*.py` = 16 регрессионных блоков, ~327 проверок).
 - Компиляция: `python3 -m py_compile SirNike.py`.
 
 ## Конвенции

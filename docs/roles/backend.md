@@ -13,7 +13,7 @@ SirNike.py, db.py, конфиг, Docker/BotHost-деплой, интеграци
 
 ## Рабочий цикл
 1. Берёшь верхнюю задачу из `docs/briefs/backend.md`.
-2. Ветка от main → фикс → тесты (`.venv/bin/python3 test_new_features.py`) → коммит.
+2. Ветка от main → фикс → тесты (`.venv/bin/python3 -m pytest tests/`) → коммит.
 3. Отмечаешь задачу в брифе выполненной, добавляешь строку в `docs/RELEASE_NOTES.md`
    (дата, суть по-человечески — это читает маркетолог для анонсов).
 4. Деплой на BotHost делает Аня («Update from Git») — напомни ей в конце.

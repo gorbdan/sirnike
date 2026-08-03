@@ -1104,7 +1104,16 @@ async def start_seedance_task(
             for u in combined_image_urls
         ]
 
-    prompt_text = build_seedance_prompt_with_refs((prompt or "").strip(), len(combined_image_urls))
+    # Kling 3.0 физически получает максимум 2 кадра (first+last), Veo 3.1 —
+    # только 1 (см. clean_frames ниже): промт со ссылками [Image3]..[ImageN]
+    # на картинки, которых нет в запросе, только путает модель — считаем
+    # теги по числу РЕАЛЬНО отправляемых кадров (баг-ресерч 2026-08-02).
+    _prompt_refs_count = len(combined_image_urls)
+    if model_code == "veo31":
+        _prompt_refs_count = min(_prompt_refs_count, 1)
+    elif model_code == "kling3":
+        _prompt_refs_count = min(_prompt_refs_count, 2)
+    prompt_text = build_seedance_prompt_with_refs((prompt or "").strip(), _prompt_refs_count)
     if len(combined_image_urls) > 1 and SEEDANCE_VIDEO_REFERENCE_MODE == "timeline":
         prompt_text = (
             "Use [Image1] as the START frame and [Image2] as the END frame. "

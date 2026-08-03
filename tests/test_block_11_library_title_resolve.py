@@ -50,6 +50,36 @@ def test_block_11b_empty_prompt_no_template_fallback():
     ), f"10b.4 юзер получает честный отказ, не тишину: {texts}"
 
 
+def test_block_11d_loose_parser_no_template_literal():
+    # Баг-ресерч 2026-08-02: parse_webapp_payload_loose подставлял литерал
+    # title="шаблон" для обрезанных payload без поля title (у фото-стилей
+    # title отсутствует НАМЕРЕННО) — truthy-заглушка блокировала фолбэк-резолв
+    # честного лейбла (гейт `if not raw_title:` в apply_webapp_prompt_payload_v2),
+    # воскрешая «Стиль „шаблон"» из аудитов 07-02/07-07/07-31 обходным путём.
+    _real_item = S.PROMPT_LIBRARY[0]["items"][0]
+    _real_prompt = _real_item["prompt"]
+    # Обрезанный посреди значения example_url (поля ПОСЛЕ prompt) JSON без
+    # title — типовой кейс лимита размера WebApp-payload, ради которого
+    # loose-парсер и существует (cut_markers режут по '","example_url"').
+    truncated = (
+        '{"action":"set_prompt","cat_idx":0,"item_idx":0,"prompt":"'
+        + _real_prompt[:120].replace('"', '\\"')
+        + '","example_url":"https://cdn.example/obr'
+    )
+    parsed = S.parse_webapp_payload_loose(truncated)
+    assert parsed is not None and parsed.get("prompt"), "11d.1 loose-парсер распарсил обрезок"
+    assert parsed.get("title") != "шаблон", (
+        f"11d.2 нет литерала-заглушки «шаблон» в title: {parsed.get('title')!r}"
+    )
+
+    update11d, context11d, msg11d = make_webapp_update_context()
+    asyncio.run(S.apply_webapp_prompt_payload_v2(update11d, context11d, parsed))
+    texts11d = [c.args[0] for c in msg11d.reply_text.await_args_list]
+    assert texts11d and not any("«шаблон»" in t for t in texts11d), (
+        f"11d.3 юзер видит настоящий лейбл стиля, не «шаблон»: {texts11d}"
+    )
+
+
 def test_block_11c_load_prompt_library_preserves_raw_order():
     # Живой прод-баг 2026-08-02: load_prompt_library() раньше пересортировывал
     # категории (видео вперёд), а вебапп считает cat_idx/item_idx по СЫРОМУ

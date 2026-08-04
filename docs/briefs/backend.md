@@ -4,6 +4,23 @@
 
 ## Очередь
 
+- [x] P0 · Живой прод-баг 2026-08-03: «🕺 Видео с движением» (Kling Motion
+      Control через EvoLink) падало 100% времени — `invalid_media_url:
+      image_urls[0] must be an absolute HTTP(S) URL`. Корень:
+      `state.motion_image_url` — сырой `__img_xxx__` in-memory-реф
+      (SirNike.py:3508/3553), `start_kling_motion_control_evolink`
+      (video_providers.py:973-998) — единственная EvoLink-стартер-функция,
+      которая передаёт `image_url` в payload БЕЗ резолва (у Seedance/Gemini
+      Omni есть `_resolve_evolink_image_urls`). Резолв в `data:`-URL тоже не
+      помог бы — судя по тексту ошибки EvoLink для Kling Motion Control
+      принимает только настоящий публичный HTTP(S) URL, не `data:`. Фикс:
+      в `run_kling_motion_control` перед списанием изюминок фото хостится
+      через уже существующий `_persist_image_ref()` (тот же хелпер, что
+      использует аватар — freeimage.host → catbox.moe → imgbb.com →
+      telegra.ph); при отказе хостинга — честный отказ без списания.
+      Тесты: `tests/test_block_19_kling_motion_image_hosting.py` (2 функции).
+      31/31 pytest, `py_compile` OK.
+
 - [x] P0/P1 · Баг-ресерч 2026-08-02 (5 параллельных ревизий по зонам: видео,
       биллинг/БД, состояние/коллбэки, вебапп-контракт, фото/студия; каждая
       находка перепроверена вручную по коду — из 26 заявок выжило 11).

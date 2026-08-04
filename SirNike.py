@@ -7745,6 +7745,20 @@ async def run_kling_motion_control(update: Update, context: ContextTypes.DEFAULT
             )
             return
 
+        # EvoLink Kling Motion Control требует настоящий публичный HTTP(S) URL
+        # для image_urls — data:/__img__ реф не принимает (в отличие от
+        # Seedance/Gemini Omni, которым data: URL достаточно). Живой прод-баг
+        # 2026-08-03: сырой __img__-реф улетал в EvoLink как есть и всегда
+        # отбивался invalid_media_url. Хостим ДО списания — как с фото аватара.
+        persistent_image_url = await _persist_image_ref(image_url)
+        if not persistent_image_url:
+            await reply_target.reply_text(
+                "Не удалось подготовить фото для генерации (хостинг временно "
+                "недоступен). Попробуй ещё раз через минуту — изюминки не списаны."
+            )
+            return
+        image_url = persistent_image_url
+
         cost = KLING_MOTION_COST
         bal = get_balance(user.id)
         if bal < cost:

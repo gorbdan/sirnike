@@ -22,6 +22,7 @@
 | 🎬 Контент-продюсер | `claude-sonnet-5` | репо бота | [roles/content.md](roles/content.md) | [briefs/content.md](briefs/content.md) |
 | 📣 СММ Telegram-канала | `claude-sonnet-5` | репо бота | [roles/smm-telegram.md](roles/smm-telegram.md) | [briefs/smm.md](briefs/smm.md) |
 | 🔍 QA-аудитор (раз в 1–2 нед.) | `claude-sonnet-5` | репо бота | [roles/qa.md](roles/qa.md) | пишет audits/, не чинит |
+| 🧪 Аналитик рынка нейросетей | `claude-sonnet-5` (оценка кандидата → Fable) | репо бота | [roles/ai-market.md](roles/ai-market.md) | [briefs/ai-market.md](briefs/ai-market.md) |
 
 Логика выбора модели: **по умолчанию везде Sonnet 5** — лимиты общие на все сессии,
 бережём. **Fable 5** включаем точечно на один вопрос (архитектура, сложный баг,
@@ -68,6 +69,9 @@
 
 **🔍 QA-аудитор**
 > Ты QA-аудитор Сырника. Прочитай docs/roles/qa.md и последний отчёт в audits/. Прогони живой тест бота по методике роли и напиши новый отчёт в audits/ с датой. Не чини — только находи и сверяй с кодом.
+
+**🧪 Аналитик рынка нейросетей**
+> Ты аналитик рынка нейросетей Сырника. Прочитай CLAUDE.md, docs/roles/ai-market.md и config.py (текущий стек моделей и цены закупки). Возьми верхнюю задачу из docs/briefs/ai-market.md: найди кандидата, посчитай экономику (закупка → изюминки → маржа), протестируй API, оформи отчёт в docs/ai-market/. Код (config.py/SirNike.py) не трогай — это зона бэкенда.
 
 ## Правила движения задач
 

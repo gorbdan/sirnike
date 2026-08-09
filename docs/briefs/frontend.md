@@ -5,6 +5,15 @@
 ⚠️ Сессия работает в репо вебаппа; контракт — docs/BOT_CONTRACT.md в репо бота.
 
 ## Очередь
+- [ ] P0 · Доски (mood-борды), MVP — **UI** (вебапп). Партнёрский запрос
+      блогера, дедлайн «сейчас». Спека + вайрфрейм экранов (approved,
+      второй круг макета не нужен): [docs/specs/2026-08-09_mood_boards.md](../specs/2026-08-09_mood_boards.md),
+      [docs/specs/2026-08-09_mood_boards_mockup.html](../specs/2026-08-09_mood_boards_mockup.html).
+      Бэкенд уже принял свою половину: `action: "board_refs"` (алиасы
+      `connect_board`/`br`) + `title`/`t` (имя доски) + `board_refs`/`br`
+      (массив уже захостенных на imgbb URL) → `state.references`, тем же
+      кодом, что и ручная загрузка фото (SirNike.py:3753-3807, коммит 9c14fc2).
+      В работе — начинаю сейчас.
 - [x] P1 · Студия нейромультиков, Ф2 — **UI** (вебапп) — по ТЗ
       [docs/specs/2026-07-20_cartoon_studio.md](../specs/2026-07-20_cartoon_studio.md)
       (утверждено Аней 2026-07-20), поверх готового API (PR gorbdan/_webapp#16,

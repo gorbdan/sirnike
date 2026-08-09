@@ -3446,6 +3446,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(photo_draft_text(state, user.id), reply_markup=photo_draft_kb(state, user.id))
 
 
+def _append_reference_url(state: "UserState", direct_url: str) -> bool:
+    """Добавляет уже захостенный URL в state.references с тем же потолком,
+    что и ручная загрузка фото юзером (2 при активном style_extract, иначе
+    8 — максимум, реально используемый в одной генерации). Общий код для
+    handle_photo (фото из чата) и apply_webapp_board_refs_payload (фото из
+    доски мудборда, docs/specs/2026-08-09_mood_boards.md) — правь оба
+    вызывающих места, если меняешь потолок здесь. Возвращает True, если URL
+    реально добавлен (потолок не превышен)."""
+    _refs_cap = 2 if state.style_extract else 8
+    if len(state.references) < _refs_cap:
+        state.references.append(direct_url)
+        state.references_updated_at = time.time()
+        return True
+    return False
+
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     create_user_if_not_exists(user.id, user.username, START_BONUS)
@@ -3593,10 +3609,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # style_extract ждёт РОВНО 2 фото (своё лицо + референс стиля) — 3-е и
         # дальше игнорируем, а не добавляем в буфер, иначе пайплайн снова может
         # схватить не то фото (см. _set_style_extract, P0 2026-07-17).
-        _refs_cap = 2 if state.style_extract else 8
-        if len(state.references) < _refs_cap:  # cap to max used in generation
-            state.references.append(direct_url)
-            state.references_updated_at = time.time()
+        _append_reference_url(state, direct_url)  # cap to max used in generation
 
         # Фото и промт одним сообщением (caption) — та же логика, что и для
         # отдельного текстового сообщения: описание сохраняется сразу, не
@@ -3737,6 +3750,63 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
     return True
 
 
+async def apply_webapp_board_refs_payload(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
+    """MVP «Доска = коллекция референсов» (docs/specs/2026-08-09_mood_boards.md).
+
+    Вебапп хранит доски целиком на своей стороне (localStorage) — бот НЕ
+    хранит доски, только принимает уже захостенные на imgbb URL фото доски
+    (`board_refs`/`br`) и кладёт их в state.references ТЕМ ЖЕ кодом, что и
+    ручная загрузка фото (`_append_reference_url`). Никакого AI-анализа
+    стиля здесь нет — это Full-версия, отдельная будущая задача. Поле имени
+    доски — переиспользует уже существующее `title`/`t` (действие
+    "board_refs" делает семантику однозначной, конфликта с
+    set_prompt/set_video_prompt нет, там то же поле означает название стиля).
+    Намеренно НЕ трогает `note`/`n` — это другая сущность («свои пожелания»
+    юзера к стилю, docs/specs/2026-07-17_note_override_weak.md), доски её не
+    касаются вообще на MVP-этапе."""
+    board_name = str(payload.get("title") or payload.get("t") or "").strip() or "Без названия"
+    urls_raw = payload.get("board_refs")
+    if urls_raw is None:
+        urls_raw = payload.get("br")
+    if not isinstance(urls_raw, list):
+        urls_raw = []
+
+    state = get_or_init_state(context)
+    deactivate_video_session(state)
+    # Свежий старт персонализации через доску — не мешаем со случайно
+    # залежавшимся style_extract/references с прошлой, не связанной сессии
+    # (тот же принцип, что и _set_style_extract при резолве item, AGENT_NOTES
+    # 2026-07-16 «персистентный буфер references путал лицо»).
+    _set_style_extract(state, False)
+    state.references = []
+    state.references_updated_at = 0.0
+
+    added = 0
+    for raw_url in urls_raw:
+        url = str(raw_url or "").strip()
+        if not url:
+            continue
+        if _append_reference_url(state, url):
+            added += 1
+        else:
+            # Потолок (8) достигнут — остальные фото доски молча не идут в
+            # референс одной генерации (ожидаемо по спеке, не баг).
+            break
+
+    if update.effective_message and update.effective_user:
+        library_btn = InlineKeyboardButton(
+            MENU_BTN_LIBRARY,
+            web_app=WebAppInfo(url=get_prompt_webapp_url(update.effective_user.id)),
+        ) if PROMPT_WEBAPP_URL else InlineKeyboardButton(MENU_BTN_LIBRARY, callback_data="pl_open")
+        await update.effective_message.reply_text(
+            f"🖼️ Доска «{board_name}» подключена — фото из неё будут использоваться\n"
+            f"как референс (загружено {added}/8).\n"
+            "Теперь выбери стиль в библиотеке 👇",
+            reply_markup=InlineKeyboardMarkup([[library_btn]]),
+        )
+    return True
+
+
 async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
     if not isinstance(payload, dict):
         return False
@@ -3745,6 +3815,8 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
         action = "set_prompt"
     if action in {"apply_video_prompt", "use_video_prompt", "set_video_template", "apply_video_template"}:
         action = "set_video_prompt"
+    if action in {"board_refs", "connect_board", "br"}:
+        return await apply_webapp_board_refs_payload(update, context, payload)
     if action == "topup":
         if update.effective_message:
             user_id_for_kb = update.effective_user.id if update.effective_user else None

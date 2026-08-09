@@ -384,6 +384,11 @@ def try_use_free_generation(user_id: int, max_per_day: int) -> bool:
     """Atomically check and consume a free generation slot.
     Returns True if a slot was available and consumed, False otherwise.
     Use instead of get_free_info + use_free_generation to avoid TOCTOU race."""
+    # max_per_day <= 0 = халява выключена. Без этого гейта ветка «новый день»
+    # ниже выдаёт слот любому юзеру с free_used_date != today (у новичков NULL),
+    # не сверяясь с лимитом вообще — одна бесплатная генерация в день навсегда.
+    if max_per_day <= 0:
+        return False
     today = date.today().isoformat()
     with get_conn() as conn:
         # Case 1: date is today and count < max → increment

@@ -336,3 +336,253 @@ def test_block_20h_upscale_failure_refunds():
     )
     texts = [c.args[0] for c in query.message.reply_text.await_args_list]
     assert any("возвращены" in t for t in texts), f"20h.2 честное сообщение об ошибке: {texts}"
+
+
+def test_block_20i_falls_back_to_saved_avatar_when_no_reference():
+    # Живой прод-баг 2026-08-09 (фидбек Ани): без явного фото-референса
+    # аватар юзера не учитывался вообще — Midjourney генерировал "с нуля",
+    # не узнавая лицо. Фолбэк — тот же, что уже есть в run_generation.
+    state = S.UserState(mj_active=True, mj_prompt="a portrait", mj_reference=None)
+    update, context, query = make_update_context("mj_generate", user_id=211)
+    context.user_data["state"] = state
+    update.effective_chat = types.SimpleNamespace(id=211)
+    update.callback_query = query
+    query.message.reply_text = AsyncMock()
+
+    _orig = {}
+    for name in ("_persist_image_ref", "spend_izyminki", "get_balance", "get_avatar_urls",
+                 "get_active_avatar_kind", "start_midjourney_task_evolink", "poll_evolink_task"):
+        _orig[name] = getattr(S, name)
+
+    persist_calls = []
+
+    async def fake_persist(ref):
+        persist_calls.append(ref)
+        return "https://iili.io/avatar.jpg"
+
+    S._persist_image_ref = fake_persist
+    S.get_balance = lambda uid: 999
+    S.spend_izyminki = lambda uid, amount: True
+    S.get_avatar_urls = lambda uid: {"female": "__img_avatar_female__"}
+    S.get_active_avatar_kind = lambda uid: "female"
+
+    evolink_calls = []
+
+    async def fake_start(prompt, image_url, user_id):
+        evolink_calls.append((prompt, image_url))
+        return "__EVOLINK__:mj-task-avatar"
+
+    S.start_midjourney_task_evolink = fake_start
+    S.poll_evolink_task = AsyncMock(return_value=["https://cdn.example/g0.jpg", "https://cdn.example/g1.jpg"])
+
+    try:
+        asyncio.run(S.run_midjourney_grid(update, context))
+    finally:
+        for name, fn in _orig.items():
+            setattr(S, name, fn)
+        S.processing_user_ids.discard(211)
+
+    assert persist_calls == ["__img_avatar_female__"], (
+        f"20i.1 сохранённый аватар подставлен как референс и захостен: {persist_calls}"
+    )
+    assert evolink_calls == [("a portrait", "https://iili.io/avatar.jpg")], (
+        f"20i.2 EvoLink получил URL аватара: {evolink_calls}"
+    )
+
+
+def test_block_20j_no_reference_no_avatar_stays_text_only():
+    state = S.UserState(mj_active=True, mj_prompt="a red bicycle", mj_reference=None)
+    update, context, query = make_update_context("mj_generate", user_id=212)
+    context.user_data["state"] = state
+    update.effective_chat = types.SimpleNamespace(id=212)
+    update.callback_query = query
+    query.message.reply_text = AsyncMock()
+
+    _orig = {}
+    for name in ("_persist_image_ref", "spend_izyminki", "get_balance", "get_avatar_urls",
+                 "get_active_avatar_kind", "start_midjourney_task_evolink", "poll_evolink_task"):
+        _orig[name] = getattr(S, name)
+
+    persist_calls = []
+
+    async def fake_persist(ref):
+        persist_calls.append(ref)
+        return "https://iili.io/should-not-be-called.jpg"
+
+    S._persist_image_ref = fake_persist
+    S.get_balance = lambda uid: 999
+    S.spend_izyminki = lambda uid, amount: True
+    S.get_avatar_urls = lambda uid: {}
+    S.get_active_avatar_kind = lambda uid: None
+
+    evolink_calls = []
+
+    async def fake_start(prompt, image_url, user_id):
+        evolink_calls.append((prompt, image_url))
+        return "__EVOLINK__:mj-task-noavatar"
+
+    S.start_midjourney_task_evolink = fake_start
+    S.poll_evolink_task = AsyncMock(return_value=["https://cdn.example/g0.jpg"])
+
+    try:
+        asyncio.run(S.run_midjourney_grid(update, context))
+    finally:
+        for name, fn in _orig.items():
+            setattr(S, name, fn)
+        S.processing_user_ids.discard(212)
+
+    assert persist_calls == [], f"20j.1 нет аватара -> хостинг референса не вызывается вообще: {persist_calls}"
+    assert evolink_calls == [("a red bicycle", None)], (
+        f"20j.2 EvoLink получил чистый текст без image_url: {evolink_calls}"
+    )
+
+
+def test_block_20k_picker_retry_succeeds_second_attempt_no_refund():
+    state = S.UserState(mj_active=True, mj_prompt="a portrait", mj_reference=None)
+    update, context, query = make_update_context("mj_generate", user_id=213)
+    context.user_data["state"] = state
+    update.effective_chat = types.SimpleNamespace(id=213)
+    update.callback_query = query
+    query.message.reply_text = AsyncMock()
+
+    _orig = {}
+    for name in ("spend_izyminki", "add_izyminki", "get_balance", "get_avatar_urls",
+                 "get_active_avatar_kind", "start_midjourney_task_evolink", "poll_evolink_task",
+                 "asyncio"):
+        _orig[name] = getattr(S, name)
+
+    charges = []
+    S.get_balance = lambda uid: 999
+    S.spend_izyminki = lambda uid, amount: True
+    S.add_izyminki = lambda uid, amount: charges.append(("refund", uid, amount))
+    S.get_avatar_urls = lambda uid: {}
+    S.get_active_avatar_kind = lambda uid: None
+    S.start_midjourney_task_evolink = AsyncMock(return_value="__EVOLINK__:mj-task-retry")
+    S.poll_evolink_task = AsyncMock(return_value=[f"https://cdn.example/r{i}.jpg" for i in range(4)])
+
+    real_sleep_calls = []
+
+    class _FastAsyncio:
+        CancelledError = _orig["asyncio"].CancelledError
+
+        @staticmethod
+        async def sleep(_secs):
+            real_sleep_calls.append(_secs)
+
+    S.asyncio = _FastAsyncio
+
+    # send_message падает 1 раз (транзиентный таймаут Telegram), со 2-й попытки — успех.
+    send_message_calls = {"n": 0}
+
+    async def flaky_send_message(*a, **kw):
+        send_message_calls["n"] += 1
+        if send_message_calls["n"] == 1:
+            raise Exception("Telegram TimedOut")
+        return None
+
+    context.bot.send_message = AsyncMock(side_effect=flaky_send_message)
+
+    try:
+        asyncio.run(S.run_midjourney_grid(update, context))
+    finally:
+        for name, fn in _orig.items():
+            setattr(S, name, fn)
+        S.processing_user_ids.discard(213)
+
+    assert charges == [], f"20k.1 фото доставлены -> рефанда за сбойные кнопки-с-первого-раза нет: {charges}"
+    assert send_message_calls["n"] == 2, f"20k.2 повторная попытка отправки кнопок: {send_message_calls}"
+    assert context.bot.send_media_group.await_count == 1, "20k.3 сетка всё равно доставлена один раз"
+    texts = [c.args[0] for c in query.message.reply_text.await_args_list]
+    assert not any("технический сбой" in t for t in texts), (
+        f"20k.4 юзера НЕ пугают «временным сбоем» — фото ведь доставлены: {texts}"
+    )
+
+
+def test_block_20l_picker_fails_twice_sends_resend_button_no_refund():
+    state = S.UserState(mj_active=True, mj_prompt="a portrait", mj_reference=None)
+    update, context, query = make_update_context("mj_generate", user_id=214)
+    context.user_data["state"] = state
+    update.effective_chat = types.SimpleNamespace(id=214)
+    update.callback_query = query
+    query.message.reply_text = AsyncMock()
+
+    _orig = {}
+    for name in ("spend_izyminki", "add_izyminki", "get_balance", "get_avatar_urls",
+                 "get_active_avatar_kind", "start_midjourney_task_evolink", "poll_evolink_task",
+                 "asyncio"):
+        _orig[name] = getattr(S, name)
+
+    charges = []
+    S.get_balance = lambda uid: 999
+    S.spend_izyminki = lambda uid, amount: True
+    S.add_izyminki = lambda uid, amount: charges.append(("refund", uid, amount))
+    S.get_avatar_urls = lambda uid: {}
+    S.get_active_avatar_kind = lambda uid: None
+    S.start_midjourney_task_evolink = AsyncMock(return_value="__EVOLINK__:mj-task-fail2")
+    S.poll_evolink_task = AsyncMock(return_value=[f"https://cdn.example/f{i}.jpg" for i in range(4)])
+
+    class _FastAsyncio:
+        CancelledError = _orig["asyncio"].CancelledError
+
+        @staticmethod
+        async def sleep(_secs):
+            return None
+
+    S.asyncio = _FastAsyncio
+
+    send_message_calls = {"n": 0, "texts": [], "button_labels": []}
+
+    async def always_flaky_then_fallback(*a, **kw):
+        send_message_calls["n"] += 1
+        text = kw.get("text") or (a[1] if len(a) > 1 else "")
+        send_message_calls["texts"].append(text)
+        kb = kw.get("reply_markup")
+        if kb is not None:
+            send_message_calls["button_labels"] += [b.text for row in kb.inline_keyboard for b in row]
+        if send_message_calls["n"] <= 2:
+            raise Exception("Telegram TimedOut")
+        return None
+
+    context.bot.send_message = AsyncMock(side_effect=always_flaky_then_fallback)
+
+    try:
+        asyncio.run(S.run_midjourney_grid(update, context))
+    finally:
+        for name, fn in _orig.items():
+            setattr(S, name, fn)
+        S.processing_user_ids.discard(214)
+
+    assert charges == [], f"20l.1 фото доставлены -> рефанда нет, даже если кнопки так и не отправились: {charges}"
+    assert send_message_calls["n"] == 3, f"20l.2 2 попытки кнопок + 1 страховочное сообщение: {send_message_calls}"
+    assert any("Показать кнопки" in t for t in send_message_calls["button_labels"]), (
+        f"20l.3 отправлена страховочная кнопка «Показать кнопки выбора»: {send_message_calls}"
+    )
+    texts = [c.args[0] for c in query.message.reply_text.await_args_list]
+    assert not any("технический сбой" in t for t in texts), (
+        f"20l.3 юзера НЕ пугают «временным сбоем»: {texts}"
+    )
+
+
+def test_block_20m_pick_resend_delivers_buttons_for_live_grid():
+    S.last_mj_grid[215] = {
+        "task_id": "mj-task-resend", "grid_urls": [f"https://cdn.example/rs{i}.jpg" for i in range(3)],
+        "prompt": "x", "chat_id": 215, "created_at": __import__("time").time(),
+    }
+    update, context, query = make_update_context("mj_pick_resend", user_id=215)
+    context.user_data["state"] = S.UserState()
+    asyncio.run(S._cb_mj_pick_resend(update, context, query, types.SimpleNamespace(id=215, username="t")))
+    texts = [c.args[0] for c in query.message.reply_text.await_args_list]
+    assert any("Готово" in t for t in texts), f"20m.1 кнопки пересланы для живой сетки: {texts}"
+    kb = query.message.reply_text.await_args.kwargs["reply_markup"].inline_keyboard
+    cbs = [b.callback_data for row in kb for b in row]
+    assert cbs == ["mj_pick_0", "mj_pick_1", "mj_pick_2"], f"20m.2 кнопки строго по числу URL (3): {cbs}"
+    S.last_mj_grid.pop(215, None)
+
+
+def test_block_20n_pick_resend_expired_grid_honest_message():
+    S.last_mj_grid.pop(216, None)
+    update, context, query = make_update_context("mj_pick_resend", user_id=216)
+    context.user_data["state"] = S.UserState()
+    asyncio.run(S._cb_mj_pick_resend(update, context, query, types.SimpleNamespace(id=216, username="t")))
+    texts = [c.args[0] for c in query.message.reply_text.await_args_list]
+    assert any("устарела" in t for t in texts), f"20n.1 протухшей сетки нет -> честное сообщение: {texts}"

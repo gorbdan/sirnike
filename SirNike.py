@@ -5948,6 +5948,34 @@ async def _cb_mj_pick(update, context, query, user):
     return
 
 
+async def _cb_mj_pick_resend(update, context, query, user):
+    """Кнопка-страховка: если сообщение с кнопками выбора не отправилось
+    после генерации сетки (Telegram-таймаут), юзер может запросить его
+    заново — картинки уже доставлены, повторной генерации/списания не будет."""
+    await query.answer()
+    grid = _get_valid_mj_grid(user.id)
+    if not grid:
+        await query.message.reply_text(
+            "Эта сетка устарела (прошло больше 23 часов) — сгенерируй заново.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🎨 Midjourney", callback_data="menu_midjourney")
+            ]]),
+        )
+        return
+    grid_urls = grid.get("grid_urls") or []
+    number_emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
+    await query.message.reply_text(
+        f"Готово 🎨 ({len(grid_urls)} вариант{'а' if 1 < len(grid_urls) < 5 else 'ов' if len(grid_urls) != 1 else ''})\n"
+        "Выбери вариант, чтобы увеличить в хорошем качестве "
+        f"(+{MIDJOURNEY_UPSCALE_COST} изюминок):",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton(number_emoji[i], callback_data=f"mj_pick_{i}")
+            for i in range(len(grid_urls))
+        ]]),
+    )
+    return
+
+
 QDATA_EXACT_HANDLERS = {
     "pladm_open": _cb_pladm_open,
     "pladm_list": _cb_pladm_list,
@@ -5998,6 +6026,7 @@ QDATA_EXACT_HANDLERS = {
     "mj_pick_1": _cb_mj_pick,
     "mj_pick_2": _cb_mj_pick,
     "mj_pick_3": _cb_mj_pick,
+    "mj_pick_resend": _cb_mj_pick_resend,
 }
 
 VIDEO_EXACT_HANDLERS = {
@@ -8172,6 +8201,19 @@ async def run_midjourney_grid(update: Update, context: ContextTypes.DEFAULT_TYPE
         prompt_text = (state.mj_prompt or "").strip()
         reference = state.mj_reference
 
+        # Если юзер не прислал свой референс явно — берём сохранённый аватар
+        # (тот же фолбэк, что уже есть в run_generation, SirNike.py ~4887-4897)
+        # так «персонализация» Midjourney реально узнаёт лицо юзера по
+        # умолчанию, а не только когда он вручную прикладывает фото.
+        if not reference:
+            _all_avatars = get_avatar_urls(user.id)
+            _active_kind = get_active_avatar_kind(user.id)
+            _avatar_order = ([_active_kind] if _active_kind else []) + ["female", "male", "child"]
+            reference = next(
+                (_all_avatars.get(k) for k in _avatar_order if _all_avatars.get(k)),
+                None,
+            )
+
         if not prompt_text:
             await reply_target.reply_text("Промт потерян — открой «🎨 Midjourney» заново.")
             return
@@ -8251,18 +8293,47 @@ async def run_midjourney_grid(update: Update, context: ContextTypes.DEFAULT_TYPE
                 )
             else:
                 await context.bot.send_photo(chat_id=update.effective_chat.id, photo=grid_urls[0])
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=(
-                    f"Готово 🎨 ({len(grid_urls)} вариант{'а' if 1 < len(grid_urls) < 5 else 'ов' if len(grid_urls) != 1 else ''})\n"
-                    "Выбери вариант, чтобы увеличить в хорошем качестве "
-                    f"(+{MIDJOURNEY_UPSCALE_COST} изюминок):"
-                ),
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton(number_emoji[i], callback_data=f"mj_pick_{i}")
-                    for i in range(len(grid_urls))
-                ]]),
+            # С этой точки картинки УЖЕ доставлены юзеру — сбой в необязательном
+            # хвосте (сообщение с кнопками выбора) не должен ни рефандить, ни
+            # пугать «временным сбоем» (живой прод-баг 2026-08-09: Telegram
+            # изредка таймаутит именно на этом шаге — тот же класс, что чинили
+            # для основной фото-генерации и Kling Motion Control). Ретраим
+            # разок, при полном отказе — честная кнопка «Показать кнопки» вместо
+            # молчания.
+            picker_kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton(number_emoji[i], callback_data=f"mj_pick_{i}")
+                for i in range(len(grid_urls))
+            ]])
+            picker_text = (
+                f"Готово 🎨 ({len(grid_urls)} вариант{'а' if 1 < len(grid_urls) < 5 else 'ов' if len(grid_urls) != 1 else ''})\n"
+                "Выбери вариант, чтобы увеличить в хорошем качестве "
+                f"(+{MIDJOURNEY_UPSCALE_COST} изюминок):"
             )
+            picker_sent = False
+            for _picker_attempt in range(2):
+                try:
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id, text=picker_text, reply_markup=picker_kb,
+                    )
+                    picker_sent = True
+                    break
+                except Exception:
+                    if _picker_attempt == 0:
+                        await asyncio.sleep(2)
+            if not picker_sent:
+                logger.exception(
+                    "Midjourney picker message failed after retry (images already delivered): user=%s", user.id,
+                )
+                try:
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text="Сетка готова выше ⬆️ Не получилось показать кнопки выбора с первого раза.",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("🔁 Показать кнопки выбора", callback_data="mj_pick_resend")
+                        ]]),
+                    )
+                except Exception:
+                    pass  # изображения уже доставлены — это лучшее, что можем сделать
             log_generation_event(
                 user_id=user.id, kind="image", status="success", provider="EVOLINK_MIDJOURNEY",
                 cost=cost, was_free=False, references_count=1 if reference else 0,

@@ -492,6 +492,24 @@ class UserState:
     waiting_for_mj_image: bool = False
     mj_prompt: str = ""
     mj_reference: Optional[str] = None
+    # Доски — Full, AI-анализ стиля (docs/specs/2026-08-09_mood_boards_full.md):
+    # НЕ переиспользует references/style_extract — те one-shot (сбрасываются
+    # после каждой генерации в десятке мест), а описание стиля доски должно
+    # подмешиваться в промт КАЖДОЙ генерации, пока доска подключена. Поэтому
+    # это отдельное персистентное поле — сознательно НЕ трогается в местах,
+    # где чистится state.references.
+    board_style_note: Optional[str] = None
+    board_style_board_id: Optional[str] = None
+    # Короткий id активной доски для callback_data кнопки «Отключить»
+    # (board_id — UUID вебаппа, 36 символов, не влезает в лимит Telegram
+    # вместе с префиксом callback_data — см. docs/specs/2026-08-09_mood_boards_full.md, п.2).
+    board_style_short_id: str = ""
+    # Черновик анализа, ждущий подтверждения юзером («✅ Всё верно» / «✏️ Поправить»).
+    board_style_pending_note: Optional[str] = None
+    board_style_pending_board_id: Optional[str] = None
+    board_style_pending_title: str = ""
+    board_style_pending_short_id: str = ""
+    waiting_for_board_style_correction: bool = False
 
 @dataclass
 class GenerationJob:
@@ -3464,6 +3482,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if state.waiting_for_board_style_correction:
+        # Доски — Full: юзер нажал «✏️ Поправить» под сообщением-анализом и
+        # прислал свой текст стиля доски следующим сообщением (docs/specs/2026-08-09_mood_boards_full.md).
+        state.waiting_for_board_style_correction = False
+        corrected = text.strip()
+        if not corrected:
+            await update.message.reply_text(
+                "Пустой текст не сохранила — пришли описание стиля доски ещё раз."
+            )
+            return
+        state.board_style_note = corrected
+        state.board_style_board_id = state.board_style_pending_board_id
+        state.board_style_short_id = state.board_style_pending_short_id or _board_short_id(f"custom-{int(time.time())}")
+        state.board_style_pending_note = None
+        state.board_style_pending_board_id = None
+        state.board_style_pending_title = ""
+        state.board_style_pending_short_id = ""
+        await update.message.reply_text(
+            "✅ Стиль доски подключён — активен для следующих генераций.",
+            reply_markup=board_style_disable_kb(state.board_style_short_id),
+        )
+        return
+
     if state.waiting_for_video_duration:
         state.waiting_for_video_duration = False
         model_code = get_video_model(state)
@@ -3840,6 +3881,35 @@ async def apply_webapp_prompt_payload(update: Update, context: ContextTypes.DEFA
     return True
 
 
+def _board_short_id(board_id: str) -> str:
+    """Укорачивает UUID доски вебаппа (36 символов) до префикса, который
+    влезает в callback_data (лимит Telegram — 64 байта) вместе с префиксом
+    вида `bsc_`/`bse_`/`bsoff_` — см. docs/specs/2026-08-09_mood_boards_full.md,
+    п.2. Первых 16 символов UUID достаточно уникально в пределах одного юзера
+    (максимум ~5 досок), не нужен отдельный ttl — переписывается при каждом
+    новом анализе."""
+    return (board_id or "")[:16]
+
+
+def apply_board_style_note(prompt: str, board_style_note: str) -> str:
+    """Накладывает подтверждённое AI-описание стиля активной доски (Доски —
+    Full, docs/specs/2026-08-09_mood_boards_full.md) как БАЗОВЫЙ слой ПЕРЕД
+    промтом конкретного выбранного стиля — доска задаёт общее
+    настроение/палитру/композицию, промт стиля рисует поверх конкретный
+    образ. Вызывается КАЖДУЮ генерацию, пока доска подключена (в отличие от
+    one-shot state.references/style_extract), ДО apply_user_note_override —
+    «свои пожелания» юзера к конкретному стилю остаются финальным словом.
+    """
+    if not board_style_note:
+        return prompt
+    return (
+        f"Overall visual style/mood baseline from the user's mood board "
+        f"(apply as a background aesthetic layer under everything else — "
+        f"palette, atmosphere, composition): {board_style_note}\n\n"
+        f"{prompt}"
+    )
+
+
 async def apply_webapp_board_refs_payload(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
     """MVP «Доска = коллекция референсов» (docs/specs/2026-08-09_mood_boards.md).
 
@@ -3870,6 +3940,13 @@ async def apply_webapp_board_refs_payload(update: Update, context: ContextTypes.
     _set_style_extract(state, False)
     state.references = []
     state.references_updated_at = 0.0
+    # Доски — Full (docs/specs/2026-08-09_mood_boards_full.md): активация
+    # доски через board_refs — тоже «переключение на другую доску», снимает
+    # ранее подключённое (через board_style_analyze) AI-описание стиля,
+    # чтобы не подмешивать чужой доски настроение в новые референсы.
+    state.board_style_note = None
+    state.board_style_board_id = None
+    state.board_style_short_id = ""
 
     added = 0
     for raw_url in urls_raw:
@@ -3897,6 +3974,82 @@ async def apply_webapp_board_refs_payload(update: Update, context: ContextTypes.
     return True
 
 
+def board_style_disable_kb(short_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🖼️ Отключить стиль доски", callback_data=f"bsoff_{short_id}"),
+    ]])
+
+
+async def apply_webapp_board_style_analyze_payload(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
+    """Доски — Full, AI-анализ стиля доски (docs/specs/2026-08-09_mood_boards_full.md).
+
+    Симметрично apply_webapp_board_refs_payload (MVP), но вместо тупого
+    накопления фото в state.references — vision-описание общего стиля
+    ПОДБОРКИ (extract_board_style_description), которое сохраняется в
+    ПЕРСИСТЕНТНОЕ поле state.board_style_note (не references/style_extract,
+    те one-shot) после подтверждения юзером («✅ Всё верно» / «✏️ Поправить»,
+    см. callback-ветки bsc_/bse_ в button_handler и waiting_for_board_style_correction
+    в handle_text). Ошибка vision-вызова — честное сообщение, НИКАКИХ полей
+    state не трогаем (ни pending, ни уже активную доску) — доска не
+    остаётся «наполовину подключённой», а ранее подключённая доска не
+    гаснет молча из-за неудачной попытки анализировать ДРУГУЮ доску. Успешный
+    анализ, наоборот, СРАЗУ снимает ранее подключённый стиль доски (спека:
+    «активация другой доски автоматически снимает предыдущий
+    board_style_note» — «одна активная доска одновременно») — до подтверждения
+    новый текст лежит только в pending, но старый уже не подмешивается.
+    """
+    board_id = str(payload.get("board_id") or "").strip()
+    board_name = str(payload.get("title") or payload.get("t") or "").strip() or "Без названия"
+    urls_raw = payload.get("board_refs")
+    if urls_raw is None:
+        urls_raw = payload.get("br")
+    if not isinstance(urls_raw, list):
+        urls_raw = []
+    urls = [str(u).strip() for u in urls_raw if str(u or "").strip()]
+
+    if not update.effective_message or not update.effective_user:
+        return True
+
+    if len(urls) < 2:
+        await update.effective_message.reply_text(
+            "В доске должно быть хотя бы 2 фото, чтобы понять её стиль — добавь ещё и попробуй снова."
+        )
+        return True
+
+    description = await extract_board_style_description(urls)
+    if not description:
+        # Честный отказ — доска НЕ помечается стилизованной, ранее
+        # подключённая (если была — другая доска) остаётся как есть.
+        await update.effective_message.reply_text(
+            "Не получилось разобрать стиль доски — попробуй ещё раз чуть позже."
+        )
+        return True
+
+    state = get_or_init_state(context)
+    short_id = _board_short_id(board_id) or _board_short_id(f"{board_name}-{int(time.time())}")
+    # Успешный анализ = «активация другой доски» — снимаем ранее подключённый
+    # стиль сразу (не ждём подтверждения нового), см. докстринг выше.
+    state.board_style_note = None
+    state.board_style_board_id = None
+    state.board_style_short_id = ""
+    state.board_style_pending_note = description
+    state.board_style_pending_board_id = board_id
+    state.board_style_pending_title = board_name
+    state.board_style_pending_short_id = short_id
+    state.waiting_for_board_style_correction = False
+
+    await update.effective_message.reply_text(
+        f"🖼️ Доска «{board_name}» — вот что подметил ИИ:\n\n"
+        f"«{description}»\n\n"
+        "Это описание будет подмешиваться в промт КАЖДОЙ генерации, пока доска активна.",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Всё верно", callback_data=f"bsc_{short_id}"),
+            InlineKeyboardButton("✏️ Поправить", callback_data=f"bse_{short_id}"),
+        ]]),
+    )
+    return True
+
+
 async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
     if not isinstance(payload, dict):
         return False
@@ -3907,6 +4060,8 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
         action = "set_video_prompt"
     if action in {"board_refs", "connect_board", "br"}:
         return await apply_webapp_board_refs_payload(update, context, payload)
+    if action in {"board_style_analyze", "bsa"}:
+        return await apply_webapp_board_style_analyze_payload(update, context, payload)
     if action == "topup":
         if update.effective_message:
             user_id_for_kb = update.effective_user.id if update.effective_user else None
@@ -4047,6 +4202,14 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
     # вебапп присылает его отдельным полем note/n для шаблонов с input_hint,
     # чтобы не переписывать сам prompt на клиенте. Пусто — шаблон уходит как есть.
     user_note = str(payload.get("note") or payload.get("n") or "").strip()
+
+    state = get_or_init_state(context)
+    # Доски — Full, AI-анализ стиля (docs/specs/2026-08-09_mood_boards_full.md):
+    # если активна доска с подключённым описанием стиля — накладываем его
+    # ПЕРЕД промтом стиля, каждую генерацию (не one-shot), а «свои пожелания»
+    # юзера всё равно побеждают/дополняют — apply_user_note_override ниже.
+    if state.board_style_note:
+        prompt = apply_board_style_note(prompt, state.board_style_note)
     if user_note:
         prompt = apply_user_note_override(prompt, user_note)
 
@@ -4054,7 +4217,6 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
     if raw_title and update.effective_user:
         _log_template_usage_safe(update.effective_user.id, raw_title, item_kind, cat_idx=resolved_cat_idx, item_idx=resolved_item_idx)
 
-    state = get_or_init_state(context)
     state.image_prompt = image_prompt
     if action in {"set_video_prompt", "set_video_prompt_ref"}:
         state.video_prompt = prompt
@@ -4664,6 +4826,83 @@ async def extract_style_description_from_reference(image_url: str) -> Optional[s
     return text or None
 
 
+async def extract_board_style_description(image_urls: List[str]) -> Optional[str]:
+    """Text-only vision-описание общего визуального стиля ПОДБОРКИ фото —
+    доска (mood-борд) в Full-режиме (docs/specs/2026-08-09_mood_boards_full.md).
+
+    По образцу extract_style_description_from_reference (тот же Zveno
+    text-only vision-вызов, тот же endpoint), но:
+    - принимает СПИСОК URL (до 6 — латентность/стоимость vision-вызова
+      растут с числом картинок, 6 достаточно для «палитра/настроение/
+      композиция»), не один;
+    - другой промт: не «причёска и макияж ОДНОГО человека», а «палитра/
+      настроение/композиция ПОДБОРКИ», без упоминания лиц/личности людей на
+      фото — описание уходит в промт генерации КАЖДОЙ следующей картинки,
+      упоминание внешности конкретного человека там не нужно и вредно (та
+      же причина, что и в оригинальной функции).
+    Возвращает None при любой ошибке — вызывающий код обязан ответить юзеру
+    честным текстом об ошибке и НЕ активировать доску без AI-описания
+    (см. критерий приёмки в спеке).
+    """
+    if not ZVENO_API_KEY:
+        return None
+
+    resolved_urls: List[str] = []
+    for raw_url in (image_urls or [])[:6]:
+        resolved = _ref_to_data_url(raw_url) if _is_img_ref(raw_url) else raw_url
+        if resolved and (resolved.startswith("http") or resolved.startswith("data:")):
+            resolved_urls.append(resolved)
+    if not resolved_urls:
+        return None
+
+    prompt = (
+        "These photos are a MOOD BOARD/COLLECTION — describe their SHARED overall "
+        "visual style: color palette, mood/atmosphere, composition and lighting "
+        "style. Do NOT describe or mention any specific person's face, identity, "
+        "age, ethnicity, gender or other facial/appearance feature — focus ONLY "
+        "on the shared aesthetic across the photos. 2-4 sentences, plain text, "
+        "no preamble."
+    )
+    content = [{"type": "text", "text": prompt}]
+    for url in resolved_urls:
+        content.append({"type": "image_url", "image_url": {"url": url}})
+    payload = {
+        "model": ZVENO_CHAT_MODEL,
+        "messages": [{"role": "user", "content": content}],
+        "temperature": 0.2,
+        "max_completion_tokens": 300,
+    }
+    request_url = build_zveno_url(ZVENO_API_BASE, "/v1/chat/completions")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                request_url,
+                headers={
+                    "Authorization": f"Bearer {ZVENO_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                if not (200 <= resp.status < 300):
+                    body = await resp.text()
+                    logger.warning("board_style_analyze vision call failed: status=%s body=%s", resp.status, body[:300])
+                    return None
+                rd = await resp.json()
+    except Exception as e:
+        logger.warning("board_style_analyze vision call exception: %s", e)
+        return None
+
+    choices = rd.get("choices") or []
+    if not choices:
+        return None
+    content_out = (choices[0].get("message") or {}).get("content")
+    if isinstance(content_out, list):
+        content_out = " ".join(p.get("text", "") for p in content_out if isinstance(p, dict))
+    text = str(content_out or "").strip()
+    return text or None
+
+
 async def _seedance_aiportrait(image_bytes: bytes) -> Optional[bytes]:
     """Recreate a real selfie as an AI-generated portrait that keeps identity but
     passes Seedance's "real person" moderation.
@@ -5071,6 +5310,13 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_state = UserState()
         new_state.image_model = state.image_model
         new_state.prompt = state.prompt
+        # Доски — Full: подключённый стиль доски — персистентная настройка,
+        # переживает генерацию (в отличие от references/style_extract),
+        # иначе следующая же генерация после первой теряла бы AI-описание
+        # доски вопреки требованию спеки «каждую генерацию, а не одну».
+        new_state.board_style_note = state.board_style_note
+        new_state.board_style_board_id = state.board_style_board_id
+        new_state.board_style_short_id = state.board_style_short_id
         context.user_data["state"] = new_state
 
     except BaseException as _enqueue_exc:
@@ -5589,6 +5835,11 @@ async def _cb_avatar_gen_start(update, context, query, user):
     # Сохраняем выбранную модель картинок при сбросе временного состояния.
     new_state = UserState()
     new_state.image_model = state.image_model
+    # Доски — Full: та же персистентность стиля доски, что и после обычной
+    # фото-генерации выше — аватар не должен гасить подключённую доску.
+    new_state.board_style_note = state.board_style_note
+    new_state.board_style_board_id = state.board_style_board_id
+    new_state.board_style_short_id = state.board_style_short_id
     context.user_data["state"] = new_state
     await query.message.reply_text(
         f"Запускаю генерацию аватара по {len(photos)} фото… ✨",
@@ -5670,6 +5921,12 @@ async def _cb_reset(update, context, query, user):
         # «◀️ В меню» снова гонит юзера через пикер моделей.
         new_state.video_model = prev_state.video_model
         new_state.video_model_picked = prev_state.video_model_picked
+        # Доски — Full: стиль доски — та же липкая настройка-предпочтение,
+        # что и модель картинок/видео (персистентна по спеке, не one-shot) —
+        # «◀️ В меню» не должно гасить подключённую доску.
+        new_state.board_style_note = prev_state.board_style_note
+        new_state.board_style_board_id = prev_state.board_style_board_id
+        new_state.board_style_short_id = prev_state.board_style_short_id
     context.user_data["state"] = new_state
     await query.message.reply_text(
         "Готово — текущее описание и фото очищены.\n"
@@ -6401,6 +6658,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = get_or_init_state(context)
         state.image_prompt = str(item.get("image_prompt") or "").strip()
         base_prompt = str(item.get("prompt") or item.get("title") or "").strip()
+        # Доски — Full (docs/specs/2026-08-09_mood_boards_full.md): описание
+        # стиля активной доски — базовый слой перед промтом стиля, «свои
+        # пожелания» юзера — поверх (apply_user_note_override), как и в
+        # apply_webapp_prompt_payload_v2 выше.
+        if state.board_style_note:
+            base_prompt = apply_board_style_note(base_prompt, state.board_style_note)
         final_prompt = apply_user_note_override(base_prompt, user_note) if user_note else base_prompt
         if item_kind == "video":
             state.video_prompt = final_prompt
@@ -6426,6 +6689,62 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             style_applied_message(_showcase_item_label(item), item, "image", user_note=user_note) + "\n"
             "Пришли своё фото — или запускай сразу.",
             reply_markup=photo_draft_kb(state, user.id),
+        )
+        return
+
+    if query.data.startswith("bsc_"):
+        # Доски — Full: «✅ Всё верно» под сообщением-подтверждением из
+        # apply_webapp_board_style_analyze_payload (docs/specs/2026-08-09_mood_boards_full.md).
+        state = get_or_init_state(context)
+        short_id = query.data[len("bsc_"):]
+        if not state.board_style_pending_note or state.board_style_pending_short_id != short_id:
+            await query.message.reply_text(
+                "Эта карточка устарела — открой доску в вебаппе и запроси анализ стиля заново."
+            )
+            return
+        state.board_style_note = state.board_style_pending_note
+        state.board_style_board_id = state.board_style_pending_board_id
+        state.board_style_short_id = state.board_style_pending_short_id
+        state.board_style_pending_note = None
+        state.board_style_pending_board_id = None
+        state.board_style_pending_title = ""
+        state.board_style_pending_short_id = ""
+        state.waiting_for_board_style_correction = False
+        await query.message.reply_text(
+            "✅ Стиль доски подключён — активен для следующих генераций.",
+            reply_markup=board_style_disable_kb(state.board_style_short_id),
+        )
+        return
+
+    if query.data.startswith("bse_"):
+        # «✏️ Поправить» — просит юзера прислать свой текст описания стиля
+        # следующим сообщением (свободный текст обрабатывается в handle_text,
+        # waiting_for_board_style_correction).
+        state = get_or_init_state(context)
+        short_id = query.data[len("bse_"):]
+        if not state.board_style_pending_note or state.board_style_pending_short_id != short_id:
+            await query.message.reply_text(
+                "Эта карточка устарела — открой доску в вебаппе и запроси анализ стиля заново."
+            )
+            return
+        state.waiting_for_board_style_correction = True
+        await query.message.reply_text(
+            "Пришли своё описание стиля доски следующим сообщением (2-4 предложения — палитра, настроение, композиция)."
+        )
+        return
+
+    if query.data.startswith("bsoff_"):
+        # Чат-нативное отключение персистентного стиля доски — единственный
+        # способ выключить его (вебапп для частого действия не должен
+        # закрываться, см. docs/specs/2026-08-09_mood_boards_full.md, п.4).
+        # Кнопка живёт под сообщением-подтверждением НАВСЕГДА (Telegram это
+        # разрешает) — работает и по клику с более старого сообщения.
+        state = get_or_init_state(context)
+        state.board_style_note = None
+        state.board_style_board_id = None
+        state.board_style_short_id = ""
+        await query.message.reply_text(
+            "✅ Стиль доски отключён — дальше генерации идут без него."
         )
         return
 

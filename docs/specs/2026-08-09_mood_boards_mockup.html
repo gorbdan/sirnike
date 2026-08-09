@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Доски — схема экранов (черновик, не финальный визуальный стиль)</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, sans-serif; background:#e9e9ee; margin:0; padding:24px;
+         display:flex; gap:24px; flex-wrap:wrap; align-items:flex-start; }
+  .note { width:100%; font-size:13px; color:#555; max-width:900px; margin-bottom:8px; }
+  .phone { width:320px; background:#fff; border-radius:24px; box-shadow:0 4px 20px rgba(0,0,0,.15);
+           overflow:hidden; border:8px solid #222; }
+  .screen-title { text-align:center; font-size:12px; color:#888; margin-bottom:6px; }
+  .header { background:#fff; padding:14px 12px; font-weight:600; font-size:15px; border-bottom:1px solid #eee;
+             display:flex; align-items:center; justify-content:space-between; }
+  .board-banner { background:#fff7e6; border:1px solid #ffdf99; margin:8px 12px; padding:8px 10px;
+                   border-radius:10px; font-size:12px; display:flex; align-items:center; justify-content:space-between; gap:6px; }
+  .board-banner b { font-size:12px; }
+  .board-banner .actions { display:flex; gap:6px; white-space:nowrap; }
+  .link-btn { color:#0a7cff; font-weight:600; }
+  .section-title { padding:10px 12px 4px; font-size:13px; font-weight:600; color:#333; }
+  .row { display:flex; gap:8px; padding:0 12px 10px; overflow-x:auto; }
+  .tile { flex:0 0 auto; width:78px; text-align:center; }
+  .tile .cover { width:78px; height:78px; border-radius:12px; background:#d8d8e2; display:flex;
+                  align-items:center; justify-content:center; font-size:22px; position:relative; }
+  .tile .cover.active { outline:3px solid #ffb000; }
+  .tile .cover .badge { position:absolute; top:-4px; right:-4px; background:#ffb000; color:#fff;
+                          border-radius:50%; width:18px; height:18px; font-size:11px; display:flex;
+                          align-items:center; justify-content:center; }
+  .tile .name { font-size:11px; margin-top:4px; color:#333; }
+  .tile .new { border:2px dashed #aaa; color:#888; font-size:24px; }
+  .cat-row { padding:8px 12px; }
+  .cat-card { background:#f2f2f6; border-radius:10px; height:44px; margin-bottom:8px;
+              display:flex; align-items:center; padding:0 10px; font-size:13px; color:#555; }
+
+  .board-header { display:flex; align-items:center; justify-content:space-between; padding:12px; border-bottom:1px solid #eee; }
+  .board-header .back { color:#0a7cff; font-size:13px; }
+  .board-header .title { font-size:15px; font-weight:600; }
+  .board-header .menu { font-size:18px; color:#888; }
+  .status-active { margin:10px 12px; background:#e9f9ee; border:1px solid #b6ebc4; border-radius:10px;
+                    padding:10px; font-size:12px; display:flex; justify-content:space-between; align-items:center; gap:6px; }
+  .status-inactive-btn { margin:10px 12px; background:#111; color:#fff; text-align:center; padding:11px;
+                          border-radius:10px; font-size:13px; font-weight:600; }
+  .photo-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; padding:0 12px; }
+  .photo { aspect-ratio:1/1; background:#d8d8e2; border-radius:8px; position:relative; }
+  .photo .x { position:absolute; top:3px; right:3px; width:16px; height:16px; background:rgba(0,0,0,.55);
+              color:#fff; border-radius:50%; font-size:10px; display:flex; align-items:center; justify-content:center; }
+  .bottom-bar { margin-top:12px; padding:10px 12px; border-top:1px solid #eee; display:flex; flex-direction:column; gap:8px; }
+  .btn-secondary { background:#f2f2f6; text-align:center; padding:10px; border-radius:10px; font-size:13px; color:#333; }
+  .btn-primary { background:#111; color:#fff; text-align:center; padding:11px; border-radius:10px; font-size:13px; font-weight:600; }
+
+  .chat-bubble { margin:16px 12px; background:#eef6ff; border-radius:12px 12px 12px 2px; padding:10px 12px; font-size:12.5px; color:#222; }
+  .chat-kb { margin:0 12px; background:#fff; border:1px solid #ddd; border-radius:10px; padding:9px; text-align:center; font-size:12.5px; color:#0a7cff; }
+
+  .card-modal { margin:14px 12px; border:1px solid #eee; border-radius:12px; padding:12px; font-size:12.5px; }
+  .card-modal .style-title { font-weight:700; margin-bottom:6px; }
+  .card-modal .board-note { background:#fff7e6; border-radius:8px; padding:6px 8px; margin-bottom:8px; color:#8a6100; }
+  .card-modal .actions { display:flex; gap:8px; margin-top:10px; }
+  .card-modal .actions div { flex:1; text-align:center; padding:9px; border-radius:10px; font-size:12.5px; }
+  .act-copy { background:#f2f2f6; color:#333; }
+  .act-use { background:#111; color:#fff; font-weight:600; }
+</style>
+</head>
+<body>
+
+<div class="note">
+  Схема экранов «Доски» (mood-борды) — для понимания структуры и текстов кнопок.
+  Не финальный визуальный стиль: палитру, шрифты, тени, тёмную тему берёт фронтенд
+  из уже существующей дизайн-системы вебаппа. Спека рядом:
+  <code>docs/specs/2026-08-09_mood_boards.md</code>.
+</div>
+
+<div>
+  <div class="screen-title">1. Каталог — активная доска</div>
+  <div class="phone">
+    <div class="header">📚 Библиотека стилей<span>🔍</span></div>
+    <div class="board-banner">
+      <span>🖼️ Доска «Вечерний гламур» активна</span>
+      <span class="actions"><span class="link-btn">Сменить</span><span class="link-btn">Отключить</span></span>
+    </div>
+    <div class="section-title">🆕 Новинки</div>
+    <div class="row">
+      <div class="tile"><div class="cover">🎬</div></div>
+      <div class="tile"><div class="cover">✨</div></div>
+      <div class="tile"><div class="cover">💄</div></div>
+    </div>
+    <div class="section-title">🖼️ Мои доски</div>
+    <div class="row">
+      <div class="tile"><div class="cover active">🖼️<span class="badge">✓</span></div><div class="name">Вечерний гламур</div></div>
+      <div class="tile"><div class="cover">🖼️</div><div class="name">Для рилсов</div></div>
+      <div class="tile"><div class="cover new">+</div><div class="name">Новая доска</div></div>
+    </div>
+    <div class="section-title">Категории</div>
+    <div class="cat-row">
+      <div class="cat-card">💄 Бьюти</div>
+      <div class="cat-card">🎬 Seedance 2</div>
+      <div class="cat-card">👗 Переодевашки</div>
+    </div>
+  </div>
+</div>
+
+<div>
+  <div class="screen-title">2. Доска — детально (активна)</div>
+  <div class="phone">
+    <div class="board-header">
+      <span class="back">‹ Мои доски</span>
+      <span class="title">Вечерний гламур ✏️</span>
+      <span class="menu">⋮</span>
+    </div>
+    <div class="status-active">
+      <span>🖼️ Доска активна — фото из неё пойдут в следующую генерацию</span>
+      <span class="link-btn">Отключить</span>
+    </div>
+    <div class="photo-grid">
+      <div class="photo"><div class="x">×</div></div>
+      <div class="photo"><div class="x">×</div></div>
+      <div class="photo"><div class="x">×</div></div>
+      <div class="photo"><div class="x">×</div></div>
+      <div class="photo"><div class="x">×</div></div>
+      <div class="photo"><div class="x">×</div></div>
+    </div>
+    <div class="bottom-bar">
+      <div class="btn-secondary">📷 Добавить фото</div>
+    </div>
+  </div>
+</div>
+
+<div>
+  <div class="screen-title">2a. Доска — пустая, не активна</div>
+  <div class="phone">
+    <div class="board-header">
+      <span class="back">‹ Мои доски</span>
+      <span class="title">Для рилсов ✏️</span>
+      <span class="menu">⋮</span>
+    </div>
+    <div class="status-inactive-btn">Сделать доску активной</div>
+    <div style="text-align:center; padding:40px 20px; color:#888; font-size:13px;">
+      🖼️<br><br>
+      Пока пусто. Добавь несколько фото — свои снимки или картинки-вдохновение.
+    </div>
+    <div class="bottom-bar">
+      <div class="btn-secondary">📷 Добавить фото</div>
+    </div>
+  </div>
+</div>
+
+<div>
+  <div class="screen-title">3. Бот подтверждает подключение</div>
+  <div class="phone">
+    <div class="header">Сырник</div>
+    <div class="chat-bubble">
+      🖼️ Доска «Вечерний гламур» подключена — фото из неё будут
+      использоваться как референс (загружено 6/8).<br><br>
+      Теперь выбери стиль в библиотеке 👇
+    </div>
+    <div class="chat-kb">📚 Библиотека стилей</div>
+  </div>
+</div>
+
+<div>
+  <div class="screen-title">4. Карточка стиля при активной доске</div>
+  <div class="phone">
+    <div class="header">Стиль</div>
+    <div class="card-modal">
+      <div class="style-title">Портрет в глянце</div>
+      <div class="board-note">🖼️ С доски «Вечерний гламур» тоже подмешается</div>
+      <div>Мягкий свет, глянцевая ретушь, крупный план.</div>
+      <div class="actions">
+        <div class="act-copy">📋 Скопировать</div>
+        <div class="act-use">🚀 Использовать</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

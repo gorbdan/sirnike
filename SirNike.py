@@ -5933,6 +5933,9 @@ async def _cb_mj_pick(update, context, query, user):
             ]]),
         )
         return
+    if image_number >= len(grid.get("grid_urls") or []):
+        await query.answer("Этого варианта уже нет в сетке.", show_alert=True)
+        return
     processing_user_ids.add(user.id)
     try:
         context.application.create_task(
@@ -8221,31 +8224,43 @@ async def run_midjourney_grid(update: Update, context: ContextTypes.DEFAULT_TYPE
                 prompt=prompt_text, image_url=persistent_reference_url, user_id=user.id,
             )
             task_id = raw_task_id.split("__EVOLINK__:", 1)[1] if raw_task_id.startswith("__EVOLINK__:") else raw_task_id
-            grid_url = await poll_evolink_task(
+            # return_all=True: EvoLink Midjourney отдаёт "4 images per
+            # generation" ОТДЕЛЬНЫМИ URL в results, не один сборный файл-
+            # коллаж — живой прод-баг 2026-08-09, старый код брал только
+            # results[0] и молча терял остальные 3 варианта.
+            grid_urls = await poll_evolink_task(
                 task_id=task_id,
                 max_attempts=MIDJOURNEY_MAX_POLL_ATTEMPTS,
                 poll_interval=MIDJOURNEY_POLL_INTERVAL,
                 status_callback=_edit_status,
+                return_all=True,
             )
+            grid_urls = grid_urls[:4]
             _bounded_set(last_mj_grid, user.id, {
                 "task_id": task_id,
-                "grid_url": grid_url,
+                "grid_urls": grid_urls,
                 "prompt": prompt_text,
                 "chat_id": update.effective_chat.id,
                 "created_at": time.time(),
             })
-            await context.bot.send_photo(
+            number_emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
+            if len(grid_urls) > 1:
+                await context.bot.send_media_group(
+                    chat_id=update.effective_chat.id,
+                    media=[InputMediaPhoto(media=u) for u in grid_urls],
+                )
+            else:
+                await context.bot.send_photo(chat_id=update.effective_chat.id, photo=grid_urls[0])
+            await context.bot.send_message(
                 chat_id=update.effective_chat.id,
-                photo=grid_url,
-                caption=(
-                    "Готово 🎨\nВыбери вариант, чтобы увеличить в хорошем качестве "
+                text=(
+                    f"Готово 🎨 ({len(grid_urls)} вариант{'а' if 1 < len(grid_urls) < 5 else 'ов' if len(grid_urls) != 1 else ''})\n"
+                    "Выбери вариант, чтобы увеличить в хорошем качестве "
                     f"(+{MIDJOURNEY_UPSCALE_COST} изюминок):"
                 ),
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("1️⃣", callback_data="mj_pick_0"),
-                    InlineKeyboardButton("2️⃣", callback_data="mj_pick_1"),
-                    InlineKeyboardButton("3️⃣", callback_data="mj_pick_2"),
-                    InlineKeyboardButton("4️⃣", callback_data="mj_pick_3"),
+                    InlineKeyboardButton(number_emoji[i], callback_data=f"mj_pick_{i}")
+                    for i in range(len(grid_urls))
                 ]]),
             )
             log_generation_event(

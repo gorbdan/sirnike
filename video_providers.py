@@ -46,6 +46,9 @@ from config import (
     KLING_MOTION_ORIENTATION,
     MASHAGPT_API_BASE,
     MASHAGPT_API_KEY,
+    MIDJOURNEY_MODEL,
+    MIDJOURNEY_UPSCALE_MODEL,
+    MIDJOURNEY_SPEED,
     SEEDANCE_DURATION,
     SEEDANCE_DURATION_OPTIONS,
     SEEDANCE_ENDPOINT,
@@ -752,15 +755,21 @@ def _resolve_evolink_image_urls(
     return resolved
 
 
-async def _evolink_create_task(payload: dict, log_label: str, user_id: int) -> str:
-    """POST /v1/videos/generations — общая точка создания задачи для всех
-    моделей серии EvoLink (Seedance/Gemini Omni/Kling Motion Control).
+async def _evolink_create_task(
+    payload: dict,
+    log_label: str,
+    user_id: int,
+    endpoint_path: str = "/v1/videos/generations",
+) -> str:
+    """POST {endpoint_path} — общая точка создания задачи для всех моделей
+    серии EvoLink (Seedance/Gemini Omni/Kling Motion Control — видео;
+    Midjourney — картинки, endpoint_path="/v1/images/generations").
     Возвращает task_id с префиксом __EVOLINK__: (единая точка поллинга —
     poll_seedance_task/poll_evolink_task)."""
     evolink_api_key = _get_evolink_api_key_hook()
     if not evolink_api_key:
         raise Exception("EVOLINK_API_KEY is empty")
-    url = build_evolink_url("/v1/videos/generations")
+    url = build_evolink_url(endpoint_path)
     async with aiohttp.ClientSession() as session:
         async with session.post(
             url,
@@ -996,6 +1005,66 @@ async def start_kling_motion_control_evolink(
     if prompt_clean:
         payload["prompt"] = prompt_clean[:2500]
     return await _evolink_create_task(payload, "EvoLink Kling Motion Control", user_id)
+
+
+# ----------------------------------------------------------------------------
+# Midjourney (через EvoLink) — генерация картинок, отдельный мини-флоу в
+# SirNike.py (сетка 2×2 -> юзер выбирает вариант -> апскейл), см.
+# docs/briefs/backend.md. Оба вызова (генерация сетки и апскейл) идут через
+# один и тот же эндпоинт /v1/images/generations с разным телом (model +
+# model_params) — тот же _evolink_create_task, что и у видео, просто с другим
+# endpoint_path. Статус/результат — тот же generic poll_evolink_task.
+# ----------------------------------------------------------------------------
+
+async def start_midjourney_task_evolink(
+    prompt: str,
+    image_url: Optional[str],
+    user_id: int,
+    model: str = MIDJOURNEY_MODEL,
+    speed: str = MIDJOURNEY_SPEED,
+) -> str:
+    """Генерация сетки 4 вариантов. image_url — уже публичный HTTP(S) URL
+    (резолв __img__-рефа в паблик-ссылку — забота вызывающего кода в
+    SirNike.py, см. _persist_image_ref; так же решён Kling Motion Control).
+    EvoLink Midjourney НЕ принимает референс отдельным полем — URL кладётся
+    В НАЧАЛО строки prompt (см. docs/en/api-manual/image-series/midjourney/
+    mj-v7-image-generate.md): "1 фото без текста = ошибка, 1 фото + текст =
+    ок, 2+ фото ± текст = ок" — с одним референсом текст промта обязателен."""
+    prompt_clean = (prompt or "").strip()
+    if image_url:
+        prompt_clean = f"{image_url} {prompt_clean}".strip()
+    if not prompt_clean:
+        raise Exception("Midjourney: пустой промт (нужен текст и/или фото-референс)")
+    payload = {
+        "model": model,
+        "prompt": prompt_clean[:8192],
+        "model_params": {"speed": speed},
+    }
+    return await _evolink_create_task(
+        payload, "EvoLink Midjourney", user_id, endpoint_path="/v1/images/generations",
+    )
+
+
+async def start_midjourney_upscale_evolink(
+    task_id: str,
+    image_number: int,
+    user_id: int,
+    model: str = MIDJOURNEY_UPSCALE_MODEL,
+    upscale_type: str = "standard",
+) -> str:
+    """Апскейл одного из 4 вариантов сетки. task_id — «голый» id EvoLink
+    (без префикса __EVOLINK__:, см. poll_evolink_task), image_number — 0..3."""
+    payload = {
+        "model": model,
+        "model_params": {
+            "task_id": task_id,
+            "image_number": image_number,
+            "type": upscale_type,
+        },
+    }
+    return await _evolink_create_task(
+        payload, "EvoLink Midjourney Upscale", user_id, endpoint_path="/v1/images/generations",
+    )
 
 
 # ----------------------------------------------------------------------------

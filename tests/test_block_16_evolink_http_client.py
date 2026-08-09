@@ -226,6 +226,56 @@ def test_block_16_evolink_http_client():
     )
     assert p15_24.get("prompt") == "повтори движение", "15.30 kling motion control: prompt передан"
 
+    # 15.37 Midjourney (EvoLink): генерация сетки — эндпоинт /v1/images/generations,
+    # референс кладётся В НАЧАЛО строки prompt (не отдельным полем).
+    evo_calls.clear()
+    mj_ref = asyncio.run(S.start_midjourney_task_evolink(
+        prompt="cinematic portrait", image_url="https://example.com/face.jpg", user_id=1,
+    ))
+    assert mj_ref.startswith("__EVOLINK__:"), f"15.38 midjourney возвращает __EVOLINK__: префикс: {mj_ref}"
+    p15_37 = evo_calls[0]["payload"]
+    assert evo_calls[0]["url"].endswith("/v1/images/generations"), (
+        f"15.39 midjourney: эндпоинт /v1/images/generations: {evo_calls[0]['url']}"
+    )
+    assert p15_37.get("model") == "mj-v7", f"15.40 midjourney: model=mj-v7: {p15_37}"
+    assert p15_37.get("prompt", "").startswith("https://example.com/face.jpg "), (
+        f"15.41 midjourney: референс в начале prompt: {p15_37.get('prompt')!r}"
+    )
+    assert p15_37.get("model_params", {}).get("speed") == "fast", (
+        f"15.42 midjourney: speed=fast по умолчанию: {p15_37.get('model_params')}"
+    )
+
+    # 15.43 Midjourney: без референса — просто текст
+    evo_calls.clear()
+    asyncio.run(S.start_midjourney_task_evolink(prompt="a red bicycle", image_url=None, user_id=1))
+    assert evo_calls[0]["payload"].get("prompt") == "a red bicycle", (
+        f"15.44 midjourney без фото: чистый текст промта: {evo_calls[0]['payload']}"
+    )
+
+    # 15.45 Midjourney: пустой prompt И пустой image_url -> исключение, HTTP не улетает
+    evo_calls.clear()
+    try:
+        asyncio.run(S.start_midjourney_task_evolink(prompt="  ", image_url=None, user_id=1))
+        assert False, "15.46 midjourney: пустой промт должен бросать исключение"
+    except Exception as e:
+        assert "промт" in str(e).lower(), f"15.46 midjourney: текст ошибки про пустой промт: {e}"
+    assert evo_calls == [], "15.47 midjourney: при пустом промте HTTP-запрос не отправлен"
+
+    # 15.48 Midjourney upscale: эндпоинт тот же, model_params с task_id/image_number
+    evo_calls.clear()
+    mj_up_ref = asyncio.run(S.start_midjourney_upscale_evolink(
+        task_id="task-unified-abc", image_number=2, user_id=1,
+    ))
+    assert mj_up_ref.startswith("__EVOLINK__:"), f"15.49 upscale возвращает __EVOLINK__: префикс: {mj_up_ref}"
+    p15_48 = evo_calls[0]["payload"]
+    assert evo_calls[0]["url"].endswith("/v1/images/generations"), (
+        f"15.50 upscale: тот же эндпоинт /v1/images/generations: {evo_calls[0]['url']}"
+    )
+    assert p15_48.get("model") == "mj-v7-upscale", f"15.51 upscale: model=mj-v7-upscale: {p15_48}"
+    assert p15_48.get("model_params") == {
+        "task_id": "task-unified-abc", "image_number": 2, "type": "standard",
+    }, f"15.52 upscale: model_params корректны: {p15_48.get('model_params')}"
+
     S.EVOLINK_API_KEY = _orig_evo_key
     S.aiohttp.ClientSession = _orig_evo_cs
     S.asyncio.sleep = _orig_sleep

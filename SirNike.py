@@ -133,6 +133,13 @@ from config import (
     GPT5_IMAGE_ENABLED,
     ZVENO_GPT5_IMAGE_MODEL,
     GPT5_IMAGE_COST,
+    MIDJOURNEY_ENABLED,
+    MIDJOURNEY_MODEL,
+    MIDJOURNEY_UPSCALE_MODEL,
+    MIDJOURNEY_GRID_COST,
+    MIDJOURNEY_UPSCALE_COST,
+    MIDJOURNEY_MAX_POLL_ATTEMPTS,
+    MIDJOURNEY_POLL_INTERVAL,
     STUDIO_ENABLED,
     STUDIO_API_BASE,
     STUDIO_POLL_SECRET,
@@ -176,6 +183,8 @@ from video_providers import (
     poll_seedance_task,
     start_kling_motion_control,
     poll_kling_animation_custom,
+    start_midjourney_task_evolink,
+    start_midjourney_upscale_evolink,
 )
 
 # Фото-провайдер-клиенты (Zveno + MashaGPT) — вынесены из SirNike.py в
@@ -369,6 +378,45 @@ last_generated_image_url: "_collections.OrderedDict" = _collections.OrderedDict(
 last_generated_prompt: "_collections.OrderedDict" = _collections.OrderedDict()
 last_generation_references: "_collections.OrderedDict" = _collections.OrderedDict()
 # Параметры последнего успешного видео — для воронки «Сделать длиннее» / апгрейда модели.
+# Сетка Midjourney, ждущая выбора юзера (task_id/grid_url/prompt) — один слот
+# на юзера, как last_video_params (queued_user_ids/processing_user_ids и так
+# не дают параллелить генерации одного юзера). TTL ~23ч — с запасом от
+# заявленных EvoLink 24ч жизни ссылок на картинки (_cleanup_stale_mj_grids).
+last_mj_grid: "_collections.OrderedDict" = _collections.OrderedDict()
+_MJ_GRID_TTL_SECONDS = 23 * 3600
+_MJ_GRID_LAST_TTL_CHECK: float = 0.0
+
+
+def _cleanup_stale_mj_grids() -> None:
+    """Ленивая TTL-чистка last_mj_grid — не чаще раза в 60 сек (тот же
+    rate-limit паттерн, что у MEDIA_GROUP_CACHE), чтобы не делать O(n) на
+    каждую запись/чтение."""
+    global _MJ_GRID_LAST_TTL_CHECK
+    _now = time.time()
+    if _now - _MJ_GRID_LAST_TTL_CHECK <= 60:
+        return
+    _MJ_GRID_LAST_TTL_CHECK = _now
+    stale_keys = [
+        k for k, v in last_mj_grid.items()
+        if (_now - float(v.get("created_at", _now))) > _MJ_GRID_TTL_SECONDS
+    ]
+    for k in stale_keys:
+        last_mj_grid.pop(k, None)
+
+
+def _get_valid_mj_grid(user_id: int) -> Optional[dict]:
+    """Читает last_mj_grid[user_id], но только если запись не протухла по TTL
+    (страховка от заявленных EvoLink 24ч жизни ссылок на картинки)."""
+    _cleanup_stale_mj_grids()
+    entry = last_mj_grid.get(user_id)
+    if not entry:
+        return None
+    if (time.time() - float(entry.get("created_at", 0))) > _MJ_GRID_TTL_SECONDS:
+        last_mj_grid.pop(user_id, None)
+        return None
+    return entry
+
+
 last_video_params: "_collections.OrderedDict" = _collections.OrderedDict()
 MEDIA_GROUP_CACHE: "_collections.OrderedDict[Tuple[int, str], List[Dict[str, Any]]]" = _collections.OrderedDict()
 MAX_CACHED_MEDIA_GROUPS = 300
@@ -436,6 +484,14 @@ class UserState:
     # флаг после использования, остальные пути установки state.prompt — тоже
     # (см. docs/briefs/backend.md, P1 «Образ с референса»).
     style_extract: bool = False
+    # Midjourney (EvoLink) — отдельный мини-флоу: сетка 4 варианта -> апскейл.
+    # Не переиспользует run_generation/GenerationJob (тот контракт — "один
+    # клик, один результат", у Midjourney есть промежуточный шаг выбора).
+    mj_active: bool = False
+    waiting_for_mj_prompt: bool = False
+    waiting_for_mj_image: bool = False
+    mj_prompt: str = ""
+    mj_reference: Optional[str] = None
 
 @dataclass
 class GenerationJob:
@@ -1006,6 +1062,10 @@ def deactivate_video_session(state: UserState) -> None:
     state.waiting_for_motion_image = False
     state.motion_video_url = None
     state.motion_image_url = None
+    # Midjourney — свой мини-флоу, гасим по той же причине (см. выше).
+    state.mj_active = False
+    state.waiting_for_mj_prompt = False
+    state.waiting_for_mj_image = False
 
 
 def get_video_model(state: UserState) -> str:
@@ -1320,6 +1380,12 @@ def photo_menu_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     ]
     if GPT5_IMAGE_ENABLED:
         rows.append([InlineKeyboardButton("🧠 Модель картинок", callback_data="image_model_menu")])
+    # Midjourney (EvoLink) — отдельный мини-флоу (сетка 4 варианта -> апскейл),
+    # не третий пункт пикера "Модель картинок" (там контракт "один клик, один
+    # результат", у Midjourney есть промежуточный выбор). Скрыт фичефлагом до
+    # ручного теста качества (тот же порядок раскатки, что у EvoLink-видео).
+    if MIDJOURNEY_ENABLED:
+        rows.append([InlineKeyboardButton("🎨 Midjourney 🆕", callback_data="menu_midjourney")])
     rows.append([InlineKeyboardButton("◀️ В меню", callback_data="avatar_back_menu")])
     return InlineKeyboardMarkup(rows)
 
@@ -3387,6 +3453,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _submit_report(update, context, user, state, "bug", text.strip())
         return
 
+    if state.waiting_for_mj_prompt:
+        state.mj_prompt = text
+        state.waiting_for_mj_prompt = False
+        state.waiting_for_mj_image = True
+        await update.message.reply_text(
+            "Промт сохранён ✅\n"
+            "Можешь прислать фото-референс (необязательно) или сразу жми «🚀 Сгенерировать».",
+            reply_markup=mj_draft_kb(state),
+        )
+        return
+
     if state.waiting_for_video_duration:
         state.waiting_for_video_duration = False
         model_code = get_video_model(state)
@@ -3558,6 +3635,19 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         caption = (update.message.caption or "").strip()
+
+        if state.waiting_for_mj_image:
+            # Midjourney: фото-референс необязателен, генерация запускается
+            # отдельной кнопкой (не автосразу, как у Kling Motion Control) —
+            # юзер может прислать текст промта и фото в любом порядке.
+            state.mj_reference = direct_url
+            if caption and not (state.mj_prompt or "").strip():
+                state.mj_prompt = caption
+            await update.message.reply_text(
+                "Фото-референс добавлено ✅\nЖми «🚀 Сгенерировать», когда готов(а).",
+                reply_markup=mj_draft_kb(state),
+            )
+            return
 
         if state.waiting_for_motion_image:
             # Kling Motion Control мини-флоу: ровно 1 фото, затем сразу запуск —
@@ -5627,6 +5717,9 @@ async def _cb_video_open(update, context, query, user):
     # проверяет generating_avatar ПЕРВЫМ и все фото молча уходят в
     # avatar_photos вместо видео-референсов (баг-ресерч 2026-08-02).
     state.generating_avatar = False
+    state.mj_active = False  # см. комментарий про generating_avatar выше
+    state.waiting_for_mj_prompt = False
+    state.waiting_for_mj_image = False
     state.video_session_active = True
     state.waiting_for_video_prompt = False
     state.waiting_for_video_image = True
@@ -5656,6 +5749,9 @@ async def _cb_video_open(update, context, query, user):
 async def _cb_video_set_prompt(update, context, query, user):
     state = get_or_init_state(context)
     state.generating_avatar = False  # см. комментарий в _cb_video_open
+    state.mj_active = False
+    state.waiting_for_mj_prompt = False
+    state.waiting_for_mj_image = False
     state.video_session_active = True
     state.waiting_for_video_prompt = True
     await query.message.reply_text("Напиши описание для видео одним сообщением.")
@@ -5665,6 +5761,9 @@ async def _cb_video_set_prompt(update, context, query, user):
 async def _cb_video_set_image(update, context, query, user):
     state = get_or_init_state(context)
     state.generating_avatar = False  # см. комментарий в _cb_video_open
+    state.mj_active = False
+    state.waiting_for_mj_prompt = False
+    state.waiting_for_mj_image = False
     state.video_session_active = True
     state.waiting_for_video_image = True
     await query.message.reply_text(
@@ -5757,6 +5856,95 @@ async def _cb_video_start(update, context, query, user):
     return
 
 
+# ----------------------------------------------------------------------------
+# Midjourney (EvoLink) — отдельный мини-флоу: сетка 4 варианта -> апскейл
+# выбранного. Не переиспользует run_generation/GenerationJob (тот контракт —
+# "один клик, один результат"), структурно ближе к run_kling_motion_control
+# (свой gate через queued_user_ids/processing_user_ids, свой биллинг).
+# ----------------------------------------------------------------------------
+
+def mj_draft_kb(state: UserState) -> InlineKeyboardMarkup:
+    rows = []
+    if (state.mj_prompt or "").strip():
+        rows.append([InlineKeyboardButton("🚀 Сгенерировать", callback_data="mj_generate")])
+    rows.append([InlineKeyboardButton("◀️ В меню", callback_data="avatar_back_menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _cb_menu_midjourney(update, context, query, user):
+    if not MIDJOURNEY_ENABLED:
+        await query.message.reply_text("Midjourney пока недоступен.", reply_markup=main_menu_kb())
+        return
+    state = get_or_init_state(context)
+    # deactivate_video_session гасит video/motion/mj — вызываем ДО того, как
+    # включим свой mj_active, иначе она же погасит и его (см. её докстринг).
+    deactivate_video_session(state)
+    state.generating_avatar = False
+    state.mj_active = True
+    state.waiting_for_mj_prompt = True
+    state.waiting_for_mj_image = False
+    state.mj_prompt = ""
+    state.mj_reference = None
+    await query.message.reply_text(
+        "🎨 Midjourney\n\n"
+        "Опиши, что хочешь сгенерировать, одним текстовым сообщением.\n"
+        f"Стоимость: {MIDJOURNEY_GRID_COST} изюминок за сетку из 4 вариантов, "
+        f"{MIDJOURNEY_UPSCALE_COST} изюминок — за увеличение понравившегося."
+    )
+    return
+
+
+async def _cb_mj_generate(update, context, query, user):
+    state = get_or_init_state(context)
+    if not (state.mj_prompt or "").strip():
+        await query.answer("Сначала пришли текстовое описание.", show_alert=True)
+        return
+    if user.id in queued_user_ids or user.id in processing_user_ids:
+        await query.answer("Сырник уже занят другой задачей. Подожди.", show_alert=True)
+        return
+    # Reserve slot BEFORE any await — closes the race window (тот же паттерн,
+    # что в run_generation/_cb_video_start).
+    processing_user_ids.add(user.id)
+    try:
+        context.application.create_task(run_midjourney_grid(update, context))
+    except Exception:
+        processing_user_ids.discard(user.id)
+        logger.exception("create_task(run_midjourney_grid) failed for user=%s", user.id)
+        await query.answer("Не удалось запустить генерацию. Попробуй ещё раз.", show_alert=True)
+    return
+
+
+async def _cb_mj_pick(update, context, query, user):
+    try:
+        image_number = int(query.data.rsplit("_", 1)[1])
+    except (ValueError, IndexError):
+        await query.answer("Некорректный выбор.", show_alert=True)
+        return
+    if user.id in queued_user_ids or user.id in processing_user_ids:
+        await query.answer("Сырник уже занят другой задачей. Подожди.", show_alert=True)
+        return
+    grid = _get_valid_mj_grid(user.id)
+    if not grid:
+        await query.answer()
+        await query.message.reply_text(
+            "Эта сетка устарела (прошло больше 23 часов) — сгенерируй заново.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🎨 Midjourney", callback_data="menu_midjourney")
+            ]]),
+        )
+        return
+    processing_user_ids.add(user.id)
+    try:
+        context.application.create_task(
+            run_midjourney_upscale(update, context, grid=grid, image_number=image_number)
+        )
+    except Exception:
+        processing_user_ids.discard(user.id)
+        logger.exception("create_task(run_midjourney_upscale) failed for user=%s", user.id)
+        await query.answer("Не удалось запустить увеличение. Попробуй ещё раз.", show_alert=True)
+    return
+
+
 QDATA_EXACT_HANDLERS = {
     "pladm_open": _cb_pladm_open,
     "pladm_list": _cb_pladm_list,
@@ -5801,6 +5989,12 @@ QDATA_EXACT_HANDLERS = {
     "show_buy": _cb_show_buy,
     "open_ref": _cb_open_ref,
     "show_avatar": _cb_show_avatar,
+    "menu_midjourney": _cb_menu_midjourney,
+    "mj_generate": _cb_mj_generate,
+    "mj_pick_0": _cb_mj_pick,
+    "mj_pick_1": _cb_mj_pick,
+    "mj_pick_2": _cb_mj_pick,
+    "mj_pick_3": _cb_mj_pick,
 }
 
 VIDEO_EXACT_HANDLERS = {
@@ -7953,6 +8147,200 @@ async def run_kling_motion_control(update: Update, context: ContextTypes.DEFAULT
             )
             await reply_target.reply_text(
                 "Не удалось выполнить Kling Motion Control.\n"
+                "Временный технический сбой. Попробуй ещё раз позже.\n\n"
+                "Списанные изюминки возвращены на баланс."
+            )
+            if isinstance(e, asyncio.CancelledError):
+                raise
+    finally:
+        if user is not None:
+            processing_user_ids.discard(user.id)
+
+
+async def run_midjourney_grid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Midjourney (EvoLink), фаза 1: генерация сетки 4 вариантов. Отдельный
+    мини-флоу — не GenerationJob/generation_queue (тот контракт «один клик,
+    один результат», у Midjourney есть промежуточный выбор варианта)."""
+    user = None
+    try:
+        user = update.effective_user
+        reply_target = update.callback_query.message if update.callback_query else update.message
+        state = get_or_init_state(context)
+        prompt_text = (state.mj_prompt or "").strip()
+        reference = state.mj_reference
+
+        if not prompt_text:
+            await reply_target.reply_text("Промт потерян — открой «🎨 Midjourney» заново.")
+            return
+
+        cost = MIDJOURNEY_GRID_COST
+        bal = get_balance(user.id)
+        if bal < cost:
+            await reply_target.reply_text(
+                f"Не хватает изюминок.\nНужно: {cost}\nУ тебя: {bal}",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("💳 Купить изюминки", callback_data="show_buy")
+                ]])
+            )
+            return
+
+        # Референс (если есть) — публичный URL ДО списания (EvoLink Midjourney
+        # кладёт URL в начало prompt, ему тоже нужен настоящий http(s) URL —
+        # тот же паттерн, что и в фиксе Kling Motion Control).
+        persistent_reference_url = None
+        if reference:
+            persistent_reference_url = await _persist_image_ref(reference)
+            if not persistent_reference_url:
+                await reply_target.reply_text(
+                    "Не удалось подготовить фото-референс (хостинг временно "
+                    "недоступен). Попробуй ещё раз через минуту — изюминки не списаны."
+                )
+                return
+
+        if not spend_izyminki(user.id, cost):
+            await reply_target.reply_text("Не удалось списать изюминки. Попробуй ещё раз.")
+            return
+
+        state.mj_active = False
+        state.waiting_for_mj_prompt = False
+        state.waiting_for_mj_image = False
+        state.mj_prompt = ""
+        state.mj_reference = None
+
+        await reply_target.reply_text("Запускаю Midjourney 🎨\nОбычно занимает пару минут.")
+        status_msg = await reply_target.reply_text("⏳ Генерирую сетку вариантов…")
+
+        async def _edit_status(text: str) -> None:
+            try:
+                await status_msg.edit_text(text)
+            except Exception:
+                pass
+
+        try:
+            raw_task_id = await start_midjourney_task_evolink(
+                prompt=prompt_text, image_url=persistent_reference_url, user_id=user.id,
+            )
+            task_id = raw_task_id.split("__EVOLINK__:", 1)[1] if raw_task_id.startswith("__EVOLINK__:") else raw_task_id
+            grid_url = await poll_evolink_task(
+                task_id=task_id,
+                max_attempts=MIDJOURNEY_MAX_POLL_ATTEMPTS,
+                poll_interval=MIDJOURNEY_POLL_INTERVAL,
+                status_callback=_edit_status,
+            )
+            _bounded_set(last_mj_grid, user.id, {
+                "task_id": task_id,
+                "grid_url": grid_url,
+                "prompt": prompt_text,
+                "chat_id": update.effective_chat.id,
+                "created_at": time.time(),
+            })
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id,
+                photo=grid_url,
+                caption=(
+                    "Готово 🎨\nВыбери вариант, чтобы увеличить в хорошем качестве "
+                    f"(+{MIDJOURNEY_UPSCALE_COST} изюминок):"
+                ),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("1️⃣", callback_data="mj_pick_0"),
+                    InlineKeyboardButton("2️⃣", callback_data="mj_pick_1"),
+                    InlineKeyboardButton("3️⃣", callback_data="mj_pick_2"),
+                    InlineKeyboardButton("4️⃣", callback_data="mj_pick_3"),
+                ]]),
+            )
+            log_generation_event(
+                user_id=user.id, kind="image", status="success", provider="EVOLINK_MIDJOURNEY",
+                cost=cost, was_free=False, references_count=1 if reference else 0,
+                prompt=prompt_text[:500], username=user.username, model=MIDJOURNEY_MODEL,
+                charged_izyminki=cost, refunded_izyminki=0,
+                is_admin_test=1 if user.id in ADMIN_IDS else 0,
+            )
+        except BaseException as e:
+            logger.exception("Midjourney grid generation failed")
+            add_izyminki(user.id, cost)
+            log_generation_event(
+                user_id=user.id, kind="image", status="failed", provider="EVOLINK_MIDJOURNEY",
+                cost=cost, was_free=False, references_count=1 if reference else 0,
+                model=MIDJOURNEY_MODEL, charged_izyminki=cost, refunded_izyminki=cost,
+                error_type=classify_generation_error(e), error_message=str(e),
+                is_admin_test=1 if user.id in ADMIN_IDS else 0,
+            )
+            await reply_target.reply_text(
+                "Не удалось сгенерировать сетку Midjourney.\n"
+                "Временный технический сбой. Попробуй ещё раз позже.\n\n"
+                "Списанные изюминки возвращены на баланс."
+            )
+            if isinstance(e, asyncio.CancelledError):
+                raise
+    finally:
+        if user is not None:
+            processing_user_ids.discard(user.id)
+
+
+async def run_midjourney_upscale(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, *, grid: dict, image_number: int,
+) -> None:
+    """Midjourney (EvoLink), фаза 2: апскейл одного из 4 вариантов сетки.
+    Отдельная операция биллинга (не «бесплатное продолжение» сетки) — списание
+    происходит в момент клика по кнопке варианта."""
+    user = update.effective_user
+    query = update.callback_query
+    reply_target = query.message if query else update.effective_message
+    chat_id = grid.get("chat_id") or update.effective_chat.id
+    try:
+        cost = MIDJOURNEY_UPSCALE_COST
+        bal = get_balance(user.id)
+        if bal < cost:
+            await reply_target.reply_text(
+                f"Не хватает изюминок.\nНужно: {cost}\nУ тебя: {bal}",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("💳 Купить изюминки", callback_data="show_buy")
+                ]])
+            )
+            return
+        if not spend_izyminki(user.id, cost):
+            await reply_target.reply_text("Не удалось списать изюминки. Попробуй ещё раз.")
+            return
+
+        status_msg = await reply_target.reply_text("⏳ Увеличиваю выбранный вариант…")
+
+        async def _edit_status(text: str) -> None:
+            try:
+                await status_msg.edit_text(text)
+            except Exception:
+                pass
+
+        try:
+            raw_task_id = await start_midjourney_upscale_evolink(
+                task_id=grid["task_id"], image_number=image_number, user_id=user.id,
+            )
+            task_id = raw_task_id.split("__EVOLINK__:", 1)[1] if raw_task_id.startswith("__EVOLINK__:") else raw_task_id
+            final_url = await poll_evolink_task(
+                task_id=task_id,
+                max_attempts=MIDJOURNEY_MAX_POLL_ATTEMPTS,
+                poll_interval=MIDJOURNEY_POLL_INTERVAL,
+                status_callback=_edit_status,
+            )
+            await send_generation_result_by_url(context.application, chat_id, user.id, final_url, job=None)
+            log_generation_event(
+                user_id=user.id, kind="image", status="success", provider="EVOLINK_MIDJOURNEY_UPSCALE",
+                cost=cost, was_free=False, references_count=0,
+                prompt=(grid.get("prompt") or "")[:500], username=user.username,
+                model=MIDJOURNEY_UPSCALE_MODEL, charged_izyminki=cost, refunded_izyminki=0,
+                is_admin_test=1 if user.id in ADMIN_IDS else 0,
+            )
+        except BaseException as e:
+            logger.exception("Midjourney upscale failed")
+            add_izyminki(user.id, cost)
+            log_generation_event(
+                user_id=user.id, kind="image", status="failed", provider="EVOLINK_MIDJOURNEY_UPSCALE",
+                cost=cost, was_free=False, references_count=0,
+                model=MIDJOURNEY_UPSCALE_MODEL, charged_izyminki=cost, refunded_izyminki=cost,
+                error_type=classify_generation_error(e), error_message=str(e),
+                is_admin_test=1 if user.id in ADMIN_IDS else 0,
+            )
+            await reply_target.reply_text(
+                "Не удалось увеличить вариант.\n"
                 "Временный технический сбой. Попробуй ещё раз позже.\n\n"
                 "Списанные изюминки возвращены на баланс."
             )

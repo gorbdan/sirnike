@@ -44,6 +44,52 @@
       Тест: `tests/test_block_21_prompt_preserved_after_generation.py`.
       32/32 pytest (без учёта параллельной ветки Midjourney), `py_compile` OK.
 
+- [x] P2/фича · Midjourney как отдельный флоу фото-генерации (запрос Ани
+      2026-08-03). У Zveno Midjourney нет (проверено по каталогу
+      https://zveno.ai/models) — подключили через EvoLink (уже есть ключ
+      для видео, доки: https://evolink.ai/docs/en/api-manual/image-series/midjourney/,
+      версии V7/V8.1). Согласовано с Аней: сетка 2×2 (4 варианта) одним
+      фото → юзер выбирает кнопкой → апскейл отдельным вызовом; референс-фото
+      (image-to-image) поддержан сразу.
+      Архитектура (см. план `resilient-imagining-minsky.md` в сессии): НЕ
+      третий пункт обычного пикера `image_model` (тот контракт «один клик —
+      один результат», у Midjourney есть промежуточный выбор) — отдельная
+      кнопка «🎨 Midjourney» в фото-меню, свой мини-флоу (`run_midjourney_grid`/
+      `run_midjourney_upscale`), структурно похожий на `run_kling_motion_control`
+      (свой gate через `queued_user_ids`/`processing_user_ids`, свой биллинг,
+      не через `GenerationJob`/`generation_queue`).
+      · `video_providers.py`: `_evolink_create_task` параметризован
+        `endpoint_path` (дефолт сохраняет видео-поведение) — Midjourney
+        зовёт с `/v1/images/generations`. Новые
+        `start_midjourney_task_evolink`/`start_midjourney_upscale_evolink`.
+        Референс-фото у EvoLink Midjourney — не отдельное поле, URL кладётся
+        В НАЧАЛО строки prompt.
+      · `SirNike.py`: `last_mj_grid` (bounded LRU + ленивая TTL-чистка ~23ч,
+        с запасом от заявленных EvoLink 24ч жизни ссылок на картинки, по
+        образцу `MEDIA_GROUP_CACHE`) хранит task_id/grid_url сетки до выбора
+        юзера. Референс юзера хостится в публичный URL через уже
+        существующий `_persist_image_ref` ДО списания изюминок (тот же
+        паттерн, что в хотфиксе Kling Motion Control выше — если хостинг не
+        удался, честный отказ без списания). Апскейл — отдельная операция
+        биллинга (списание в момент клика по варианту), доставка финального
+        фото — через существующий `send_generation_result_by_url`.
+      · Сброс состояния между флоу: вход в Midjourney гасит видео/аватар
+        (через `deactivate_video_session`, куда добавлены mj-поля), входы в
+        видео (`_cb_video_open`/`_cb_video_set_prompt`/`_cb_video_set_image`)
+        гасят `mj_active` — та же симметрия, что чинили в баг-ресерче
+        2026-08-02 для аватар↔видео.
+      · Цена (`MIDJOURNEY_GRID_COST=15`, `MIDJOURNEY_UPSCALE_COST=10`) —
+        грубая прикидка по заявленному биллингу EvoLink (fast ≈ 1.8
+        кредита/вызов), ТРЕБУЕТ сверки по факту `credits_reserved` из первого
+        реального лога перед включением флага (`MIDJOURNEY_ENABLED=0` по
+        умолчанию).
+      Тесты: `tests/test_block_16_evolink_http_client.py` (payload-и HTTP-
+      клиента, 15.37-15.52), новый `tests/test_block_20_midjourney.py`
+      (8 функций: фича-флаг, сброс чужих флоу, сбор промта/фото, хостинг
+      референса до списания и отказ хостинга без списания, доставка сетки
+      с 4 кнопками, TTL протухшей сетки, биллинг+доставка апскейла,
+      рефанд апскейла при сбое). 39/39 pytest, `py_compile` OK.
+
 - [x] P0 · Живой прод-баг 2026-08-03: «🕺 Видео с движением» (Kling Motion
       Control через EvoLink) падало 100% времени — `invalid_media_url:
       image_urls[0] must be an absolute HTTP(S) URL`. Корень:

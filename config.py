@@ -227,6 +227,26 @@ GPT5_IMAGE_ENABLED = os.getenv("GPT5_IMAGE_ENABLED", "1").strip().lower() in ("1
 ZVENO_GPT5_IMAGE_MODEL = os.getenv("ZVENO_GPT5_IMAGE_MODEL", "openai/gpt-5-image")
 GPT5_IMAGE_COST = int(os.getenv("GPT5_IMAGE_COST", "25"))
 
+# Midjourney через EvoLink (у Zveno этой модели нет — проверено по
+# https://zveno.ai/models). Отдельный мини-флоу (не третий пункт обычного
+# image_model-пикера): сетка 2×2 → юзер выбирает вариант → апскейл отдельным
+# вызовом. Выключено по умолчанию до ручного теста качества Аней (тот же
+# порядок раскатки, что был у EvoLink-видео). Цена — грубая прикидка по
+# заявленному EvoLink биллингу (fast ≈ 1.8 кредита/вызов, апскейл — отдельный
+# вызов) с той же целевой маржой x3.3, что у остальных моделей (см. комментарий
+# BUY_PACKS выше) — ТРЕБУЕТ сверки по факту credits_reserved из первого
+# реального лога перед включением флага, не полагаться на эту цифру вслепую.
+MIDJOURNEY_ENABLED = os.getenv("MIDJOURNEY_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+MIDJOURNEY_MODEL = os.getenv("MIDJOURNEY_MODEL", "mj-v7")
+MIDJOURNEY_UPSCALE_MODEL = os.getenv("MIDJOURNEY_UPSCALE_MODEL", "mj-v7-upscale")
+MIDJOURNEY_SPEED = os.getenv("MIDJOURNEY_SPEED", "fast").strip().lower()
+MIDJOURNEY_GRID_COST = int(os.getenv("MIDJOURNEY_GRID_COST", "15"))
+MIDJOURNEY_UPSCALE_COST = int(os.getenv("MIDJOURNEY_UPSCALE_COST", "10"))
+# Картинки генерируются быстрее видео — короче интервал/меньше попыток
+# (60×5с = 5 мин максимум ожидания на фазу).
+MIDJOURNEY_MAX_POLL_ATTEMPTS = int(os.getenv("MIDJOURNEY_MAX_POLL_ATTEMPTS", "60"))
+MIDJOURNEY_POLL_INTERVAL = int(os.getenv("MIDJOURNEY_POLL_INTERVAL", "5"))
+
 MAX_POLL_ATTEMPTS = int(os.getenv("MAX_POLL_ATTEMPTS", "30"))
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "60"))
 

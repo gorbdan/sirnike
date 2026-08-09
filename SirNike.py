@@ -5963,16 +5963,27 @@ async def _cb_mj_pick_resend(update, context, query, user):
         )
         return
     grid_urls = grid.get("grid_urls") or []
-    number_emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
-    await query.message.reply_text(
-        f"Готово 🎨 ({len(grid_urls)} вариант{'а' if 1 < len(grid_urls) < 5 else 'ов' if len(grid_urls) != 1 else ''})\n"
-        "Выбери вариант, чтобы увеличить в хорошем качестве "
-        f"(+{MIDJOURNEY_UPSCALE_COST} изюминок):",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton(number_emoji[i], callback_data=f"mj_pick_{i}")
-            for i in range(len(grid_urls))
-        ]]),
-    )
+    await query.message.reply_text(_mj_picker_text(grid_urls), reply_markup=_mj_picker_kb(grid_urls))
+    return
+
+
+async def _cb_mj_grid_resend(update, context, query, user):
+    """Кнопка-страховка на случай, когда даже сама сетка картинок не
+    подтвердила доставку (Telegram-таймаут на send_media_group) — пробуем
+    показать её ещё раз по уже сохранённым URL, без повторной генерации/
+    списания (EvoLink свою работу уже сделал)."""
+    await query.answer()
+    grid = _get_valid_mj_grid(user.id)
+    if not grid:
+        await query.message.reply_text(
+            "Эта сетка устарела (прошло больше 23 часов) — сгенерируй заново.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🎨 Midjourney", callback_data="menu_midjourney")
+            ]]),
+        )
+        return
+    grid_urls = grid.get("grid_urls") or []
+    await _deliver_mj_grid_and_picker(context, grid.get("chat_id") or update.effective_chat.id, user.id, grid_urls)
     return
 
 
@@ -6027,6 +6038,7 @@ QDATA_EXACT_HANDLERS = {
     "mj_pick_2": _cb_mj_pick,
     "mj_pick_3": _cb_mj_pick,
     "mj_pick_resend": _cb_mj_pick_resend,
+    "mj_grid_resend": _cb_mj_grid_resend,
 }
 
 VIDEO_EXACT_HANDLERS = {
@@ -8189,6 +8201,90 @@ async def run_kling_motion_control(update: Update, context: ContextTypes.DEFAULT
             processing_user_ids.discard(user.id)
 
 
+def _mj_picker_kb(grid_urls: list) -> InlineKeyboardMarkup:
+    number_emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(number_emoji[i], callback_data=f"mj_pick_{i}")
+        for i in range(len(grid_urls))
+    ]])
+
+
+def _mj_picker_text(grid_urls: list) -> str:
+    n = len(grid_urls)
+    return (
+        f"Готово 🎨 ({n} вариант{'а' if 1 < n < 5 else 'ов' if n != 1 else ''})\n"
+        "Выбери вариант, чтобы увеличить в хорошем качестве "
+        f"(+{MIDJOURNEY_UPSCALE_COST} изюминок):"
+    )
+
+
+async def _deliver_mj_grid_and_picker(context, chat_id: int, user_id: int, grid_urls: list) -> None:
+    """Доставляет сетку вариантов + сообщение с кнопками выбора. Best-effort
+    с ретраями на КАЖДОМ шаге, никогда не бросает исключение дальше и никогда
+    не рефандит сама — вызывающий код уже решил, что генерация состоялась
+    (EvoLink реально сделал картинки), а Telegram-таймаут при отправке не
+    значит, что доставка не удалась (частый паттерн: клиент не дождался
+    ответа, хотя сообщение реально дошло — живой прод-баг 2026-08-09: та же
+    проблема, что раньше ловили на send_photo обычной фото-генерации и
+    Kling Motion Control, здесь она же на send_media_group)."""
+    media_delivered = False
+    for attempt in range(2):
+        try:
+            if len(grid_urls) > 1:
+                await context.bot.send_media_group(
+                    chat_id=chat_id, media=[InputMediaPhoto(media=u) for u in grid_urls],
+                )
+            else:
+                await context.bot.send_photo(chat_id=chat_id, photo=grid_urls[0])
+            media_delivered = True
+            break
+        except Exception:
+            if attempt == 0:
+                await asyncio.sleep(2)
+    if not media_delivered:
+        logger.exception("Midjourney grid media delivery failed after retry: chat_id=%s", chat_id)
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    "Сетка Midjourney сгенерирована, но не получилось её показать "
+                    "(сбой соединения) — изюминки не списаны зря."
+                ),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔁 Показать сетку", callback_data="mj_grid_resend")
+                ]]),
+            )
+        except Exception:
+            pass
+        return
+
+    picker_sent = False
+    for attempt in range(2):
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id, text=_mj_picker_text(grid_urls), reply_markup=_mj_picker_kb(grid_urls),
+            )
+            picker_sent = True
+            break
+        except Exception:
+            if attempt == 0:
+                await asyncio.sleep(2)
+    if not picker_sent:
+        logger.exception(
+            "Midjourney picker message failed after retry (images already delivered): chat_id=%s", chat_id,
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="Сетка готова выше ⬆️ Не получилось показать кнопки выбора с первого раза.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔁 Показать кнопки выбора", callback_data="mj_pick_resend")
+                ]]),
+            )
+        except Exception:
+            pass  # изображения уже доставлены — это лучшее, что можем сделать
+
+
 async def run_midjourney_grid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Midjourney (EvoLink), фаза 1: генерация сетки 4 вариантов. Отдельный
     мини-флоу — не GenerationJob/generation_queue (тот контракт «один клик,
@@ -8285,55 +8381,12 @@ async def run_midjourney_grid(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "chat_id": update.effective_chat.id,
                 "created_at": time.time(),
             })
-            number_emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
-            if len(grid_urls) > 1:
-                await context.bot.send_media_group(
-                    chat_id=update.effective_chat.id,
-                    media=[InputMediaPhoto(media=u) for u in grid_urls],
-                )
-            else:
-                await context.bot.send_photo(chat_id=update.effective_chat.id, photo=grid_urls[0])
-            # С этой точки картинки УЖЕ доставлены юзеру — сбой в необязательном
-            # хвосте (сообщение с кнопками выбора) не должен ни рефандить, ни
-            # пугать «временным сбоем» (живой прод-баг 2026-08-09: Telegram
-            # изредка таймаутит именно на этом шаге — тот же класс, что чинили
-            # для основной фото-генерации и Kling Motion Control). Ретраим
-            # разок, при полном отказе — честная кнопка «Показать кнопки» вместо
-            # молчания.
-            picker_kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton(number_emoji[i], callback_data=f"mj_pick_{i}")
-                for i in range(len(grid_urls))
-            ]])
-            picker_text = (
-                f"Готово 🎨 ({len(grid_urls)} вариант{'а' if 1 < len(grid_urls) < 5 else 'ов' if len(grid_urls) != 1 else ''})\n"
-                "Выбери вариант, чтобы увеличить в хорошем качестве "
-                f"(+{MIDJOURNEY_UPSCALE_COST} изюминок):"
-            )
-            picker_sent = False
-            for _picker_attempt in range(2):
-                try:
-                    await context.bot.send_message(
-                        chat_id=update.effective_chat.id, text=picker_text, reply_markup=picker_kb,
-                    )
-                    picker_sent = True
-                    break
-                except Exception:
-                    if _picker_attempt == 0:
-                        await asyncio.sleep(2)
-            if not picker_sent:
-                logger.exception(
-                    "Midjourney picker message failed after retry (images already delivered): user=%s", user.id,
-                )
-                try:
-                    await context.bot.send_message(
-                        chat_id=update.effective_chat.id,
-                        text="Сетка готова выше ⬆️ Не получилось показать кнопки выбора с первого раза.",
-                        reply_markup=InlineKeyboardMarkup([[
-                            InlineKeyboardButton("🔁 Показать кнопки выбора", callback_data="mj_pick_resend")
-                        ]]),
-                    )
-                except Exception:
-                    pass  # изображения уже доставлены — это лучшее, что можем сделать
+            # EvoLink уже сгенерировал картинки (реальные деньги потрачены на
+            # его стороне) — с этой точки Telegram-таймауты при отправке НЕ
+            # должны ни рефандить, ни пугать «временным сбоем»: сама доставка
+            # (send_media_group) и сообщение с кнопками — best-effort с
+            # ретраями внутри _deliver_mj_grid_and_picker, см. её докстринг.
+            await _deliver_mj_grid_and_picker(context, update.effective_chat.id, user.id, grid_urls)
             log_generation_event(
                 user_id=user.id, kind="image", status="success", provider="EVOLINK_MIDJOURNEY",
                 cost=cost, was_free=False, references_count=1 if reference else 0,

@@ -807,11 +807,19 @@ async def poll_evolink_task(
     max_attempts: int,
     poll_interval: int,
     status_callback=None,
-) -> str:
+    return_all: bool = False,
+):
     """Универсальный поллер EvoLink: GET /v1/tasks/{id} — один и тот же формат
     для Seedance/Gemini Omni/Kling Motion Control (см. docs/specs/2026-07-31_evolink_video_provider.md).
     task_id — «голый» id EvoLink, БЕЗ префикса __EVOLINK__: (снимает его вызывающий,
-    см. poll_seedance_task)."""
+    см. poll_seedance_task).
+
+    return_all=False (дефолт, видео и все прежние вызовы): возвращает ПЕРВЫЙ
+    http-URL из results — единственный результат у видео-моделей.
+    return_all=True (Midjourney-сетка): возвращает СПИСОК всех http-URL из
+    results — EvoLink Midjourney отдаёт "4 images per generation" отдельными
+    URL в массиве, не один сборный файл-коллаж. Живой прод-баг 2026-08-09:
+    старое поведение (только первый URL) молча теряло 3 варианта из 4."""
     evolink_api_key = _get_evolink_api_key_hook()
     if not evolink_api_key:
         raise Exception("EVOLINK_API_KEY is empty")
@@ -856,15 +864,17 @@ async def poll_evolink_task(
 
             if status == "completed":
                 results = data.get("results")
-                video_url = None
+                urls: List[str] = []
                 if isinstance(results, list):
                     for item in results:
                         if isinstance(item, str) and item.strip().startswith("http"):
-                            video_url = item.strip()
-                            break
-                if not video_url:
+                            urls.append(item.strip())
+                if not urls:
                     raise Exception(f"EvoLink task completed but results URL missing: {data}")
-                return video_url
+                if return_all:
+                    logger.info("EvoLink task %s: completed with %s result URL(s)", task_id, len(urls))
+                    return urls
+                return urls[0]
 
             if status in ("failed", "cancelled", "error"):
                 error = data.get("error")

@@ -125,7 +125,8 @@ def test_block_20d_generate_hosts_reference_before_charge_and_delivers_grid():
         return "__EVOLINK__:mj-task-1"
 
     S.start_midjourney_task_evolink = fake_start
-    S.poll_evolink_task = AsyncMock(return_value="https://cdn.example/grid.jpg")
+    _mj_grid_urls = [f"https://cdn.example/grid{i}.jpg" for i in range(4)]
+    S.poll_evolink_task = AsyncMock(return_value=list(_mj_grid_urls))
 
     update.effective_chat = types.SimpleNamespace(id=204)
     update.callback_query = query
@@ -143,17 +144,55 @@ def test_block_20d_generate_hosts_reference_before_charge_and_delivers_grid():
     assert evolink_calls == [("a portrait", "https://iili.io/mjref.jpg")], (
         f"20d.3 EvoLink получил захостенный URL: {evolink_calls}"
     )
-    assert context.bot.send_photo.await_count == 1, "20d.4 сетка отправлена юзеру"
-    sent_kwargs = context.bot.send_photo.await_args.kwargs
-    assert sent_kwargs.get("photo") == "https://cdn.example/grid.jpg", "20d.5 фото — реальный grid_url"
+    # Живой прод-баг 2026-08-09: EvoLink отдаёт 4 ОТДЕЛЬНЫХ URL (не один
+    # сборный файл-коллаж) — все 4 должны уйти юзеру медиа-группой.
+    assert context.bot.send_media_group.await_count == 1, "20d.4 4 варианта отправлены медиа-группой"
+    media = context.bot.send_media_group.await_args.kwargs["media"]
+    assert [m.media for m in media] == _mj_grid_urls, f"20d.5 в группе все 4 URL, по порядку: {media}"
+    assert context.bot.send_photo.await_count == 0, "20d.5b send_photo (одиночное фото) не вызывается для 4 вариантов"
+    sent_kwargs = context.bot.send_message.await_args.kwargs
     kb = sent_kwargs["reply_markup"].inline_keyboard
     cbs = [b.callback_data for row in kb for b in row]
     assert cbs == ["mj_pick_0", "mj_pick_1", "mj_pick_2", "mj_pick_3"], f"20d.6 4 кнопки выбора: {cbs}"
     grid = S.last_mj_grid.get(204)
-    assert grid and grid["task_id"] == "mj-task-1" and grid["grid_url"] == "https://cdn.example/grid.jpg", (
-        f"20d.7 сетка сохранена в last_mj_grid: {grid}"
+    assert grid and grid["task_id"] == "mj-task-1" and grid["grid_urls"] == _mj_grid_urls, (
+        f"20d.7 сетка (все 4 URL) сохранена в last_mj_grid: {grid}"
     )
     assert state.mj_active is False, "20d.8 черновик-состояние сброшено после запуска"
+
+
+def test_block_20d2_fewer_than_four_variants_still_delivered():
+    # Защита от случая, когда EvoLink вернул меньше 4 вариантов — кнопок
+    # ровно столько, сколько реальных URL, не мёртвые mj_pick_2/3.
+    state = S.UserState(mj_active=True, mj_prompt="a portrait", mj_reference=None)
+    update, context, query = make_update_context("mj_generate", user_id=209)
+    context.user_data["state"] = state
+    update.effective_chat = types.SimpleNamespace(id=209)
+    update.callback_query = query
+    query.message.reply_text = AsyncMock()
+
+    _orig = {}
+    for name in ("spend_izyminki", "add_izyminki", "get_balance",
+                 "start_midjourney_task_evolink", "poll_evolink_task"):
+        _orig[name] = getattr(S, name)
+    S.get_balance = lambda uid: 999
+    S.spend_izyminki = lambda uid, amount: True
+    S.add_izyminki = lambda uid, amount: None
+    S.start_midjourney_task_evolink = AsyncMock(return_value="__EVOLINK__:mj-task-2")
+    S.poll_evolink_task = AsyncMock(return_value=["https://cdn.example/only1.jpg"])
+
+    try:
+        asyncio.run(S.run_midjourney_grid(update, context))
+    finally:
+        for name, fn in _orig.items():
+            setattr(S, name, fn)
+        S.processing_user_ids.discard(209)
+
+    assert context.bot.send_photo.await_count == 1, "20d2.1 ровно 1 вариант -> одиночное send_photo, не медиа-группа"
+    assert context.bot.send_media_group.await_count == 0, "20d2.2 медиа-группа не вызывается для 1 варианта"
+    kb = context.bot.send_message.await_args.kwargs["reply_markup"].inline_keyboard
+    cbs = [b.callback_data for row in kb for b in row]
+    assert cbs == ["mj_pick_0"], f"20d2.3 ровно 1 кнопка под 1 реальный вариант: {cbs}"
 
 
 def test_block_20e_hosting_failure_no_charge_no_evolink_call():
@@ -202,9 +241,24 @@ def test_block_20f_pick_expired_grid_no_charge():
     assert 206 not in S.processing_user_ids, "20f.2 processing_user_ids не тронут при отказе"
 
 
+def test_block_20f2_pick_out_of_bounds_no_charge():
+    # Защита от устаревшей записи с меньшим числом вариантов, чем 4 кнопки
+    # могли бы предполагать (не должно случаться при новом коде, но защита
+    # не помешает — mj_pick_3 при 1 реальном варианте).
+    S.last_mj_grid[210] = {
+        "task_id": "mj-task-x", "grid_urls": ["https://cdn.example/only.jpg"],
+        "prompt": "x", "chat_id": 210, "created_at": __import__("time").time(),
+    }
+    update, context, query = make_update_context("mj_pick_3", user_id=210)
+    context.user_data["state"] = S.UserState()
+    asyncio.run(S._cb_mj_pick(update, context, query, types.SimpleNamespace(id=210, username="t")))
+    assert 210 not in S.processing_user_ids, "20f2.1 вне диапазона -> задача не запускается"
+    S.last_mj_grid.pop(210, None)
+
+
 def test_block_20g_upscale_charges_and_delivers():
     grid = {
-        "task_id": "mj-task-2", "grid_url": "https://cdn.example/grid2.jpg",
+        "task_id": "mj-task-2", "grid_urls": [f"https://cdn.example/grid2-{i}.jpg" for i in range(4)],
         "prompt": "a portrait", "chat_id": 207, "created_at": __import__("time").time(),
     }
     S.last_mj_grid[207] = grid
@@ -253,7 +307,7 @@ def test_block_20g_upscale_charges_and_delivers():
 
 def test_block_20h_upscale_failure_refunds():
     grid = {
-        "task_id": "mj-task-3", "grid_url": "https://cdn.example/grid3.jpg",
+        "task_id": "mj-task-3", "grid_urls": [f"https://cdn.example/grid3-{i}.jpg" for i in range(4)],
         "prompt": "a portrait", "chat_id": 208, "created_at": __import__("time").time(),
     }
     update, context, query = make_update_context("mj_pick_2", user_id=208)

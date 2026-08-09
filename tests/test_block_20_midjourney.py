@@ -586,3 +586,92 @@ def test_block_20n_pick_resend_expired_grid_honest_message():
     asyncio.run(S._cb_mj_pick_resend(update, context, query, types.SimpleNamespace(id=216, username="t")))
     texts = [c.args[0] for c in query.message.reply_text.await_args_list]
     assert any("устарела" in t for t in texts), f"20n.1 протухшей сетки нет -> честное сообщение: {texts}"
+
+
+def test_block_20o_media_group_timeout_no_refund_offers_resend():
+    # Живой прод-баг 2026-08-09: send_media_group таймаутит на стороне
+    # клиента (Telegram чаще всего успевает доставить, ответа не дождались) —
+    # раньше это ловилось как общий except -> рефанд + "временный сбой",
+    # хотя картинки реально могли дойти. Теперь: ретрай, при полном отказе —
+    # без рефанда, с кнопкой "Показать сетку".
+    state = S.UserState(mj_active=True, mj_prompt="a portrait", mj_reference=None)
+    update, context, query = make_update_context("mj_generate", user_id=217)
+    context.user_data["state"] = state
+    update.effective_chat = types.SimpleNamespace(id=217)
+    update.callback_query = query
+    query.message.reply_text = AsyncMock()
+
+    _orig = {}
+    for name in ("spend_izyminki", "add_izyminki", "get_balance", "get_avatar_urls",
+                 "get_active_avatar_kind", "start_midjourney_task_evolink", "poll_evolink_task",
+                 "asyncio"):
+        _orig[name] = getattr(S, name)
+
+    charges = []
+    S.get_balance = lambda uid: 999
+    S.spend_izyminki = lambda uid, amount: True
+    S.add_izyminki = lambda uid, amount: charges.append(("refund", uid, amount))
+    S.get_avatar_urls = lambda uid: {}
+    S.get_active_avatar_kind = lambda uid: None
+    S.start_midjourney_task_evolink = AsyncMock(return_value="__EVOLINK__:mj-task-timeout")
+    S.poll_evolink_task = AsyncMock(return_value=[f"https://cdn.example/t{i}.jpg" for i in range(4)])
+
+    class _FastAsyncio:
+        CancelledError = _orig["asyncio"].CancelledError
+
+        @staticmethod
+        async def sleep(_secs):
+            return None
+
+    S.asyncio = _FastAsyncio
+
+    # send_media_group падает ОБА раза (полный клиентский таймаут).
+    context.bot.send_media_group = AsyncMock(side_effect=Exception("httpx.ReadTimeout"))
+    send_message_calls = {"texts": [], "button_labels": []}
+
+    async def capture_send_message(*a, **kw):
+        send_message_calls["texts"].append(kw.get("text"))
+        kb = kw.get("reply_markup")
+        if kb is not None:
+            send_message_calls["button_labels"] += [b.text for row in kb.inline_keyboard for b in row]
+        return None
+
+    context.bot.send_message = AsyncMock(side_effect=capture_send_message)
+
+    try:
+        asyncio.run(S.run_midjourney_grid(update, context))
+    finally:
+        for name, fn in _orig.items():
+            setattr(S, name, fn)
+        S.processing_user_ids.discard(217)
+
+    assert context.bot.send_media_group.await_count == 2, (
+        f"20o.1 ретрай send_media_group: {context.bot.send_media_group.await_count}"
+    )
+    assert charges == [], f"20o.2 рефанда нет, даже если сетка так и не подтвердила доставку: {charges}"
+    assert any("Показать сетку" in t for t in send_message_calls["button_labels"]), (
+        f"20o.3 страховочная кнопка «Показать сетку»: {send_message_calls}"
+    )
+    texts = [c.args[0] for c in query.message.reply_text.await_args_list]
+    assert not any("технический сбой" in t for t in texts), (
+        f"20o.4 юзера НЕ пугают «временным сбоем»: {texts}"
+    )
+    # Пикер (кнопки 1-4) в этом сценарии не шлём — сетка не подтвердилась.
+    assert "mj_pick_0" not in send_message_calls["button_labels"], (
+        "20o.5 пикер не отправляется, пока не подтверждена доставка самой сетки"
+    )
+
+
+def test_block_20p_grid_resend_redelivers_from_stored_grid():
+    S.last_mj_grid[218] = {
+        "task_id": "mj-task-gr", "grid_urls": [f"https://cdn.example/gr{i}.jpg" for i in range(4)],
+        "prompt": "x", "chat_id": 218, "created_at": __import__("time").time(),
+    }
+    update, context, query = make_update_context("mj_grid_resend", user_id=218)
+    context.user_data["state"] = S.UserState()
+    asyncio.run(S._cb_mj_grid_resend(update, context, query, types.SimpleNamespace(id=218, username="t")))
+    assert context.bot.send_media_group.await_count == 1, "20p.1 сетка пересобрана и переслана из last_mj_grid"
+    media = context.bot.send_media_group.await_args.kwargs["media"]
+    assert [m.media for m in media] == S.last_mj_grid[218]["grid_urls"], "20p.2 URL те же, что были сохранены"
+    assert context.bot.send_message.await_count == 1, "20p.3 следом ушёл пикер с кнопками"
+    S.last_mj_grid.pop(218, None)

@@ -59,3 +59,42 @@ def test_block_02_video_helpers():
 
     assert S.calc_seedance_cost(5, 8.0) == 40, "2.22 стоимость 5с kling3 = 40 изюм"
     assert S.calc_seedance_cost(8, 8.0) == 64, "2.23 стоимость 8с veo31 = 64 изюм"
+
+
+def test_block_02b_seedance25_premium_video():
+    # Seedance 2.5 — отдельный премиум-продукт (P1 бриф от аналитика рынка,
+    # docs/ai-market/2026-08-08-creator-candidates.md), НЕ подмена дефолтной
+    # Seedance 2.0. Единственная видео-модель с ЦЕНОЙ, ЗАВИСЯЩЕЙ ОТ КАЧЕСТВА
+    # (480p дешевле, 720p дороже) — остальные модели игнорируют mode в цене.
+    _orig_enabled = S.SEEDANCE25_ENABLED
+    st = S.UserState()
+
+    S.SEEDANCE25_ENABLED = False
+    st.video_model = "seedance25"
+    assert S.get_video_model(st) == "seedance2", "2b.1 seedance25 при выключенном флаге -> seedance2 (фолбэк)"
+
+    S.SEEDANCE25_ENABLED = True
+    assert S.get_video_model(st) == "seedance25", "2b.2 seedance25 при включённом флаге выбирается"
+    assert S.get_video_model_label("seedance25") == "Seedance 2.5 💎", "2b.3 label seedance25"
+
+    assert S.get_seedance_duration_bounds("seedance25") == (5, 30), (
+        "2b.4 bounds seedance25=(5,30) — нативно до 30 сек без склейки"
+    )
+    assert S.get_seedance_mode_options("seedance25") == ["480p", "720p"], (
+        "2b.5 seedance25: оба качества доступны юзеру, не одно на выбор"
+    )
+    opts_25 = S.get_seedance_duration_options("seedance25")
+    assert all(5 <= x <= 30 for x in opts_25) and 30 in opts_25, (
+        f"2b.6 seedance25 duration options валидны (5..30), включают 30: {opts_25}"
+    )
+
+    cps_480 = S.get_video_model_cost_per_second("seedance25", "480p")
+    cps_720 = S.get_video_model_cost_per_second("seedance25", "720p")
+    assert cps_480 == S.SEEDANCE25_COST_PER_SECOND_480P, f"2b.7 цена 480p из конфига: {cps_480}"
+    assert cps_720 == S.SEEDANCE25_COST_PER_SECOND_720P, f"2b.8 цена 720p из конфига: {cps_720}"
+    assert cps_720 > cps_480, f"2b.9 720p дороже 480p: {cps_720} vs {cps_480}"
+    # Без явного mode -> дефолт SEEDANCE25_MODE (480p) — не падает и не путает с 720p.
+    cps_default = S.get_video_model_cost_per_second("seedance25")
+    assert cps_default == cps_480, f"2b.10 без mode -> дефолтное качество (480p): {cps_default}"
+
+    S.SEEDANCE25_ENABLED = _orig_enabled

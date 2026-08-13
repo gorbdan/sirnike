@@ -130,6 +130,13 @@ from config import (
     WAN27_MODEL,
     WAN27_COST_PER_SECOND,
     WAN27_DURATION_OPTIONS,
+    SEEDANCE25_ENABLED,
+    SEEDANCE25_MODEL,
+    SEEDANCE25_MODE,
+    SEEDANCE25_DURATION_OPTIONS,
+    SEEDANCE25_MAX_IMAGES,
+    SEEDANCE25_COST_PER_SECOND_480P,
+    SEEDANCE25_COST_PER_SECOND_720P,
     GPT5_IMAGE_ENABLED,
     ZVENO_GPT5_IMAGE_MODEL,
     GPT5_IMAGE_COST,
@@ -178,6 +185,7 @@ from video_providers import (
     poll_evolink_task,
     start_seedance_task_evolink,
     start_gemini_omni_task_evolink,
+    start_seedance25_task_evolink,
     start_kling_motion_control_evolink,
     start_seedance_task,
     poll_seedance_task,
@@ -1097,6 +1105,8 @@ def get_video_model(state: UserState) -> str:
         return "wan27"
     if state.video_model == "gemini_omni" and GEMINI_OMNI_ENABLED:
         return "gemini_omni"
+    if state.video_model == "seedance25" and SEEDANCE25_ENABLED:
+        return "seedance25"
     return "seedance2"
 
 
@@ -1121,6 +1131,7 @@ def get_video_model_label(model_code: str) -> str:
         "veo31": "Veo 3.1 (Google) 🆕",
         "wan27": "Wan 2.7 (Alibaba) 🆕",
         "gemini_omni": "Gemini Omni Flash 🆕",
+        "seedance25": "Seedance 2.5 💎",
     }
     return labels.get(model_code, "Seedance 2")
 
@@ -1135,6 +1146,7 @@ def get_video_model_blurb(model_code: str) -> str:
         "veo31": "кинореализм, до 8 сек",
         "wan27": "живая мимика и жесты",
         "gemini_omni": "звук генерируется сам, быстрая генерация",
+        "seedance25": "премиум: до 30 сек без склейки, 50 референсов",
     }
     return blurbs.get(model_code, "")
 
@@ -1143,7 +1155,7 @@ def get_video_model_blurb(model_code: str) -> str:
 # монолита), импортирована выше.
 
 
-def get_video_model_cost_per_second(model_code: str) -> float:
+def get_video_model_cost_per_second(model_code: str, mode: Optional[str] = None) -> float:
     if model_code == "seedance2_fast":
         return max(SEEDANCE_FAST_COST_PER_SECOND, 0.01)
     if model_code == "kling3":
@@ -1154,6 +1166,12 @@ def get_video_model_cost_per_second(model_code: str) -> float:
         return max(WAN27_COST_PER_SECOND, 0.01)
     if model_code == "gemini_omni":
         return max(GEMINI_OMNI_COST_PER_SECOND, 0.01)
+    if model_code == "seedance25":
+        # Единственная модель с ценой, зависящей от качества (480p/720p) —
+        # оба тарифа доступны юзеру, не одно качество на модель.
+        normalized_mode = normalize_seedance_mode(mode or SEEDANCE25_MODE)
+        cps = SEEDANCE25_COST_PER_SECOND_720P if normalized_mode == "720p" else SEEDANCE25_COST_PER_SECOND_480P
+        return max(cps, 0.01)
     return max(SEEDANCE_COST_PER_SECOND, 0.01)
 
 
@@ -1794,6 +1812,8 @@ def video_model_picker_kb() -> InlineKeyboardMarkup:
         buttons.append(InlineKeyboardButton("Wan 2.7 🆕", callback_data="video_model_wan27"))
     if GEMINI_OMNI_ENABLED:
         buttons.append(InlineKeyboardButton("Gemini Omni 🆕", callback_data="video_model_gemini_omni"))
+    if SEEDANCE25_ENABLED:
+        buttons.append(InlineKeyboardButton("Seedance 2.5 💎", callback_data="video_model_seedance25"))
     # Сетка 2 в ряд, не по модели на всю ширину (ТЗ 2026-08-01: 6 полноширинных
     # кнопок подряд на живом скриншоте прода — «бардак»).
     rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
@@ -1805,7 +1825,7 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
     selected_duration = get_selected_seedance_duration(state)
     selected_model = get_video_model(state)
     selected_mode = get_selected_seedance_mode(state)
-    cps = get_video_model_cost_per_second(selected_model)
+    cps = get_video_model_cost_per_second(selected_model, selected_mode)
     video_images = get_video_image_urls(state)
 
     duration_buttons = []
@@ -1846,7 +1866,7 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
     # (ТЗ video_panel_declutter, тап возвращает в пикер тем же сообщением).
     rows.append([InlineKeyboardButton("🔄 Сменить модель", callback_data="video_change_model")])
     # Режим качества
-    if selected_model in ("seedance2", "seedance2_fast", "kling3", "wan27"):
+    if selected_model in ("seedance2", "seedance2_fast", "kling3", "wan27", "seedance25"):
         mode_buttons = []
         for mode in get_seedance_mode_options(selected_model):
             prefix = "● " if mode == selected_mode else ""
@@ -1874,8 +1894,8 @@ def video_kb(state: UserState) -> InlineKeyboardMarkup:
     aspect_options = [
         ("16:9", "📺 16:9"), ("9:16", "📱 9:16"), ("1:1", "⬛ 1:1"), ("4:3", "🖼 4:3"),
     ]
-    if selected_model in ("veo31", "wan27", "gemini_omni"):
-        # Veo 3.1, Wan 2.7 и Gemini Omni не поддерживают квадрат и 4:3.
+    if selected_model in ("veo31", "wan27", "gemini_omni", "seedance25"):
+        # Veo 3.1, Wan 2.7, Gemini Omni и Seedance 2.5 не поддерживают квадрат и 4:3.
         aspect_options = [(ar, label) for ar, label in aspect_options if ar not in ("1:1", "4:3")]
     aspect_buttons = [
         InlineKeyboardButton(
@@ -1931,7 +1951,7 @@ def video_status_text(state: UserState) -> str:
     selected_model = get_video_model(state)
     model_label = get_video_model_label(selected_model)
     selected_mode = get_selected_seedance_mode(state)
-    cps = get_video_model_cost_per_second(selected_model)
+    cps = get_video_model_cost_per_second(selected_model, selected_mode)
     selected_cost = calc_seedance_cost(selected_duration, cps)
     eta_min = max(2, int(selected_duration * 0.8))
     eta_max = max(eta_min + 1, int(selected_duration * 2.0))
@@ -6993,6 +7013,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # в video_kb (нет в списке моделей с mode_buttons), значение не важно.
             if state.video_aspect_ratio not in ("16:9", "9:16"):
                 state.video_aspect_ratio = "16:9"
+        elif picked_model == "seedance25" and SEEDANCE25_ENABLED:
+            state.video_model = "seedance25"
+            # Дефолт 480p (дешевле) — юзер сам переключает на 720p кнопкой
+            # качества, обе цены видны сразу в video_kb.
+            state.video_mode = normalize_seedance_mode(SEEDANCE25_MODE)
+            if state.video_aspect_ratio not in ("16:9", "9:16"):
+                state.video_aspect_ratio = "16:9"
         else:
             state.video_model = "seedance2"
             if not state.video_mode:
@@ -7006,7 +7033,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.video_session_active = True
         state.waiting_for_video_image = True
         selected_model = get_video_model(state)
-        if selected_model not in ("seedance2", "seedance2_fast", "kling3"):
+        if selected_model not in ("seedance2", "seedance2_fast", "kling3", "seedance25"):
             await update_video_panel(query, video_status_text(state), video_kb(state))
             return
         picked_mode = normalize_seedance_mode(video_cb.replace("video_mode_", "", 1))
@@ -9065,10 +9092,10 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         selected_duration = get_selected_seedance_duration(state)
         selected_model = get_video_model(state)
         selected_model_label = get_video_model_label(selected_model)
-        selected_cps = get_video_model_cost_per_second(selected_model)
+        selected_mode = get_selected_seedance_mode(state)
+        selected_cps = get_video_model_cost_per_second(selected_model, selected_mode)
         selected_cost = calc_seedance_cost(selected_duration, selected_cps)
         selected_endpoint = SEEDANCE_FAST_ENDPOINT if selected_model == "seedance2_fast" else SEEDANCE_ENDPOINT
-        selected_mode = get_selected_seedance_mode(state)
         if selected_model == "kling3":
             selected_model_slug = KLING3_MODEL
         elif selected_model == "veo31":
@@ -9077,6 +9104,8 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             selected_model_slug = WAN27_MODEL
         elif selected_model == "seedance2_fast":
             selected_model_slug = SEEDANCE_FAST_MODEL
+        elif selected_model == "seedance25":
+            selected_model_slug = SEEDANCE25_MODEL
         elif selected_model == "gemini_omni":
             selected_model_slug = GEMINI_OMNI_MODEL
         else:
@@ -9089,12 +9118,15 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Omni — новый продукт, которого у Zveno нет вообще, поэтому всегда
         # через EvoLink независимо от SEEDANCE_PROVIDER.
         is_gemini_omni = selected_model == "gemini_omni"
+        # Seedance 2.5 — ВСЕГДА EvoLink (у Zveno этой модели нет вообще, не
+        # подключена к переключателю SEEDANCE_PROVIDER, как и Gemini Omni).
+        is_seedance25 = selected_model == "seedance25"
         use_evolink = seedance_uses_evolink(selected_model)
-        selected_provider_label = "EVOLINK" if (use_evolink or is_gemini_omni) else "ZVENO"
+        selected_provider_label = "EVOLINK" if (use_evolink or is_gemini_omni or is_seedance25) else "ZVENO"
 
-        # Seedance и Gemini Omni работают только от фото (image-to-video);
-        # Kling 3.0, Veo 3.1 и Wan 2.7 умеют text-to-video.
-        if selected_model in {"seedance2", "seedance2_fast", "gemini_omni"} and len(video_images) < 1:
+        # Seedance, Seedance 2.5 и Gemini Omni работают только от фото
+        # (image-to-video); Kling 3.0, Veo 3.1 и Wan 2.7 умеют text-to-video.
+        if selected_model in {"seedance2", "seedance2_fast", "gemini_omni", "seedance25"} and len(video_images) < 1:
             await reply_target.reply_text(
                 "Загрузи хотя бы 1 фото-ференс и запусти снова.",
                 reply_markup=video_kb(state),
@@ -9109,6 +9141,15 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await reply_target.reply_text(
                 f"Gemini Omni принимает максимум {GEMINI_OMNI_MAX_IMAGES} фото — "
                 f"возьму первые {GEMINI_OMNI_MAX_IMAGES} из {len(video_images)} загруженных."
+            )
+        # Seedance 2.5 умеет до 50 референсов, но общий лимит ЗАГРУЗКИ в UI —
+        # MAX_SEEDANCE_IMAGE_REFERENCES (9), так что на практике это предупреждение
+        # почти никогда не сработает — оставлено на случай будущего повышения
+        # общего лимита загрузки специально под эту модель.
+        if is_seedance25 and len(video_images) > SEEDANCE25_MAX_IMAGES:
+            await reply_target.reply_text(
+                f"Seedance 2.5 принимает максимум {SEEDANCE25_MAX_IMAGES} фото — "
+                f"возьму первые {SEEDANCE25_MAX_IMAGES} из {len(video_images)} загруженных."
             )
 
         # Check balance BEFORE heavy image processing
@@ -9219,6 +9260,8 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for seedance_attempt in range(1, max_seedance_attempts + 1):
                 if is_gemini_omni:
                     _start_task_fn = start_gemini_omni_task_evolink
+                elif is_seedance25:
+                    _start_task_fn = start_seedance25_task_evolink
                 elif use_evolink:
                     _start_task_fn = start_seedance_task_evolink
                 else:
@@ -10126,9 +10169,10 @@ def log_provider_config() -> None:
     video_provider = "evolink" if SEEDANCE_PROVIDER == "evolink" else "zveno"
     motion_provider = MOTION_CONTROL_PROVIDER if MOTION_CONTROL_ENABLED else "off"
     logger.info(
-        "providers: photo=%s video=%s motion=%s gemini_omni=%s studio=%s",
+        "providers: photo=%s video=%s motion=%s gemini_omni=%s seedance25=%s studio=%s",
         photo_provider, video_provider, motion_provider,
         "on" if GEMINI_OMNI_ENABLED else "off",
+        "on" if SEEDANCE25_ENABLED else "off",
         "on" if STUDIO_ENABLED else "off",
     )
     provider_keys = {
@@ -10141,6 +10185,8 @@ def log_provider_config() -> None:
         logger.warning("AI_PROVIDER=%s, но ключ для него пуст — фото-генерация будет падать", photo_provider)
     if video_provider == "evolink" and not EVOLINK_API_KEY:
         logger.warning("SEEDANCE_PROVIDER=evolink, но EVOLINK_API_KEY пуст — видео будет падать")
+    if SEEDANCE25_ENABLED and not EVOLINK_API_KEY:
+        logger.warning("SEEDANCE25_ENABLED=1, но EVOLINK_API_KEY пуст — Seedance 2.5 будет падать (ВСЕГДА EvoLink)")
     if not ZVENO_API_KEY:
         logger.warning("ZVENO_API_KEY пуст — видео (Seedance/Kling/Veo/Wan) недоступно вне зависимости от AI_PROVIDER")
 

@@ -207,6 +207,32 @@ WAN27_MODEL = os.getenv("WAN27_MODEL", "alibaba/wan-2.7")
 WAN27_COST_PER_SECOND = float(os.getenv("WAN27_COST_PER_SECOND", "10.0"))
 WAN27_DURATION_OPTIONS = os.getenv("WAN27_DURATION_OPTIONS", "5,10")
 
+# Seedance 2.5 (ByteDance) через EvoLink — ВСЕГДА EvoLink, у Zveno этой модели
+# нет (в отличие от seedance2/2_fast, у тех есть Zveno↔EvoLink переключатель
+# SEEDANCE_PROVIDER — не путать). Отдельный премиум-продукт, НЕ подмена
+# дефолтной Seedance 2.0: запрос партнёра-креатора (докладка от аналитика
+# рынка, docs/ai-market/2026-08-08-creator-candidates.md), похожесть лица
+# идентична 2.0, детектор реального лица ByteDance не блокирует. Live-тест
+# Ани (плейграунд evolink.ai, БЕЗ ключа): reference-to-video 720p, 5с = $1.47
+# = $0.294/сек = 26.46 ₽/сек закупка (льготного reference-тарифа у EvoLink
+# НЕТ — совпало со "standard"). 480p — по прайсу, экстраполяция, не
+# live-тестирован в reference-режиме. Тариф при марже x3.3 / 5₽ за изюминку:
+# 480p ≈ 8 изюм/сек (+19% к текущей seedance2 6.75), 720p ≈ 18 изюм/сек
+# (+160%) — оба качества доступны юзеру, не одно на выбор. TODO: сверить
+# по первому реальному счёту EvoLink (±20%) перед включением флага.
+SEEDANCE25_ENABLED = os.getenv("SEEDANCE25_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+SEEDANCE25_MODEL = os.getenv("SEEDANCE25_MODEL", "bytedance/seedance-2.5-reference-to-video")
+SEEDANCE25_MODE = os.getenv("SEEDANCE25_MODE", "480p")
+SEEDANCE25_DURATION = int(os.getenv("SEEDANCE25_DURATION", "5"))
+# Нативно до 30 сек ОДНИМ вызовом (у 2.0 через Zveno потолок 15с у любого
+# провайдера, см. AGENT_NOTES.md 2026-07-08) — частично перекрывает
+# «склейку клипов для нейромультика» для роликов ≤30с.
+SEEDANCE25_DURATION_OPTIONS = os.getenv("SEEDANCE25_DURATION_OPTIONS", "5,10,15,30")
+SEEDANCE25_COST_PER_SECOND_480P = float(os.getenv("SEEDANCE25_COST_PER_SECOND_480P", "8.0"))
+SEEDANCE25_COST_PER_SECOND_720P = float(os.getenv("SEEDANCE25_COST_PER_SECOND_720P", "18.0"))
+# До 50 референсов на вход (у обычной Seedance — 9, MAX_SEEDANCE_IMAGE_REFERENCES).
+SEEDANCE25_MAX_IMAGES = int(os.getenv("SEEDANCE25_MAX_IMAGES", "50"))
+
 if AI_PROVIDER == "ZVENO" and not ZVENO_API_KEY:
     raise RuntimeError("Missing required environment variable for ZVENO: ZVENO_API_KEY")
 

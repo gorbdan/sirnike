@@ -4,6 +4,52 @@
 
 ## Очередь
 
+- [x] P1 · «Видео 2.5» (Seedance 2.5 через EvoLink) — бриф от аналитика рынка
+      (запрос партнёра-креатора, docs/ai-market/2026-08-08-creator-candidates.md;
+      сам бриф зафастрял на ветке `claude/sirnika-ai-market-analysis-66sdgs` и
+      не попал в main — Аня спросила «где Seedance 2.5, мы же его добавляли»,
+      нашла и взяла в работу отсюда). Реализовано строго по критериям брифа:
+      · Отдельная модель `seedance25` в существующем пикере видео-моделей
+        (`video_model_picker_kb`/`video_kb`), НЕ default-замена Seedance 2.0 —
+        тот же паттерн, что у Kling3/Veo31/Wan27/Gemini Omni (флаг
+        `SEEDANCE25_ENABLED`, выключен по умолчанию).
+      · Оба качества доступны юзеру внутри модели (не одно на выбор):
+        480p ≈ 8 изюм/сек, 720p ≈ 18 изюм/сек (config.py, экономика из
+        живого теста Ани на плейграунде evolink.ai — ⚠️ TODO сверить по
+        первому реальному счёту EvoLink, ±20%, как и написано в брифе).
+        Единственная видео-модель с ценой, зависящей от качества —
+        `get_video_model_cost_per_second()` получила необязательный параметр
+        `mode` (все 3 вызывающих места обновлены: `video_kb`,
+        `video_status_text`, `run_seedance`).
+      · Длительность 5-30 сек (нативно, без склейки клипов) —
+        `get_seedance_duration_bounds("seedance25") == (5, 30)`.
+      · До 50 референсов (`SEEDANCE25_MAX_IMAGES`, video_providers.py) —
+        новая `start_seedance25_task_evolink()` по образцу
+        `start_gemini_omni_task_evolink`/`start_seedance_task_evolink`
+        (EvoLink ВСЕГДА, `seedance_uses_evolink()` намеренно НЕ трогали —
+        та функция про Zveno↔EvoLink переключаемость seedance2/2_fast,
+        у 2.5 альтернативы нет вообще, как и у Gemini Omni — свой флаг
+        `is_seedance25` в `run_seedance`, по аналогии с `is_gemini_omni`).
+      · `log_provider_config()` — seedance25 добавлен в громкую сводку
+        провайдеров при старте + warning, если флаг включён, а
+        `EVOLINK_API_KEY` пуст (тот же инцидент-класс, что уже ловим для
+        Gemini Omni/SEEDANCE_PROVIDER=evolink).
+      · Осознанно ВНЕ скоупа (не в критериях брифа): Студия нейромультиков
+        (`studio_worker.py`) НЕ получила Seedance 2.5 — её cost-модель
+        (один `cost_per_second` на модель) не поддерживает quality-
+        зависимую цену без отдельного дизайна; регрессия закреплена тестом
+        (`"seedance25" not in S._studio_video_models()`).
+      Тесты: `tests/test_block_02_video_helpers.py` (новая
+      `test_block_02b_seedance25_premium_video` — bounds/mode
+      options/duration options/цена по качеству), `tests/test_block_16_evolink_http_client.py`
+      (payload HTTP-клиента: модель/duration-кламп до 30/quality/до 50
+      референсов/EvoLink-теги @imageN; кнопка в пикере по флагу; выбор
+      модели через callback — дефолт 480p + форс аспекта 16:9/9:16;
+      переключение качества 480p→720p). 72/72 pytest, `py_compile` OK.
+      Критерий готовности из брифа (сверка реальным счётом EvoLink,
+      success rate/детектор лица по `/video_errors` за первую неделю) —
+      выполняется ПОСЛЕ включения флага Аней, код-часть закрыта полностью.
+
 - [x] P0 · Доски — Full, AI-анализ стиля доски. Продолжение партнёрского
       запроса блогера (MVP «доска = референсы» уже в проде). Полное ТЗ:
       [docs/specs/2026-08-09_mood_boards_full.md](../specs/2026-08-09_mood_boards_full.md),

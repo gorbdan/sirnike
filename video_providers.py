@@ -56,6 +56,11 @@ from config import (
     SEEDANCE_FAST_MODE,
     SEEDANCE_MODE,
     SEEDANCE_PROVIDER,
+    SEEDANCE25_MODEL,
+    SEEDANCE25_MODE,
+    SEEDANCE25_DURATION,
+    SEEDANCE25_DURATION_OPTIONS,
+    SEEDANCE25_MAX_IMAGES,
     VEO31_DURATION_OPTIONS,
     VEO31_MODEL,
     WAN27_DURATION_OPTIONS,
@@ -173,6 +178,9 @@ def get_seedance_duration_bounds(model_code: Optional[str] = None) -> tuple[int,
         return 2, 10
     if model_code == "gemini_omni":
         return 3, 10
+    if model_code == "seedance25":
+        # Нативно до 30 сек одним вызовом EvoLink (без склейки клипов).
+        return 5, 30
     if model_code in ("seedance2", "seedance2_fast") and seedance_uses_evolink(model_code):
         # EvoLink Seedance 2.0/2.0-fast: 4–15 сек (Zveno — 5–15).
         return 4, 15
@@ -230,6 +238,10 @@ def get_seedance_mode_options(model_code: Optional[str] = None) -> List[str]:
     if model_code == "veo31":
         # Zveno: veo-3.1-fast поддерживает только 720p.
         return ["720p"]
+    if model_code == "seedance25":
+        # Премиум-продукт «Видео 2.5»: оба качества доступны юзеру (не одно
+        # на выбор) — 480p дешевле (~8 изюм/сек), 720p дороже (~18 изюм/сек).
+        return ["480p", "720p"]
 
     raw_options = os.getenv("SEEDANCE_MODE_OPTIONS", "480,720,1080")
     parsed: List[str] = []
@@ -258,6 +270,8 @@ def get_seedance_duration_options(model_code: Optional[str] = None) -> List[int]
         raw_options = SEEDANCE_FAST_DURATION_OPTIONS
     elif model_code == "gemini_omni":
         raw_options = GEMINI_OMNI_DURATION_OPTIONS
+    elif model_code == "seedance25":
+        raw_options = SEEDANCE25_DURATION_OPTIONS
     else:
         raw_options = SEEDANCE_DURATION_OPTIONS
     parsed: List[int] = []
@@ -987,6 +1001,51 @@ async def start_gemini_omni_task_evolink(
         "aspect_ratio": aspect,
     }
     return await _evolink_create_task(payload, "EvoLink Gemini Omni", user_id)
+
+
+async def start_seedance25_task_evolink(
+    prompt: str,
+    image_url: Optional[str],
+    user_id: int,
+    duration: Optional[int] = None,
+    endpoint: Optional[str] = None,
+    mode: Optional[str] = None,
+    model_slug: Optional[str] = None,
+    image_urls: Optional[List[str]] = None,
+    model_code: Optional[str] = None,
+    aspect_ratio: str = "16:9",
+) -> str:
+    """Seedance 2.5 (EvoLink) — ВСЕГДА EvoLink, у Zveno этой модели нет
+    (в отличие от seedance2/2_fast, у тех есть Zveno↔EvoLink переключатель
+    SEEDANCE_PROVIDER — не путать, seedance_uses_evolink() сюда не относится).
+    Отдельный премиум-продукт («Видео 2.5»), НЕ подмена дефолтной Seedance 2.0
+    — до 50 референсов (SEEDANCE25_MAX_IMAGES), два тарифа качества 480p/720p
+    с разной ценой за секунду (см. get_video_model_cost_per_second в SirNike.py).
+    Сигнатура совпадает с start_seedance_task_evolink/start_gemini_omni_task_evolink,
+    чтобы run_seedance/_studio_generate_clip могли вызывать её как drop-in."""
+    combined_image_urls = _resolve_evolink_image_urls(image_url, image_urls, SEEDANCE25_MAX_IMAGES)
+    if not combined_image_urls:
+        raise Exception("Seedance 2.5: нет ни одного фото-референса (reference-to-video требует минимум 1 фото)")
+
+    duration_val = normalize_seedance_duration(
+        int(duration if duration is not None else SEEDANCE25_DURATION), "seedance25",
+    )
+    quality = normalize_seedance_mode(mode or SEEDANCE25_MODE)
+
+    # EvoLink требует @image1/@image2 (нижний регистр), не [Image1] — тот же
+    # формат, что и у обычной Seedance через EvoLink.
+    prompt_text = build_seedance_prompt_with_refs((prompt or "").strip(), len(combined_image_urls), tag_format="at")
+
+    payload = {
+        "model": SEEDANCE25_MODEL,
+        "prompt": prompt_text,
+        "image_urls": combined_image_urls,
+        "duration": duration_val,
+        "aspect_ratio": aspect_ratio,
+        "quality": quality,
+        "generate_audio": True,
+    }
+    return await _evolink_create_task(payload, "EvoLink Seedance 2.5", user_id)
 
 
 async def start_kling_motion_control_evolink(

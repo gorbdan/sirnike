@@ -308,4 +308,12 @@ STUDIO_MAX_SCENES = int(os.getenv("STUDIO_MAX_SCENES", "5"))
 STUDIO_POLL_INTERVAL = int(os.getenv("STUDIO_POLL_INTERVAL", "4"))
 STUDIO_CONCURRENCY = int(os.getenv("STUDIO_CONCURRENCY", "3"))
 
+# ── Хаб генерации: Конструктор видео в вебаппе (docs/specs/
+# 2026-08-13_webapp_generation_hub.md) — заменяет чат-цепочку «пикер модели
+# → панель настроек» одним экраном вебаппа + карточкой подтверждения в чате.
+# По аналогии с MOTION_CONTROL_ENABLED/STUDIO_ENABLED — выключен по умолчанию
+# (kill-switch), пока Аня не проверит живьём. При False поведение входов
+# «🎬 Видео для Reels» (reply-кнопка и инлайн) не меняется вообще.
+VIDEO_CONSTRUCTOR_ENABLED = os.getenv("VIDEO_CONSTRUCTOR_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+
 TEST_MODE = os.getenv("TEST_MODE", "0").strip().lower() in ("1", "true", "yes", "on")

@@ -233,6 +233,16 @@ SEEDANCE25_COST_PER_SECOND_720P = float(os.getenv("SEEDANCE25_COST_PER_SECOND_72
 # До 50 референсов на вход (у обычной Seedance — 9, MAX_SEEDANCE_IMAGE_REFERENCES).
 SEEDANCE25_MAX_IMAGES = int(os.getenv("SEEDANCE25_MAX_IMAGES", "50"))
 
+# Хаб генерации в вебаппе (docs/specs/2026-08-13_webapp_generation_hub.md) —
+# MVP: экран «Конструктор» для видео вместо чат-пикера модели/панели.
+# Kill-switch: выключено — вход «🎬 Видео для Reels» ведёт на старый
+# video_model_picker_kb() без единого изменения поведения.
+VIDEO_CONSTRUCTOR_ENABLED = os.getenv("VIDEO_CONSTRUCTOR_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+# Full: аналогичные конструкторы для Midjourney и Аватара — независимые
+# kill-switch'и, чтобы включать по одному продукту, не всё сразу.
+MIDJOURNEY_CONSTRUCTOR_ENABLED = os.getenv("MIDJOURNEY_CONSTRUCTOR_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+AVATAR_CONSTRUCTOR_ENABLED = os.getenv("AVATAR_CONSTRUCTOR_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+
 if AI_PROVIDER == "ZVENO" and not ZVENO_API_KEY:
     raise RuntimeError("Missing required environment variable for ZVENO: ZVENO_API_KEY")
 

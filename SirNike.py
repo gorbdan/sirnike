@@ -10,6 +10,7 @@ import re
 import shutil
 import tempfile
 import time
+import uuid
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from urllib.parse import urlsplit
@@ -140,6 +141,9 @@ from config import (
     VIDEO_CONSTRUCTOR_ENABLED,
     MIDJOURNEY_CONSTRUCTOR_ENABLED,
     AVATAR_CONSTRUCTOR_ENABLED,
+    GEN_PROGRESS_ENABLED,
+    GEN_PROGRESS_API_BASE,
+    GEN_PROGRESS_SECRET,
     GPT5_IMAGE_ENABLED,
     ZVENO_GPT5_IMAGE_MODEL,
     GPT5_IMAGE_COST,
@@ -4140,6 +4144,69 @@ def video_constructor_kb(user_id: int) -> InlineKeyboardMarkup:
             "🎬 Открыть конструктор",
             web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=video_constructor"),
         ),
+    ]])
+
+
+# ----------------------------------------------------------------------------
+# Живой прогресс генерации в вебаппе (docs/specs/2026-08-13_webapp_generation_hub_full.md)
+# НЕ очередь (в отличие от studio_worker.py) — тонкое write-only зеркало:
+# бот сам инициирует и выполняет генерацию как сегодня, ДОПОЛНИТЕЛЬНО пишет
+# статус в Cloudflare D1 (таблица generation_progress, отдельная от studio_*),
+# пока юзер может смотреть его в вебаппе. Fire-and-forget по тому же паттерну,
+# что _studio_api/_studio_complete в studio_worker.py — недоставленная запись
+# НЕ блокирует и НЕ проваливает саму генерацию.
+# ----------------------------------------------------------------------------
+
+async def _gen_progress_api(path: str, payload: dict, timeout: int = 15) -> Optional[dict]:
+    if not GEN_PROGRESS_ENABLED:
+        return None
+    url = f"{GEN_PROGRESS_API_BASE}/{path.lstrip('/')}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                headers={"X-Gen-Progress-Secret": GEN_PROGRESS_SECRET, "Content-Type": "application/json"},
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as resp:
+                if not (200 <= resp.status < 300):
+                    body = await resp.text()
+                    logger.warning("gen_progress api %s: status=%s body=%s", path, resp.status, body[:200])
+                    return None
+                return await resp.json()
+    except Exception as e:
+        logger.warning("gen_progress api %s exception: %s", path, e)
+        return None
+
+
+async def gen_progress_create(progress_id: str, user_id: int, product: str, meta: dict) -> bool:
+    """True — Cloudflare подтвердил создание строки, можно безопасно
+    показать юзеру кнопку «Смотреть прогресс» (спека, «Явный fallback:
+    провал записи в D1» — не показываем нерабочую кнопку)."""
+    return await _gen_progress_api("progress.create", {
+        "id": progress_id, "user_id": user_id, "product": product, "meta": meta,
+    }) is not None
+
+
+async def gen_progress_update(progress_id: str, status: str, stage: str) -> None:
+    # progress_pct сознательно не считаем — ни EvoLink, ни Zveno не отдают
+    # реальный процент готовности, а выдуманное число врёт юзеру о точности,
+    # которой нет (спека, риск №2 — "не делать красивый липовый %").
+    await _gen_progress_api("progress.update", {"id": progress_id, "status": status, "stage": stage, "progress_pct": 0})
+
+
+async def gen_progress_complete(progress_id: str, status: str, stage: str) -> None:
+    await _gen_progress_api("progress.complete", {"id": progress_id, "status": status, "stage": stage})
+
+
+def gen_progress_kb(user_id: int, progress_id: str, product: str) -> InlineKeyboardMarkup:
+    """Обязательно инлайн (не reply) — initData нужен progress.get для
+    проверки, что юзер смотрит свой, а не чужой прогресс (спека,
+    «Архитектурное решение №2», по образцу фикса находки №1 прод-аудита
+    Студии)."""
+    url = get_prompt_webapp_url(user_id) + f"&tab=progress&job_id={progress_id}&product={product}"
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("👀 Смотреть прогресс", web_app=WebAppInfo(url=url)),
     ]])
 
 
@@ -9561,6 +9628,12 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         eta_min = max(2, int(selected_duration * 0.8))
         eta_max = max(eta_min + 1, int(selected_duration * 2.0))
+        # Инициализируем ДО try — если reply_text ниже сам бросит исключение
+        # раньше, чем дойдёт до создания progress-строки, except-блок должен
+        # безопасно прочитать _progress_kb (None), а не упасть NameError'ом
+        # и не замаскировать реальную ошибку/рефанд.
+        _progress_id = None
+        _progress_kb = None
         try:
             await reply_target.reply_text(
                 f"Запускаю {selected_model_label} 🎬\n"
@@ -9581,13 +9654,33 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
             # Single status message that gets edited in place — no chat spam
             status_msg = await reply_target.reply_text("⏳ Генерирую видео…")
-    
+
+            # Живой прогресс в вебаппе (docs/specs/2026-08-13_webapp_generation_hub_full.md) —
+            # тонкое зеркало, не блокирует и не может провалить саму генерацию
+            # (gen_progress_create просто вернёт False, если Cloudflare недоступен).
+            _progress_id = str(uuid.uuid4())
+            _progress_kb = None
+            if GEN_PROGRESS_ENABLED:
+                _progress_created = await gen_progress_create(_progress_id, user.id, "video", {
+                    "model_label": selected_model_label,
+                    "aspect": getattr(state, "video_aspect_ratio", "16:9"),
+                    "duration": selected_duration,
+                })
+                if _progress_created:
+                    _progress_kb = gen_progress_kb(user.id, _progress_id, "video")
+                    try:
+                        await status_msg.edit_text("⏳ Генерирую видео…", reply_markup=_progress_kb)
+                    except Exception:
+                        pass
+
             async def _edit_status(text: str) -> None:
                 try:
-                    await status_msg.edit_text(text)
+                    await status_msg.edit_text(text, reply_markup=_progress_kb)
                 except Exception:
                     pass
-    
+                if GEN_PROGRESS_ENABLED and _progress_kb is not None:
+                    await gen_progress_update(_progress_id, "processing", "Генерируем…")
+
             video_url = None
             last_seedance_error: Optional[Exception] = None
             for seedance_attempt in range(1, max_seedance_attempts + 1):
@@ -9678,6 +9771,8 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=video_caption,
                 reply_markup=upsell_markup,
             )
+            if GEN_PROGRESS_ENABLED and _progress_kb is not None:
+                await gen_progress_complete(_progress_id, "done", "Готово!")
             log_generation_event(
                 user_id=user.id,
                 kind="video",
@@ -9713,6 +9808,8 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except BaseException as e:
             logger.exception("Video generation failed")
             add_izyminki(user.id, selected_cost)
+            if GEN_PROGRESS_ENABLED and _progress_kb is not None:
+                await gen_progress_complete(_progress_id, "error", "Не получилось")
             # Restore state so "Повторить" can reuse the same images/prompt
             state.animation_source_urls = _saved_animation_source_urls
             state.video_prompt = _saved_video_prompt

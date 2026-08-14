@@ -318,4 +318,22 @@ STUDIO_MAX_SCENES = int(os.getenv("STUDIO_MAX_SCENES", "5"))
 STUDIO_POLL_INTERVAL = int(os.getenv("STUDIO_POLL_INTERVAL", "4"))
 STUDIO_CONCURRENCY = int(os.getenv("STUDIO_CONCURRENCY", "3"))
 
+# ── Живой прогресс генерации в вебаппе (docs/specs/2026-08-13_webapp_generation_hub_full.md) ──
+# НЕ очередь (в отличие от Студии выше) — тонкое write-only зеркало статуса:
+# бот сам инициирует и выполняет генерацию как сегодня (без D1 вообще), и
+# ДОПОЛНИТЕЛЬНО пишет прогресс в отдельную таблицу generation_progress, пока
+# юзер может смотреть его в вебаппе. Пустой секрет = фича выключена (тот же
+# принцип безопасного деплоя до заведения Cloudflare-инфраструктуры, что и у
+# Студии) — но, в отличие от Студии, есть ещё и отдельный явный kill-switch
+# GEN_PROGRESS_ENABLED, потому что запись в D1 живёт ВНУТРИ уже работающего
+# пути генерации (run_seedance), а не в отдельном поллере — на всякий случай
+# должна быть возможность выключить её одним флагом, не трогая секрет.
+GEN_PROGRESS_SECRET = os.getenv("GEN_PROGRESS_SECRET", "").strip()
+_default_gen_progress_api = (PROMPT_WEBAPP_URL.rstrip("/") + "/api/progress") if PROMPT_WEBAPP_URL else ""
+GEN_PROGRESS_API_BASE = os.getenv("GEN_PROGRESS_API_BASE", _default_gen_progress_api).strip().rstrip("/")
+GEN_PROGRESS_ENABLED = (
+    os.getenv("GEN_PROGRESS_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+    and bool(GEN_PROGRESS_SECRET and GEN_PROGRESS_API_BASE)
+)
+
 TEST_MODE = os.getenv("TEST_MODE", "0").strip().lower() in ("1", "true", "yes", "on")

@@ -233,6 +233,17 @@ SEEDANCE25_COST_PER_SECOND_720P = float(os.getenv("SEEDANCE25_COST_PER_SECOND_72
 # До 50 референсов на вход (у обычной Seedance — 9, MAX_SEEDANCE_IMAGE_REFERENCES).
 SEEDANCE25_MAX_IMAGES = int(os.getenv("SEEDANCE25_MAX_IMAGES", "50"))
 
+# Хаб генерации в вебаппе (docs/specs/2026-08-13_webapp_generation_hub.md) —
+# MVP: экран «Конструктор» для видео вместо чат-пикера модели/панели.
+# Kill-switch: выключено — вход «🎬 Видео для Reels» ведёт на старый
+# video_model_picker_kb() без единого изменения поведения.
+VIDEO_CONSTRUCTOR_ENABLED = os.getenv("VIDEO_CONSTRUCTOR_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+# Full: аналогичные конструкторы для Midjourney/Аватара/обычного фото —
+# независимые kill-switch'и, чтобы включать по одному продукту, не всё сразу.
+MIDJOURNEY_CONSTRUCTOR_ENABLED = os.getenv("MIDJOURNEY_CONSTRUCTOR_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+AVATAR_CONSTRUCTOR_ENABLED = os.getenv("AVATAR_CONSTRUCTOR_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+PHOTO_CONSTRUCTOR_ENABLED = os.getenv("PHOTO_CONSTRUCTOR_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+
 if AI_PROVIDER == "ZVENO" and not ZVENO_API_KEY:
     raise RuntimeError("Missing required environment variable for ZVENO: ZVENO_API_KEY")
 
@@ -308,12 +319,22 @@ STUDIO_MAX_SCENES = int(os.getenv("STUDIO_MAX_SCENES", "5"))
 STUDIO_POLL_INTERVAL = int(os.getenv("STUDIO_POLL_INTERVAL", "4"))
 STUDIO_CONCURRENCY = int(os.getenv("STUDIO_CONCURRENCY", "3"))
 
-# ── Хаб генерации: Конструктор видео в вебаппе (docs/specs/
-# 2026-08-13_webapp_generation_hub.md) — заменяет чат-цепочку «пикер модели
-# → панель настроек» одним экраном вебаппа + карточкой подтверждения в чате.
-# По аналогии с MOTION_CONTROL_ENABLED/STUDIO_ENABLED — выключен по умолчанию
-# (kill-switch), пока Аня не проверит живьём. При False поведение входов
-# «🎬 Видео для Reels» (reply-кнопка и инлайн) не меняется вообще.
-VIDEO_CONSTRUCTOR_ENABLED = os.getenv("VIDEO_CONSTRUCTOR_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+# ── Живой прогресс генерации в вебаппе (docs/specs/2026-08-13_webapp_generation_hub_full.md) ──
+# НЕ очередь (в отличие от Студии выше) — тонкое write-only зеркало статуса:
+# бот сам инициирует и выполняет генерацию как сегодня (без D1 вообще), и
+# ДОПОЛНИТЕЛЬНО пишет прогресс в отдельную таблицу generation_progress, пока
+# юзер может смотреть его в вебаппе. Пустой секрет = фича выключена (тот же
+# принцип безопасного деплоя до заведения Cloudflare-инфраструктуры, что и у
+# Студии) — но, в отличие от Студии, есть ещё и отдельный явный kill-switch
+# GEN_PROGRESS_ENABLED, потому что запись в D1 живёт ВНУТРИ уже работающего
+# пути генерации (run_seedance), а не в отдельном поллере — на всякий случай
+# должна быть возможность выключить её одним флагом, не трогая секрет.
+GEN_PROGRESS_SECRET = os.getenv("GEN_PROGRESS_SECRET", "").strip()
+_default_gen_progress_api = (PROMPT_WEBAPP_URL.rstrip("/") + "/api/progress") if PROMPT_WEBAPP_URL else ""
+GEN_PROGRESS_API_BASE = os.getenv("GEN_PROGRESS_API_BASE", _default_gen_progress_api).strip().rstrip("/")
+GEN_PROGRESS_ENABLED = (
+    os.getenv("GEN_PROGRESS_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+    and bool(GEN_PROGRESS_SECRET and GEN_PROGRESS_API_BASE)
+)
 
 TEST_MODE = os.getenv("TEST_MODE", "0").strip().lower() in ("1", "true", "yes", "on")

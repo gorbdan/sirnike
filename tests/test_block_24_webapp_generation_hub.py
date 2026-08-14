@@ -1,300 +1,436 @@
 # -*- coding: utf-8 -*-
-"""Блок 24: Хаб генерации — Конструктор видео для Reels
-(docs/specs/2026-08-13_webapp_generation_hub.md). Бэкенд-часть (пункты 1-6
-раздела «Что нужно от бэкенда»):
-
-- Новый парсер `apply_webapp_generation_payload` (action=`start_generation`/
-  `sg`), диспетчеризуется из `apply_webapp_prompt_payload_v2`.
-- Серверная валидация фичефлагов видео-модели с откатом на дефолт.
-- Карточка подтверждения (Экран V2) с ценой, пересчитанной
-  calc_seedance_cost/get_video_model_cost_per_second на момент показа.
-- `VIDEO_CONSTRUCTOR_ENABLED` kill-switch на обоих входах («🎬 Видео для
-  Reels» — reply-кнопка/persistent_menu_kb и инлайн video_cb=="video").
-- `get_video_constructor_config`/`get_video_constructor_webapp_url` — cfg,
-  синхронизированный со схемой уже смёрженного constructor.js в репо вебаппа
-  (docs/BOT_CONTRACT.md, раздел «Конструктор видео (Хаб генерации)»).
-
-Формат payload в тестах — ровно тот, что реально шлёт constructor.js
-(buildStartGenerationPayload): полные ключи (`product`, `video_model`,
-`aspect`, `duration`, `description`, `quality`, `face_grid`, `refs`,
-`board_id`), НЕ короткие алиасы — короткие алиасы (`pr`/`vm`/…) проверяются
-отдельно (24j) как часть контракта на будущее, но не то, что шлёт вебапп
-сегодня.
-"""
+"""Блок 24: хаб генерации в вебаппе (docs/specs/2026-08-13_webapp_generation_hub.md,
+docs/specs/2026-08-13_webapp_generation_hub_navigation_full.md). Вебапп собирает все
+настройки одним экраном («Конструктор» — видео/Midjourney/Аватар/фото) и шлёт один
+payload `start_generation`/`sg` с полем `product` — бот резолвит его в UserState (те
+же поля, что заполняют сегодняшние чат-панели/мини-флоу) и показывает карточку
+подтверждения с существующей кнопкой запуска (`video_start`/`mj_generate`/
+`avatar_gen_start`/`generate`). Сам запуск/списание/очередь/доставка результата НЕ
+меняются — это тот же биллинг-путь, что и всегда."""
 import asyncio
+import types
 
-from test_helpers import S, make_update_context, make_webapp_update_context
-
-
-def test_block_24a_basic_apply_sets_state_and_sends_confirm_card():
-    update, context, message = make_webapp_update_context(user_id=9701)
-    applied = asyncio.run(S.apply_webapp_generation_payload(update, context, {
-        "action": "start_generation",
-        "product": "video",
-        "video_model": "seedance2",
-        "aspect": "9:16",
-        "quality": "pro",
-        "duration": 10,
-        "face_grid": True,
-        "description": "Кот танцует брейк-данс на кухне",
-        "refs": [f"https://i.ibb.co/gen/{i}.jpg" for i in range(3)],
-    }))
-    assert applied is True, "24a.1 payload распознан"
-
-    state = context.user_data["state"]
-    assert state.video_model == "seedance2", "24a.2 модель сохранена"
-    assert state.video_aspect_ratio == "9:16", "24a.3 формат сохранён"
-    assert state.video_mode == "1080p", f"24a.4 quality=pro -> самый качественный режим: {state.video_mode}"
-    assert state.video_duration == 10, "24a.5 длительность сохранена"
-    assert state.video_face_grid is True, "24a.6 детектор лиц сохранён"
-    assert state.video_prompt == "Кот танцует брейк-данс на кухне", "24a.7 описание сохранено"
-    assert len(state.animation_source_urls) == 3, f"24a.8 фото сохранены: {state.animation_source_urls}"
-    assert state.video_session_active is True, "24a.9 видео-сессия активна (для дальнейшего video_start)"
-
-    assert message.reply_text.await_args_list, "24a.10 карточка отправлена"
-    text = message.reply_text.await_args_list[-1].args[0]
-    assert text.startswith("🎬 Готово к запуску"), f"24a.11 заголовок карточки: {text!r}"
-    assert "Модель: Seedance 2 — максимум качества и движения, наш выбор" in text, f"24a.12 модель: {text!r}"
-    assert "Формат: 9:16 (вертикаль, Reels)" in text, f"24a.13 формат: {text!r}"
-    assert "Качество: Pro" in text, f"24a.14 качество: {text!r}"
-    assert "Длительность: 10с" in text, f"24a.15 длительность (формат «10с», не «10 сек»): {text!r}"
-    assert "Детектор лиц: вкл 🟢 (защита от отказа модерации)" in text, f"24a.16 детектор лиц: {text!r}"
-    assert "Фото: 3 шт." in text, f"24a.17 фото: {text!r}"
-    assert "Описание: есть" in text, f"24a.18 описание: {text!r}"
-
-    expected_cost = S.calc_seedance_cost(10, S.get_video_model_cost_per_second("seedance2", "1080p"))
-    assert f"Стоимость: {expected_cost} 🍇" in text, f"24a.19 цена пересчитана бэкендом: {text!r} (ждали {expected_cost})"
-
-    kb = message.reply_text.await_args_list[-1].kwargs.get("reply_markup")
-    btns = [b for row in kb.inline_keyboard for b in row]
-    launch_btn = [b for b in btns if b.text == "🚀 Запустить видео"][0]
-    assert launch_btn.callback_data == "video_start", (
-        f"24a.20 запуск переиспользует существующий пайплайн: {launch_btn.callback_data}"
-    )
-    restart_btn = [b for b in btns if b.text == "🔁 Начать заново"][0]
-    assert restart_btn is not None, "24a.21 кнопка «Начать заново» есть"
+from test_helpers import S, make_webapp_update_context, make_update_context
 
 
-def test_block_24b_disabled_model_flag_falls_back_to_default_with_warning():
-    _orig = S.KLING3_ENABLED
+def test_block_24_flag_off_declines_payload():
+    _orig = S.VIDEO_CONSTRUCTOR_ENABLED
+    S.VIDEO_CONSTRUCTOR_ENABLED = False
     try:
-        S.KLING3_ENABLED = False
-        update, context, message = make_webapp_update_context(user_id=9702)
-        applied = asyncio.run(S.apply_webapp_generation_payload(update, context, {
+        update, context, message = make_webapp_update_context()
+        applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "start_generation",
+            "product": "video",
+            "video_model": "seedance2",
+            "description": "кот в космосе",
+        }))
+        assert applied is True, "24.1 payload распознан (даже при выключенном флаге — честный отказ)"
+        text = message.reply_text.await_args_list[0].args[0]
+        assert "недоступна" in text.lower(), f"24.2 честный отказ, не крэш и не тихое игнорирование: {text!r}"
+        assert "state" not in context.user_data, "24.3 UserState не создаётся при отказе"
+    finally:
+        S.VIDEO_CONSTRUCTOR_ENABLED = _orig
+
+
+def test_block_24b_full_payload_builds_state_and_confirmation_card():
+    _orig = S.VIDEO_CONSTRUCTOR_ENABLED
+    _orig_url = S.PROMPT_WEBAPP_URL
+    S.VIDEO_CONSTRUCTOR_ENABLED = True
+    S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
+    try:
+        update, context, message = make_webapp_update_context()
+        refs = ["https://i.ibb.co/vid/1.jpg", "https://i.ibb.co/vid/2.jpg"]
+        applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "start_generation",
+            "product": "video",
+            "video_model": "seedance2",
+            "aspect": "9:16",
+            "quality": "pro",
+            "duration": 10,
+            "face_grid": True,
+            "description": "девушка на закате, кино",
+            "refs": refs,
+        }))
+        assert applied is True, "24b.1 payload применён"
+
+        state = context.user_data["state"]
+        assert state.video_model == "seedance2", "24b.2 модель сохранена"
+        assert state.video_model_picked is True, "24b.3 model_picked, чтобы video_kb не показывал пикер повторно"
+        assert state.video_aspect_ratio == "9:16", "24b.4 формат сохранён"
+        # resolve_webapp_video_quality: "pro" -> самый качественный ДОСТУПНЫЙ режим
+        # модели (последний в списке get_seedance_mode_options), не фиксированный
+        # 720p — у seedance2 это 1080p (480p/720p/1080p по умолчанию).
+        assert state.video_mode == "1080p", f"24b.5 quality=pro -> самый качественный режим: {state.video_mode}"
+        assert state.video_duration == 10, "24b.6 длительность сохранена"
+        assert state.video_face_grid is True, "24b.7 детектор лиц сохранён"
+        assert state.video_prompt == "девушка на закате, кино", "24b.8 описание сохранено"
+        assert S.get_video_image_urls(state) == refs, f"24b.9 фото легли в те же поля, что и ручная загрузка: {state.animation_source_urls}"
+
+        text = message.reply_text.await_args_list[0].args[0]
+        assert text.startswith("🎬 Готово к запуску"), f"24b.10 заголовок карточки подтверждения: {text!r}"
+        # build_video_generation_confirm_text форматирует длительность «10с», не «10 сек».
+        assert "Seedance 2" in text and "9:16" in text and "10с" in text, f"24b.11 параметры видны в карточке: {text!r}"
+        assert "Качество: Pro" in text, f"24b.11b качество отражено в карточке: {text!r}"
+
+        kb = message.reply_text.await_args_list[0].kwargs.get("reply_markup")
+        rows = kb.inline_keyboard
+        launch_btn = rows[0][0]
+        assert launch_btn.text == "🚀 Запустить видео", f"24b.12 кнопка запуска — дословно текст video_kb: {launch_btn.text!r}"
+        assert launch_btn.callback_data == "video_start", "24b.13 переиспользует существующий коллбэк, не новый биллинг-путь"
+        edit_btn = rows[1][0]
+        assert edit_btn.text == "✏️ Изменить", f"24b.14 кнопка правки с сохранением черновика (Full, prefill): {edit_btn.text!r}"
+        assert edit_btn.web_app is not None and "prefill=" in edit_btn.web_app.url, (
+            f"24b.15 открывает конструктор с префиллом текущих настроек: {edit_btn.web_app.url if edit_btn.web_app else None}"
+        )
+    finally:
+        S.VIDEO_CONSTRUCTOR_ENABLED = _orig
+        S.PROMPT_WEBAPP_URL = _orig_url
+
+
+def test_block_24b2_quality_fast_alias_maps_to_lowest_mode():
+    # У seedance2 (480p/720p/1080p) fast/pro должны различаться — тест 24b уже
+    # проверяет "pro", тут отдельно "fast" -> самый лёгкий режим (options[0]).
+    _orig = S.VIDEO_CONSTRUCTOR_ENABLED
+    S.VIDEO_CONSTRUCTOR_ENABLED = True
+    try:
+        update, context, message = make_webapp_update_context()
+        applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "start_generation",
+            "product": "video",
+            "video_model": "seedance2",
+            "quality": "fast",
+            "duration": 5,
+            "description": "морской пейзаж на закате",
+        }))
+        assert applied is True
+        state = context.user_data["state"]
+        assert state.video_mode == "480p", f"24b2.1 quality=fast -> самый лёгкий режим: {state.video_mode}"
+        text = message.reply_text.await_args_list[0].args[0]
+        assert "Качество: Fast" in text, f"24b2.2 карточка показывает Fast: {text!r}"
+    finally:
+        S.VIDEO_CONSTRUCTOR_ENABLED = _orig
+
+
+def test_block_24c_disabled_model_falls_back_with_warning():
+    _orig_flag = S.VIDEO_CONSTRUCTOR_ENABLED
+    _orig_kling = S.KLING3_ENABLED
+    S.VIDEO_CONSTRUCTOR_ENABLED = True
+    S.KLING3_ENABLED = False
+    try:
+        update, context, message = make_webapp_update_context()
+        asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
             "action": "start_generation",
             "product": "video",
             "video_model": "kling3",
-            "description": "Плывущий город в тумане",
+            "description": "тест",
         }))
-        assert applied is True, "24b.1 обработчик не падает на выключенной модели"
         state = context.user_data["state"]
-        assert state.video_model == "seedance2", f"24b.2 откат на дефолт: {state.video_model}"
-
-        texts = [c.args[0] for c in message.reply_text.await_args_list]
-        assert any("недоступна" in t for t in texts), f"24b.3 понятное сообщение о недоступности: {texts}"
-        assert any(t.startswith("🎬 Готово к запуску") for t in texts), (
-            f"24b.4 карточка всё равно показана — с дефолтной моделью: {texts}"
+        assert state.video_model == "seedance2", (
+            f"24c.1 отключённая флагом модель из устаревшего кэша вебаппа откатывается на дефолт: {state.video_model}"
         )
-        assert any("Seedance 2" in t for t in texts if t.startswith("🎬")), "24b.5 карточка содержит Seedance 2"
+        text = message.reply_text.await_args_list[0].args[0]
+        assert "недоступна" in text.lower(), f"24c.2 явное предупреждение о недоступной модели: {text!r}"
+        assert text.count("🎬 Готово к запуску") == 1, "24c.3 карточка подтверждения всё равно показана (не отказ целиком)"
     finally:
-        S.KLING3_ENABLED = _orig
+        S.VIDEO_CONSTRUCTOR_ENABLED = _orig_flag
+        S.KLING3_ENABLED = _orig_kling
 
 
-def test_block_24c_quality_fast_alias_maps_to_lowest_mode():
-    update, context, message = make_webapp_update_context(user_id=9703)
-    applied = asyncio.run(S.apply_webapp_generation_payload(update, context, {
-        "action": "start_generation",
-        "product": "video",
-        "video_model": "seedance2",
-        "quality": "fast",
-        "duration": 5,
-        "description": "Морской пейзаж на закате",
+def test_block_24c2_seedance_disabled_shows_unavailable_text():
+    _orig_flag = S.VIDEO_CONSTRUCTOR_ENABLED
+    _orig_seedance = S.SEEDANCE_ENABLED
+    S.VIDEO_CONSTRUCTOR_ENABLED = True
+    S.SEEDANCE_ENABLED = False
+    try:
+        update, context, message = make_webapp_update_context()
+        applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "start_generation",
+            "product": "video",
+            "video_model": "seedance2",
+            "description": "тест",
+        }))
+        assert applied is True, "24c2.1 обработчик не падает, когда видео-продукт целиком выключен"
+        text = message.reply_text.await_args_list[0].args[0]
+        assert text == S.video_unavailable_text(), f"24c2.2 честное «видео недоступно»: {text!r}"
+    finally:
+        S.VIDEO_CONSTRUCTOR_ENABLED = _orig_flag
+        S.SEEDANCE_ENABLED = _orig_seedance
+
+
+def test_block_24d_unknown_product_declines_gracefully():
+    update, context, message = make_webapp_update_context()
+    applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+        "action": "sg",
+        "pr": "studio",
+        "p": "что угодно",
     }))
-    assert applied is True
-    state = context.user_data["state"]
-    assert state.video_mode == "480p", f"24c.1 quality=fast -> самый лёгкий режим: {state.video_mode}"
-    text = message.reply_text.await_args_list[-1].args[0]
-    assert "Качество: Fast" in text, f"24c.2 карточка показывает Fast: {text!r}"
+    assert applied is True, "24d.1 неизвестный (пока не поддержанный вообще) продукт — не падаем"
+    text = message.reply_text.await_args_list[0].args[0]
+    assert "не поддержан" in text.lower(), f"24d.2 честное сообщение вместо тихой генерации по неверным полям: {text!r}"
 
 
-def test_block_24d_wan27_custom_duration_no_quality_line_per_second_price():
-    update, context, message = make_webapp_update_context(user_id=9704)
-    applied = asyncio.run(S.apply_webapp_generation_payload(update, context, {
-        "action": "start_generation",
-        "product": "video",
-        "video_model": "wan27",
-        "duration": 7,
-        "description": "Танцовщица на крыше небоскрёба",
+def test_block_24j_midjourney_flag_off_declines():
+    update, context, message = make_webapp_update_context()
+    applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+        "action": "sg", "pr": "midjourney", "p": "девушка в кафе",
     }))
-    assert applied is True
-    state = context.user_data["state"]
-    assert state.video_model == "wan27", "24d.1 модель Wan 2.7"
-    assert state.video_duration == 7, f"24d.2 произвольная длительность в границах модели сохранена: {state.video_duration}"
-
-    text = message.reply_text.await_args_list[-1].args[0]
-    assert "Длительность: 7с" in text, f"24d.3 длительность в карточке: {text!r}"
-    assert "Качество:" not in text, f"24d.4 у Wan 2.7 в Конструкторе нет строки качества: {text!r}"
-    assert "Детектор лиц:" not in text, f"24d.5 у Wan 2.7 нет детектора лиц: {text!r}"
-
-    expected_cost = S.calc_seedance_cost(7, S.get_video_model_cost_per_second("wan27"))
-    assert f"Стоимость: {expected_cost} 🍇" in text, f"24d.6 цена по per-second тарифу: {text!r}"
+    assert applied is True, "24j.1 payload распознан"
+    text = message.reply_text.await_args_list[0].args[0]
+    assert "недоступна" in text.lower(), f"24j.2 честный отказ при выключенном флаге: {text!r}"
 
 
-def test_block_24e_empty_description_and_refs_asks_to_go_back_no_confirm_card():
-    update, context, message = make_webapp_update_context(user_id=9705)
-    applied = asyncio.run(S.apply_webapp_generation_payload(update, context, {
-        "action": "start_generation",
-        "product": "video",
-        "video_model": "seedance2",
+def test_block_24k_midjourney_full_payload_builds_state_and_card():
+    _orig_flag = S.MIDJOURNEY_CONSTRUCTOR_ENABLED
+    _orig_mj = S.MIDJOURNEY_ENABLED
+    S.MIDJOURNEY_CONSTRUCTOR_ENABLED = True
+    S.MIDJOURNEY_ENABLED = True
+    try:
+        update, context, message = make_webapp_update_context()
+        applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "sg", "pr": "midjourney",
+            "p": "девушка в кафе, плёночная фотография",
+            "refs": ["https://i.ibb.co/mj/1.jpg"],
+        }))
+        assert applied is True, "24k.1 payload применён"
+        state = context.user_data["state"]
+        assert state.mj_prompt == "девушка в кафе, плёночная фотография", "24k.2 текст сохранён в mj_prompt"
+        assert state.mj_reference == "https://i.ibb.co/mj/1.jpg", "24k.3 первый референс сохранён"
+        text = message.reply_text.await_args_list[0].args[0]
+        assert text.startswith("🎨 Готово к запуску"), f"24k.4 карточка подтверждения: {text!r}"
+        kb = message.reply_text.await_args_list[0].kwargs.get("reply_markup")
+        btn = kb.inline_keyboard[0][0]
+        assert btn.text == "🚀 Сгенерировать" and btn.callback_data == "mj_generate", (
+            f"24k.5 переиспользует существующий коллбэк сетки: {btn.text!r}/{btn.callback_data!r}"
+        )
+    finally:
+        S.MIDJOURNEY_CONSTRUCTOR_ENABLED = _orig_flag
+        S.MIDJOURNEY_ENABLED = _orig_mj
+
+
+def test_block_24l_midjourney_empty_description_declines():
+    _orig_flag = S.MIDJOURNEY_CONSTRUCTOR_ENABLED
+    _orig_mj = S.MIDJOURNEY_ENABLED
+    S.MIDJOURNEY_CONSTRUCTOR_ENABLED = True
+    S.MIDJOURNEY_ENABLED = True
+    try:
+        update, context, message = make_webapp_update_context()
+        asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {"action": "sg", "pr": "midjourney"}))
+        text = message.reply_text.await_args_list[0].args[0]
+        assert "описание" in text.lower(), f"24l.1 пустой промт — честный отказ, Midjourney требует текст: {text!r}"
+    finally:
+        S.MIDJOURNEY_CONSTRUCTOR_ENABLED = _orig_flag
+        S.MIDJOURNEY_ENABLED = _orig_mj
+
+
+def test_block_24m_avatar_flag_off_declines():
+    update, context, message = make_webapp_update_context()
+    applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+        "action": "sg", "pr": "avatar", "at": "male", "refs": ["https://i.ibb.co/av/1.jpg"],
     }))
-    assert applied is True, "24e.1 обработчик не падает на пустом payload"
-    texts = [c.args[0] for c in message.reply_text.await_args_list]
-    assert any("описание" in t.lower() and "фото" in t.lower() for t in texts), (
-        f"24e.2 просит вернуться и добавить описание/фото: {texts}"
-    )
-    assert not any(t.startswith("🎬 Готово к запуску") for t in texts), (
-        f"24e.3 карточка подтверждения НЕ отправляется без описания/фото: {texts}"
-    )
+    assert applied is True, "24m.1 payload распознан"
+    text = message.reply_text.await_args_list[0].args[0]
+    assert "недоступна" in text.lower(), f"24m.2 честный отказ при выключенном флаге: {text!r}"
+
+
+def test_block_24n_avatar_full_payload_builds_state_and_card():
+    _orig = S.AVATAR_CONSTRUCTOR_ENABLED
+    S.AVATAR_CONSTRUCTOR_ENABLED = True
+    try:
+        update, context, message = make_webapp_update_context()
+        refs = [f"https://i.ibb.co/av/{i}.jpg" for i in range(3)]
+        applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "sg", "pr": "avatar", "at": "male", "refs": refs,
+        }))
+        assert applied is True, "24n.1 payload применён"
+        state = context.user_data["state"]
+        assert state.pending_avatar_kind == "male", "24n.2 тип аватара сохранён"
+        assert state.avatar_photos == refs, f"24n.3 фото легли в те же поля, что и ручная загрузка: {state.avatar_photos}"
+        assert state.generating_avatar is True, "24n.4 флаг режима аватара включён — handle_photo не спутает с видео"
+        text = message.reply_text.await_args_list[0].args[0]
+        assert text.startswith("🪄 Готово к запуску") and "мужской" in text, f"24n.5 карточка подтверждения: {text!r}"
+        kb = message.reply_text.await_args_list[0].kwargs.get("reply_markup")
+        btn = kb.inline_keyboard[0][0]
+        assert btn.callback_data == "avatar_gen_start", "24n.6 переиспользует существующий коллбэк запуска"
+        assert "3 фото" in btn.text, f"24n.7 счётчик фото в кнопке: {btn.text!r}"
+    finally:
+        S.AVATAR_CONSTRUCTOR_ENABLED = _orig
+
+
+def test_block_24o_avatar_no_photos_declines():
+    _orig = S.AVATAR_CONSTRUCTOR_ENABLED
+    S.AVATAR_CONSTRUCTOR_ENABLED = True
+    try:
+        update, context, message = make_webapp_update_context()
+        asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {"action": "sg", "pr": "avatar", "at": "female"}))
+        text = message.reply_text.await_args_list[0].args[0]
+        assert "фото" in text.lower(), f"24o.1 без фото — честный отказ: {text!r}"
+    finally:
+        S.AVATAR_CONSTRUCTOR_ENABLED = _orig
+
+
+def test_block_24p_avatar_default_kind_when_invalid():
+    _orig = S.AVATAR_CONSTRUCTOR_ENABLED
+    S.AVATAR_CONSTRUCTOR_ENABLED = True
+    try:
+        update, context, message = make_webapp_update_context()
+        asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "sg", "pr": "avatar", "at": "not_a_real_kind", "refs": ["https://i.ibb.co/av/x.jpg"],
+        }))
+        state = context.user_data["state"]
+        assert state.pending_avatar_kind == "female", f"24p.1 неизвестный тип -> дефолт female, не крэш: {state.pending_avatar_kind}"
+    finally:
+        S.AVATAR_CONSTRUCTOR_ENABLED = _orig
+
+
+def test_block_24e_no_description_and_no_refs_declines_with_reopen_button():
+    _orig = S.VIDEO_CONSTRUCTOR_ENABLED
+    S.VIDEO_CONSTRUCTOR_ENABLED = True
+    try:
+        update, context, message = make_webapp_update_context()
+        applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "start_generation",
+            "product": "video",
+            "video_model": "seedance2",
+        }))
+        assert applied is True, "24e.1 пустой черновик — честный отказ, не пустая генерация"
+        text = message.reply_text.await_args_list[0].args[0]
+        assert "описание или хотя бы одно фото" in text, f"24e.2 понятная причина отказа: {text!r}"
+        kb = message.reply_text.await_args_list[0].kwargs.get("reply_markup")
+        assert kb.inline_keyboard[0][0].web_app is not None, "24e.3 кнопка ведёт обратно в конструктор"
+    finally:
+        S.VIDEO_CONSTRUCTOR_ENABLED = _orig
 
 
 def test_block_24f_refs_capped_at_max_seedance_image_references():
-    update, context, message = make_webapp_update_context(user_id=9706)
-    urls = [f"https://i.ibb.co/cap/{i}.jpg" for i in range(12)]
-    applied = asyncio.run(S.apply_webapp_generation_payload(update, context, {
-        "action": "start_generation",
-        "product": "video",
-        "video_model": "seedance2",
-        "refs": urls,
-    }))
-    assert applied is True
-    state = context.user_data["state"]
-    assert len(state.animation_source_urls) == S.MAX_SEEDANCE_IMAGE_REFERENCES, (
-        f"24f.1 потолок фото — существующий MAX_SEEDANCE_IMAGE_REFERENCES: {len(state.animation_source_urls)}"
-    )
-    text = message.reply_text.await_args_list[-1].args[0]
-    assert f"Фото: {S.MAX_SEEDANCE_IMAGE_REFERENCES} шт." in text, f"24f.2 карточка отражает капнутое число: {text!r}"
-
-
-def test_block_24g_non_video_product_honest_message_not_silent():
-    update, context, message = make_webapp_update_context(user_id=9707)
-    applied = asyncio.run(S.apply_webapp_generation_payload(update, context, {
-        "action": "start_generation",
-        "product": "midjourney",
-        "description": "что угодно",
-    }))
-    assert applied is True, "24g.1 обработчик не падает на product вне MVP"
-    texts = [c.args[0] for c in message.reply_text.await_args_list]
-    assert texts, "24g.2 юзер получает объяснение, не тишину"
-    assert any("скоро" in t.lower() or "недоступ" in t.lower() for t in texts), (
-        f"24g.3 честное сообщение, не generic ошибка: {texts}"
-    )
-    assert "state" not in context.user_data, "24g.4 состояние видео не создаётся зря для неподдержанного продукта"
-
-
-def test_block_24h_missing_product_returns_false():
-    update, context, message = make_webapp_update_context(user_id=9708)
-    applied = asyncio.run(S.apply_webapp_generation_payload(update, context, {
-        "action": "start_generation",
-        "description": "без product",
-    }))
-    assert applied is False, "24h.1 отсутствие product — сигнал вызывающему коду попробовать другой парсер/дефолт"
-
-
-def test_block_24i_seedance_disabled_shows_unavailable_text():
-    _orig = S.SEEDANCE_ENABLED
+    _orig = S.VIDEO_CONSTRUCTOR_ENABLED
+    S.VIDEO_CONSTRUCTOR_ENABLED = True
     try:
-        S.SEEDANCE_ENABLED = False
-        update, context, message = make_webapp_update_context(user_id=9709)
-        applied = asyncio.run(S.apply_webapp_generation_payload(update, context, {
+        update, context, message = make_webapp_update_context()
+        many_refs = [f"https://i.ibb.co/many/{i}.jpg" for i in range(20)]
+        asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
             "action": "start_generation",
             "product": "video",
-            "description": "тест",
+            "video_model": "seedance2",
+            "description": "тест потолка",
+            "refs": many_refs,
         }))
-        assert applied is True, "24i.1 обработчик не падает"
-        texts = [c.args[0] for c in message.reply_text.await_args_list]
-        assert any(t == S.video_unavailable_text() for t in texts), f"24i.2 честное «видео недоступно»: {texts}"
+        state = context.user_data["state"]
+        assert len(S.get_video_image_urls(state)) == S.MAX_SEEDANCE_IMAGE_REFERENCES, (
+            f"24f.1 тот же потолок, что и у ручной загрузки: {len(S.get_video_image_urls(state))}"
+        )
     finally:
-        S.SEEDANCE_ENABLED = _orig
+        S.VIDEO_CONSTRUCTOR_ENABLED = _orig
 
 
-def test_block_24j_dispatch_from_v2_router_full_and_short_action_alias():
-    update, context, message = make_webapp_update_context(user_id=9710)
-    applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
-        "action": "start_generation",
-        "product": "video",
-        "video_model": "seedance2",
-        "description": "полный алиас экшена",
-    }))
-    assert applied is True, "24j.1 apply_webapp_prompt_payload_v2 диспетчеризует start_generation"
-    text = message.reply_text.await_args_list[-1].args[0]
-    assert text.startswith("🎬 Готово к запуску"), f"24j.2: {text!r}"
-
-    update2, context2, message2 = make_webapp_update_context(user_id=9711)
-    applied2 = asyncio.run(S.apply_webapp_prompt_payload_v2(update2, context2, {
-        "a": "sg",
-        "pr": "video",
-        "vm": "seedance2",
-        "p": "короткий алиас экшена и полей",
-    }))
-    assert applied2 is True, "24j.3 короткие алиасы a=sg/pr/vm/p тоже распознаются"
-    text2 = message2.reply_text.await_args_list[-1].args[0]
-    assert text2.startswith("🎬 Готово к запуску"), f"24j.4: {text2!r}"
-    assert context2.user_data["state"].video_prompt == "короткий алиас экшена и полей", "24j.5 описание из p"
-
-
-def test_block_24k_video_constructor_enabled_killswitch_both_entry_points():
+def test_block_24g_video_entry_points_route_to_constructor_when_enabled():
     _orig_flag = S.VIDEO_CONSTRUCTOR_ENABLED
     _orig_url = S.PROMPT_WEBAPP_URL
+    S.VIDEO_CONSTRUCTOR_ENABLED = True
+    S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
     try:
-        S.PROMPT_WEBAPP_URL = "https://sirnike.pages.dev"
+        update, context, message = make_webapp_update_context()
+        update.message = message
+        applied = asyncio.run(S.handle_menu_button(update, context, S.MENU_BTN_VIDEO))
+        assert applied is True, "24g.1 кнопка меню распознана"
+        kb = message.reply_text.await_args_list[0].kwargs.get("reply_markup")
+        btn = kb.inline_keyboard[0][0]
+        assert btn.web_app is not None, "24g.2 сразу кнопка вебаппа, не пикер модели"
+        assert "tab=video_constructor" in btn.web_app.url, f"24g.3 URL открывает нужный экран: {btn.web_app.url}"
+    finally:
+        S.VIDEO_CONSTRUCTOR_ENABLED = _orig_flag
+        S.PROMPT_WEBAPP_URL = _orig_url
 
-        # Флаг выключен (дефолт) — persistent_menu_kb отдаёт обычную текстовую
-        # кнопку видео (ноль изменений поведения).
-        S.VIDEO_CONSTRUCTOR_ENABLED = False
-        kb_off = S.persistent_menu_kb(9712)
-        video_btn_off = [b for row in kb_off.keyboard for b in row if b.text == S.MENU_BTN_VIDEO][0]
-        assert video_btn_off.web_app is None, "24k.1 флаг выкл — кнопка видео остаётся обычной текстовой"
 
-        # Инлайн-путь при выключенном флаге — старое поведение (пикер модели).
-        update, context, query = make_update_context("video", user_id=9712)
-        asyncio.run(S.button_handler(update, context))
-        kb_texts_off = [
-            c.kwargs.get("reply_markup") for c in query.message.reply_text.await_args_list
-        ]
-        sent_texts_off = [c.args[0] for c in query.message.reply_text.await_args_list]
-        assert any("Выбери модель" in t for t in sent_texts_off), (
-            f"24k.2 флаг выкл — старый пикер модели: {sent_texts_off}"
+def test_block_24h_video_entry_unchanged_when_flag_off():
+    _orig_flag = S.VIDEO_CONSTRUCTOR_ENABLED
+    _orig_url = S.PROMPT_WEBAPP_URL
+    S.VIDEO_CONSTRUCTOR_ENABLED = False
+    S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
+    try:
+        update, context, message = make_webapp_update_context()
+        update.message = message
+        asyncio.run(S.handle_menu_button(update, context, S.MENU_BTN_VIDEO))
+        kb = message.reply_text.await_args_list[0].kwargs.get("reply_markup")
+        btn_texts = [b.text for row in kb.inline_keyboard for b in row]
+        assert "🎬 Открыть конструктор" not in btn_texts, "24h.1 kill-switch выключен — старый пикер модели, без регрессий"
+    finally:
+        S.VIDEO_CONSTRUCTOR_ENABLED = _orig_flag
+        S.PROMPT_WEBAPP_URL = _orig_url
+
+
+def test_block_24h2_inline_video_entry_point_parity():
+    # AGENT_NOTES-правило проекта: оба входа в видео (reply-кнопка и инлайн
+    # button_handler) обязаны переключаться синхронно — historically был
+    # источник регрессий, когда чинили только один из двух.
+    _orig_flag = S.VIDEO_CONSTRUCTOR_ENABLED
+    _orig_url = S.PROMPT_WEBAPP_URL
+    S.VIDEO_CONSTRUCTOR_ENABLED = True
+    S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
+    try:
+        update, context, query = make_update_context("video")
+        user = types.SimpleNamespace(id=778, username="test")
+        asyncio.run(S._cb_video_open(update, context, query, user))
+        kb = query.message.reply_text.await_args_list[0].kwargs.get("reply_markup")
+        btn = kb.inline_keyboard[0][0]
+        assert btn.web_app is not None, "24h2.1 инлайн-вход тоже ведёт в конструктор, не в старый пикер"
+        assert "tab=video_constructor" in btn.web_app.url, f"24h2.2 URL тот же, что у reply-входа: {btn.web_app.url}"
+    finally:
+        S.VIDEO_CONSTRUCTOR_ENABLED = _orig_flag
+        S.PROMPT_WEBAPP_URL = _orig_url
+
+
+def test_block_24h3_persistent_menu_video_button_uses_snake_case_tab():
+    # get_video_constructor_webapp_url — персональный URL, зашитый в reply-кнопку
+    # «🎬 Видео для Reels» (persistent_menu_kb). Реальный constructor.js
+    # (репо вебаппа) сверяет query-параметр `tab` дословно со строкой
+    # "video_constructor" (snake_case) — "videoConstructor" (camelCase) там
+    # только внутреннее имя экрана для switchTab(), не значение параметра.
+    _orig_flag = S.VIDEO_CONSTRUCTOR_ENABLED
+    _orig_url = S.PROMPT_WEBAPP_URL
+    S.VIDEO_CONSTRUCTOR_ENABLED = True
+    S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
+    try:
+        kb = S.persistent_menu_kb(9714)
+        video_btn = [b for row in kb.keyboard for b in row if b.text == S.MENU_BTN_VIDEO][0]
+        assert video_btn.web_app is not None, "24h3.1 флаг включён — прямая web_app-кнопка"
+        assert "tab=video_constructor" in video_btn.web_app.url, (
+            f"24h3.2 snake_case tab, дословно как ждёт constructor.js: {video_btn.web_app.url}"
         )
-
-        # Флаг включён — обе точки входа ведут в Конструктор.
-        S.VIDEO_CONSTRUCTOR_ENABLED = True
-        kb_on = S.persistent_menu_kb(9713)
-        video_btn_on = [b for row in kb_on.keyboard for b in row if b.text == S.MENU_BTN_VIDEO][0]
-        assert video_btn_on.web_app is not None, "24k.3 флаг вкл — кнопка видео открывает вебапп напрямую"
-        assert "tab=videoConstructor" in video_btn_on.web_app.url, (
-            f"24k.4 URL ведёт в Конструктор: {video_btn_on.web_app.url}"
-        )
-
-        update2, context2, query2 = make_update_context("video", user_id=9713)
-        asyncio.run(S.button_handler(update2, context2))
-        sent_texts_on = [c.args[0] for c in query2.message.reply_text.await_args_list]
-        assert any("Конструктор" in t for t in sent_texts_on), (
-            f"24k.5 флаг вкл — инлайн-путь тоже предлагает Конструктор: {sent_texts_on}"
-        )
-        kb_msgs_on = [c.kwargs.get("reply_markup") for c in query2.message.reply_text.await_args_list]
-        webapp_btns = [
-            b for kb in kb_msgs_on if kb for row in kb.inline_keyboard for b in row if b.web_app is not None
-        ]
-        assert webapp_btns, "24k.6 инлайн-путь отдаёт web_app-кнопку Конструктора"
-        assert "tab=videoConstructor" in webapp_btns[0].web_app.url, (
-            f"24k.7 та же цель — Конструктор: {webapp_btns[0].web_app.url}"
+        assert "tab=videoConstructor" not in video_btn.web_app.url, (
+            f"24h3.3 НЕ camelCase (то внутреннее имя экрана, не query-параметр): {video_btn.web_app.url}"
         )
     finally:
         S.VIDEO_CONSTRUCTOR_ENABLED = _orig_flag
         S.PROMPT_WEBAPP_URL = _orig_url
 
 
-def test_block_24l_config_shape_matches_frontend_contract():
+def test_block_24i_cfg_appended_to_webapp_url_only_when_enabled():
+    _orig_flag = S.VIDEO_CONSTRUCTOR_ENABLED
+    _orig_url = S.PROMPT_WEBAPP_URL
+    S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
+    try:
+        S.VIDEO_CONSTRUCTOR_ENABLED = False
+        url_off = S.get_prompt_webapp_url(1)
+        assert "&cfg=" not in url_off, "24i.1 флаг выключен -> не раздуваем URL всем юзерам библиотеки"
+
+        S.VIDEO_CONSTRUCTOR_ENABLED = True
+        url_on = S.get_prompt_webapp_url(1)
+        assert "&cfg=" in url_on, "24i.2 флаг включён -> конфигурация моделей/цен проброшена"
+    finally:
+        S.VIDEO_CONSTRUCTOR_ENABLED = _orig_flag
+        S.PROMPT_WEBAPP_URL = _orig_url
+
+
+def test_block_24i2_config_shape_matches_frontend_contract():
+    # Схема СВЕРЕНА с реальным constructor.js в репо вебаппа (parseCfgFromUrl/
+    # FALLBACK_CFG, vcModelFromCfgEntry) — `video_models` (не `models`), без
+    # обёртки `default_model` (дефолт = первая модель списка, всегда seedance2,
+    # т.к. он единственный без фичефлага), поля `code`/`aspects`/`modes`/
+    # `prices` (не `id`/`formats`/`quality`), prices вложены по РЕАЛЬНОМУ
+    # значению режима ("480p"/"720p"/"1080p"), а не по "pro"/"fast". Wan 2.7 —
+    # обычная дискретная таблица длительностей/цен, как у всех моделей (не
+    # {"custom":[min,max]}/{"per_second": N} — этот вариант ушёл из реального
+    # webapp контракта, hasQualityToggle там смотрит на наличие "480p" в modes).
     _flags = {
         "SEEDANCE_FAST_ENABLED": S.SEEDANCE_FAST_ENABLED,
         "KLING3_ENABLED": S.KLING3_ENABLED,
@@ -312,36 +448,38 @@ def test_block_24l_config_shape_matches_frontend_contract():
         S.SEEDANCE25_ENABLED = True
 
         cfg = S.get_video_constructor_config()
-        assert isinstance(cfg.get("models"), list) and cfg["models"], "24l.1 models — непустой список"
-        assert cfg.get("default_model") == "seedance2", "24l.2 default_model = seedance2"
-        ids = [m["id"] for m in cfg["models"]]
-        assert set(ids) == {
-            "seedance2", "seedance2_fast", "kling3", "veo31", "wan27", "gemini_omni", "seedance25",
-        }, f"24l.3 все включённые модели присутствуют: {ids}"
-
-        by_id = {m["id"]: m for m in cfg["models"]}
-
-        sd2 = by_id["seedance2"]
-        assert sd2["quality"] == ["pro", "fast"], f"24l.4 seedance2 — бинарный pro/fast: {sd2.get('quality')}"
-        assert isinstance(sd2["prices"], dict) and "pro" in sd2["prices"] and "fast" in sd2["prices"], (
-            f"24l.5 seedance2 prices вложены по качеству: {sd2['prices']}"
+        assert isinstance(cfg, dict) and list(cfg.keys()) == ["video_models"], (
+            f"24i2.1 корневой ключ — ровно video_models, без default_model: {cfg.keys()}"
         )
-        assert sd2["face_grid"] is True, "24l.6 seedance2 поддерживает детектор лиц"
-        assert set(sd2["formats"]) == {"16:9", "9:16", "1:1", "4:3"}, f"24l.7 seedance2 формат: {sd2['formats']}"
+        models = cfg["video_models"]
+        assert isinstance(models, list) and models, "24i2.2 video_models — непустой список"
+        assert models[0]["code"] == "seedance2", "24i2.3 дефолт конструктора = первая модель списка = seedance2"
+        codes = [m["code"] for m in models]
+        assert set(codes) == {
+            "seedance2", "seedance2_fast", "kling3", "veo31", "wan27", "gemini_omni", "seedance25",
+        }, f"24i2.4 все включённые модели присутствуют: {codes}"
 
-        wan = by_id["wan27"]
-        assert wan["durations"] == {"custom": [2, 10]}, f"24l.8 wan27 — свободный диапазон: {wan['durations']}"
-        assert "quality" not in wan, "24l.9 wan27 — качество не предлагается (упрощённый UI)"
-        assert "per_second" in wan["prices"], f"24l.10 wan27 — тариф за секунду: {wan['prices']}"
+        by_code = {m["code"]: m for m in models}
 
-        veo = by_id["veo31"]
-        assert "quality" not in veo, "24l.11 veo31 — фиксированное качество, поле опущено"
-        assert set(veo["formats"]) == {"16:9", "9:16"}, f"24l.12 veo31 без квадрата/4:3: {veo['formats']}"
+        sd2 = by_code["seedance2"]
+        assert sd2["modes"] == ["480p", "720p", "1080p"], f"24i2.5 seedance2 — все три режима: {sd2['modes']}"
+        assert set(sd2["aspects"]) == {"16:9", "9:16", "1:1", "4:3"}, f"24i2.6 seedance2 форматы: {sd2['aspects']}"
+        assert sd2["face_grid"] is True, "24i2.7 seedance2 поддерживает детектор лиц"
+        assert set(sd2["prices"].keys()) == {"480p", "720p", "1080p"}, (
+            f"24i2.8 prices вложены по реальному режиму, не pro/fast: {sd2['prices'].keys()}"
+        )
+        assert "label" in sd2 and "blurb" in sd2 and "durations" in sd2, f"24i2.9 обязательные поля: {sd2}"
 
-        for m in cfg["models"]:
-            assert m.get("badge") in (None, m.get("badge")), "24l.13 badge опционален"
-            if m["id"] in ("seedance2", "seedance2_fast"):
-                assert m.get("badge") is None or "badge" not in m, f"24l.14 {m['id']} без бейджа: {m}"
+        wan = by_code["wan27"]
+        assert isinstance(wan["durations"], list) and wan["durations"], (
+            f"24i2.10 wan27 — обычная дискретная таблица длительностей, не {{'custom':...}}: {wan['durations']}"
+        )
+        assert set(wan["prices"].keys()) == set(str(m) for m in (wan["modes"] or ["default"])), (
+            f"24i2.11 wan27 prices по режиму/duration, не per_second: {wan['prices']}"
+        )
+
+        veo = by_code["veo31"]
+        assert set(veo["aspects"]) == {"16:9", "9:16"}, f"24i2.12 veo31 без квадрата/4:3: {veo['aspects']}"
     finally:
         S.SEEDANCE_FAST_ENABLED = _flags["SEEDANCE_FAST_ENABLED"]
         S.KLING3_ENABLED = _flags["KLING3_ENABLED"]
@@ -349,3 +487,301 @@ def test_block_24l_config_shape_matches_frontend_contract():
         S.WAN27_ENABLED = _flags["WAN27_ENABLED"]
         S.GEMINI_OMNI_ENABLED = _flags["GEMINI_OMNI_ENABLED"]
         S.SEEDANCE25_ENABLED = _flags["SEEDANCE25_ENABLED"]
+
+
+def test_block_24j_midjourney_entry_routes_to_constructor_when_enabled():
+    _orig_flag = S.MIDJOURNEY_CONSTRUCTOR_ENABLED
+    _orig_mj = S.MIDJOURNEY_ENABLED
+    _orig_url = S.PROMPT_WEBAPP_URL
+    S.MIDJOURNEY_CONSTRUCTOR_ENABLED = True
+    S.MIDJOURNEY_ENABLED = True
+    S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
+    try:
+        update, context, query = make_update_context("menu_midjourney")
+        user = types.SimpleNamespace(id=901, username="test")
+        asyncio.run(S._cb_menu_midjourney(update, context, query, user))
+        kb = query.message.reply_text.await_args_list[0].kwargs.get("reply_markup")
+        btn = kb.inline_keyboard[0][0]
+        assert btn.web_app is not None, "24j.1 сразу кнопка вебаппа, не текстовый флоу"
+        assert "tab=midjourney_constructor" in btn.web_app.url, f"24j.2 URL нужного экрана: {btn.web_app.url}"
+    finally:
+        S.MIDJOURNEY_CONSTRUCTOR_ENABLED = _orig_flag
+        S.MIDJOURNEY_ENABLED = _orig_mj
+        S.PROMPT_WEBAPP_URL = _orig_url
+
+
+def test_block_24k_midjourney_entry_unchanged_when_flag_off():
+    _orig_flag = S.MIDJOURNEY_CONSTRUCTOR_ENABLED
+    _orig_mj = S.MIDJOURNEY_ENABLED
+    S.MIDJOURNEY_CONSTRUCTOR_ENABLED = False
+    S.MIDJOURNEY_ENABLED = True
+    try:
+        update, context, query = make_update_context("menu_midjourney")
+        user = types.SimpleNamespace(id=902, username="test")
+        asyncio.run(S._cb_menu_midjourney(update, context, query, user))
+        text = query.message.reply_text.await_args_list[0].args[0]
+        assert "Опиши, что хочешь сгенерировать, одним текстовым сообщением" in text, (
+            f"24k.1 kill-switch выключен — старый текстовый флоу без регрессий: {text!r}"
+        )
+    finally:
+        S.MIDJOURNEY_CONSTRUCTOR_ENABLED = _orig_flag
+        S.MIDJOURNEY_ENABLED = _orig_mj
+
+
+def test_block_24l_avatar_entry_routes_to_constructor_when_enabled():
+    _orig_flag = S.AVATAR_CONSTRUCTOR_ENABLED
+    _orig_url = S.PROMPT_WEBAPP_URL
+    S.AVATAR_CONSTRUCTOR_ENABLED = True
+    S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
+    try:
+        update, context, query = make_update_context("avatar_gen_refsheet")
+        user = types.SimpleNamespace(id=903, username="test")
+        asyncio.run(S._cb_avatar_gen_refsheet(update, context, query, user))
+        kb = query.message.reply_text.await_args_list[0].kwargs.get("reply_markup")
+        btn = kb.inline_keyboard[0][0]
+        assert btn.web_app is not None, "24l.1 сразу кнопка вебаппа, не сбор фото текстом"
+        assert "tab=avatar_constructor" in btn.web_app.url, f"24l.2 URL нужного экрана: {btn.web_app.url}"
+    finally:
+        S.AVATAR_CONSTRUCTOR_ENABLED = _orig_flag
+        S.PROMPT_WEBAPP_URL = _orig_url
+
+
+def test_block_24m_avatar_entry_unchanged_when_flag_off():
+    _orig_flag = S.AVATAR_CONSTRUCTOR_ENABLED
+    S.AVATAR_CONSTRUCTOR_ENABLED = False
+    try:
+        update, context, query = make_update_context("avatar_gen_refsheet")
+        user = types.SimpleNamespace(id=904, username="test")
+        asyncio.run(S._cb_avatar_gen_refsheet(update, context, query, user))
+        text = query.message.reply_text.await_args_list[0].args[0]
+        assert "Пришли 3–6 фото" in text, f"24m.1 kill-switch выключен — старый сбор фото без регрессий: {text!r}"
+    finally:
+        S.AVATAR_CONSTRUCTOR_ENABLED = _orig_flag
+
+
+def test_block_24n2_photo_flag_off_declines():
+    update, context, message = make_webapp_update_context()
+    applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+        "action": "sg", "pr": "photo", "p": "кот в космосе",
+    }))
+    assert applied is True, "24n2.1 payload распознан"
+    text = message.reply_text.await_args_list[0].args[0]
+    assert "недоступна" in text.lower(), f"24n2.2 честный отказ при выключенном флаге: {text!r}"
+
+
+def test_block_24o2_photo_full_payload_builds_state_and_card():
+    _orig = S.PHOTO_CONSTRUCTOR_ENABLED
+    S.PHOTO_CONSTRUCTOR_ENABLED = True
+    try:
+        update, context, message = make_webapp_update_context()
+        refs = [f"https://i.ibb.co/photo/{i}.jpg" for i in range(2)]
+        applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "sg", "pr": "photo", "p": "кот-космонавт, кинематографично", "refs": refs,
+        }))
+        assert applied is True, "24o2.1 payload применён"
+        state = context.user_data["state"]
+        assert state.prompt == "кот-космонавт, кинематографично", "24o2.2 описание сохранено"
+        assert state.references == refs, f"24o2.3 фото легли в те же поля, что и ручная загрузка: {state.references}"
+        assert state.image_model == "gemini", "24o2.4 дефолт модели — gemini (gpt5 не запрошен)"
+        text = message.reply_text.await_args_list[0].args[0]
+        assert text.startswith("✨ Готово к запуску"), f"24o2.5 карточка подтверждения: {text!r}"
+        kb = message.reply_text.await_args_list[0].kwargs.get("reply_markup")
+        btn = kb.inline_keyboard[0][0]
+        assert btn.text == "🚀 Запустить генерацию" and btn.callback_data == "generate", (
+            f"24o2.6 переиспользует существующий коллбэк запуска: {btn.text!r}/{btn.callback_data!r}"
+        )
+    finally:
+        S.PHOTO_CONSTRUCTOR_ENABLED = _orig
+
+
+def test_block_24p2_photo_gpt5_model_requires_flag():
+    _orig = S.PHOTO_CONSTRUCTOR_ENABLED
+    _orig_gpt5 = S.GPT5_IMAGE_ENABLED
+    S.PHOTO_CONSTRUCTOR_ENABLED = True
+    S.GPT5_IMAGE_ENABLED = False
+    try:
+        update, context, message = make_webapp_update_context()
+        asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "sg", "pr": "photo", "p": "тест", "im": "gpt5",
+        }))
+        state = context.user_data["state"]
+        assert state.image_model == "gemini", (
+            f"24p2.1 gpt5 запрошен, но выключен флагом -> откат на gemini, не крэш: {state.image_model}"
+        )
+    finally:
+        S.PHOTO_CONSTRUCTOR_ENABLED = _orig
+        S.GPT5_IMAGE_ENABLED = _orig_gpt5
+
+
+def test_block_24q2_photo_empty_description_declines():
+    _orig = S.PHOTO_CONSTRUCTOR_ENABLED
+    S.PHOTO_CONSTRUCTOR_ENABLED = True
+    try:
+        update, context, message = make_webapp_update_context()
+        asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {"action": "sg", "pr": "photo"}))
+        text = message.reply_text.await_args_list[0].args[0]
+        assert "описание" in text.lower(), f"24q2.1 пустое описание — честный отказ: {text!r}"
+    finally:
+        S.PHOTO_CONSTRUCTOR_ENABLED = _orig
+
+
+def test_block_24r2_photo_entry_points_route_to_constructor_when_enabled():
+    _orig_flag = S.PHOTO_CONSTRUCTOR_ENABLED
+    _orig_url = S.PROMPT_WEBAPP_URL
+    S.PHOTO_CONSTRUCTOR_ENABLED = True
+    S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
+    try:
+        # Reply-вход
+        update, context, message = make_webapp_update_context()
+        update.message = message
+        applied = asyncio.run(S.handle_menu_button(update, context, S.MENU_BTN_PHOTO))
+        assert applied is True, "24r2.1 кнопка меню распознана"
+        kb = message.reply_text.await_args_list[0].kwargs.get("reply_markup")
+        btn = kb.inline_keyboard[0][0]
+        assert btn.web_app is not None and "tab=photo_constructor" in btn.web_app.url, (
+            f"24r2.2 reply-вход ведёт в конструктор: {btn.web_app.url if btn.web_app else None}"
+        )
+
+        # Инлайн-вход (photo_menu_kb)
+        kb2 = S.photo_menu_kb(905)
+        btn2 = kb2.inline_keyboard[0][0]
+        assert btn2.web_app is not None and "tab=photo_constructor" in btn2.web_app.url, (
+            f"24r2.3 инлайн-вход тоже ведёт в конструктор (оба входа синхронно)"
+        )
+    finally:
+        S.PHOTO_CONSTRUCTOR_ENABLED = _orig_flag
+        S.PROMPT_WEBAPP_URL = _orig_url
+
+
+def test_block_24s2_photo_entry_unchanged_when_flag_off():
+    _orig_flag = S.PHOTO_CONSTRUCTOR_ENABLED
+    S.PHOTO_CONSTRUCTOR_ENABLED = False
+    try:
+        kb = S.photo_menu_kb(906)
+        btn = kb.inline_keyboard[0][0]
+        assert btn.callback_data == "generate" and btn.web_app is None, (
+            "24s2.1 kill-switch выключен — старый коллбэк без регрессий"
+        )
+    finally:
+        S.PHOTO_CONSTRUCTOR_ENABLED = _orig_flag
+
+
+def test_block_24t2_features_payload_reflects_all_four_flags():
+    # Экран «Создать» (единая навигация, docs/specs/2026-08-13_webapp_generation_hub_navigation_full.md)
+    # скрывает плитки продуктов по этому полю — независимо от &cfg=
+    # (который несёт только тяжёлую таблицу цен видео и гейтится отдельно).
+    _orig = (
+        S.VIDEO_CONSTRUCTOR_ENABLED, S.MIDJOURNEY_CONSTRUCTOR_ENABLED,
+        S.AVATAR_CONSTRUCTOR_ENABLED, S.PHOTO_CONSTRUCTOR_ENABLED, S.PROMPT_WEBAPP_URL,
+    )
+    S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
+    try:
+        S.VIDEO_CONSTRUCTOR_ENABLED = False
+        S.MIDJOURNEY_CONSTRUCTOR_ENABLED = True
+        S.AVATAR_CONSTRUCTOR_ENABLED = False
+        S.PHOTO_CONSTRUCTOR_ENABLED = True
+        url = S.get_prompt_webapp_url(1)
+        assert "&features=" in url, f"24t2.1 features всегда проброшены (не гейтятся видео-флагом): {url}"
+        import base64 as b64, json as js
+        raw = url.split("&features=", 1)[1].split("&", 1)[0]
+        decoded = js.loads(b64.urlsafe_b64decode(raw.encode()).decode())
+        assert decoded == {"video": False, "midjourney": True, "avatar": False, "photo": True}, (
+            f"24t2.2 значения соответствуют реальным флагам: {decoded}"
+        )
+    finally:
+        (S.VIDEO_CONSTRUCTOR_ENABLED, S.MIDJOURNEY_CONSTRUCTOR_ENABLED,
+         S.AVATAR_CONSTRUCTOR_ENABLED, S.PHOTO_CONSTRUCTOR_ENABLED, S.PROMPT_WEBAPP_URL) = _orig
+
+
+def _decode_prefill(url):
+    import base64 as b64, json as js
+    raw = url.split("&prefill=", 1)[1].split("&", 1)[0]
+    return js.loads(b64.urlsafe_b64decode(raw.encode()).decode())
+
+
+def test_block_24u_build_generation_prefill_roundtrips_all_four_products():
+    st = S.UserState()
+    st.video_model = "seedance2"
+    st.video_aspect_ratio = "9:16"
+    st.video_mode = "480p"
+    st.video_duration = 10
+    st.video_face_grid = True
+    st.video_prompt = "кино"
+    S.set_video_image_urls(st, ["https://i.ibb.co/v/1.jpg"])
+    video_pf = S.build_generation_prefill("video", st)
+    assert video_pf["video_model"] == "seedance2" and video_pf["aspect"] == "9:16"
+    assert video_pf["quality"] == "fast", f"24u.1 480p -> quality fast: {video_pf}"
+    assert video_pf["duration"] == 10 and video_pf["face_grid"] is True
+    assert video_pf["description"] == "кино" and video_pf["refs"] == ["https://i.ibb.co/v/1.jpg"]
+
+    st2 = S.UserState()
+    st2.mj_prompt = "девушка"
+    st2.mj_reference = "https://i.ibb.co/m/1.jpg"
+    mj_pf = S.build_generation_prefill("midjourney", st2)
+    assert mj_pf == {"product": "midjourney", "description": "девушка", "refs": ["https://i.ibb.co/m/1.jpg"]}
+
+    st3 = S.UserState()
+    st3.pending_avatar_kind = "child"
+    st3.avatar_photos = ["https://i.ibb.co/a/1.jpg"]
+    av_pf = S.build_generation_prefill("avatar", st3)
+    assert av_pf == {"product": "avatar", "avatar_type": "child", "refs": ["https://i.ibb.co/a/1.jpg"]}
+
+    st4 = S.UserState()
+    st4.prompt = "кот"
+    st4.references = ["https://i.ibb.co/p/1.jpg"]
+    st4.image_model = "gemini"
+    ph_pf = S.build_generation_prefill("photo", st4)
+    assert ph_pf == {"product": "photo", "description": "кот", "refs": ["https://i.ibb.co/p/1.jpg"], "image_model": "gemini"}
+
+
+def test_block_24v_library_video_style_redirects_to_constructor_with_prefill():
+    _orig_flag = S.VIDEO_CONSTRUCTOR_ENABLED
+    _orig_url = S.PROMPT_WEBAPP_URL
+    S.VIDEO_CONSTRUCTOR_ENABLED = True
+    S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
+    try:
+        update, context, message = make_webapp_update_context()
+        applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "set_video_prompt",
+            "title": "Кино-стиль",
+            "prompt": "cinematic dance video",
+        }))
+        assert applied is True, "24v.1 payload применён"
+        assert len(message.reply_text.await_args_list) == 1, (
+            "24v.2 ОДНО сообщение с кнопкой конструктора, не старая двухсообщенческая чат-панель"
+        )
+        text = message.reply_text.await_args_list[0].args[0]
+        assert "Кино-стиль" in text, f"24v.3 название стиля в сообщении: {text!r}"
+        kb = message.reply_text.await_args_list[0].kwargs.get("reply_markup")
+        btn = kb.inline_keyboard[0][0]
+        assert btn.web_app is not None and "tab=video_constructor" in btn.web_app.url, (
+            f"24v.4 ведёт в конструктор видео: {btn.web_app.url if btn.web_app else None}"
+        )
+        prefill = _decode_prefill(btn.web_app.url)
+        assert prefill["description"] == "cinematic dance video", (
+            f"24v.5 промт стиля предзаполнен в конструкторе: {prefill}"
+        )
+    finally:
+        S.VIDEO_CONSTRUCTOR_ENABLED = _orig_flag
+        S.PROMPT_WEBAPP_URL = _orig_url
+
+
+def test_block_24w_library_video_style_unchanged_when_flag_off():
+    _orig_flag = S.VIDEO_CONSTRUCTOR_ENABLED
+    S.VIDEO_CONSTRUCTOR_ENABLED = False
+    try:
+        update, context, message = make_webapp_update_context()
+        asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "set_video_prompt",
+            "title": "Кино-стиль",
+            "prompt": "cinematic dance video",
+        }))
+        assert len(message.reply_text.await_args_list) == 2, (
+            "24w.1 kill-switch выключен — старая двухсообщенческая чат-панель без регрессий"
+        )
+        second_kb = message.reply_text.await_args_list[1].kwargs.get("reply_markup")
+        assert second_kb is not None and any(
+            "Запустить видео" in b.text for row in second_kb.inline_keyboard for b in row
+        ), "24w.2 второе сообщение — обычная video_kb-панель"
+    finally:
+        S.VIDEO_CONSTRUCTOR_ENABLED = _orig_flag

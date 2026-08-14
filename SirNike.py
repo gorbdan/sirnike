@@ -10,6 +10,7 @@ import re
 import shutil
 import tempfile
 import time
+import uuid
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from urllib.parse import urlsplit
@@ -137,6 +138,13 @@ from config import (
     SEEDANCE25_MAX_IMAGES,
     SEEDANCE25_COST_PER_SECOND_480P,
     SEEDANCE25_COST_PER_SECOND_720P,
+    VIDEO_CONSTRUCTOR_ENABLED,
+    MIDJOURNEY_CONSTRUCTOR_ENABLED,
+    AVATAR_CONSTRUCTOR_ENABLED,
+    PHOTO_CONSTRUCTOR_ENABLED,
+    GEN_PROGRESS_ENABLED,
+    GEN_PROGRESS_API_BASE,
+    GEN_PROGRESS_SECRET,
     GPT5_IMAGE_ENABLED,
     ZVENO_GPT5_IMAGE_MODEL,
     GPT5_IMAGE_COST,
@@ -153,7 +161,6 @@ from config import (
     STUDIO_MAX_SCENES,
     STUDIO_POLL_INTERVAL,
     STUDIO_CONCURRENCY,
-    VIDEO_CONSTRUCTOR_ENABLED,
 )
 
 # Видео-провайдер-клиенты (Zveno/EvoLink/MashaGPT/fal.ai) — вынесены из
@@ -1265,60 +1272,116 @@ def generation_failure_user_text(refunded: bool) -> str:
     )
 
 
-def get_prompt_webapp_url(user_id: int = None, include_video_cfg: bool = False) -> str:
+def get_video_constructor_config() -> dict:
+    """Конфигурация для экрана «Конструктор» вебаппа (docs/specs/
+    2026-08-13_webapp_generation_hub.md, «Что нужно от бэкенда» п.3). У бота
+    нет публичного HTTP-входа — вебапп не может ничего ЗАПРОСИТЬ у бота
+    напрямую, поэтому список активных моделей/форматов/длительностей/цен
+    пробрасывается единственным доступным каналом: персональным URL при
+    открытии Mini App. Источник истины остаётся бэкенд — вебапп только
+    отображает эти цифры, финальная цена в карточке подтверждения в чате
+    всегда пересчитывается заново на момент показа.
+
+    Схема — `{"video_models": [{"code","label","blurb","aspects","modes",
+    "durations","face_grid","prices"}, ...]}`, СВЕРЕНО с реальным
+    constructor.js в репо вебаппа (parseCfgFromUrl/FALLBACK_CFG,
+    vcModelFromCfgEntry) — задокументирована в docs/BOT_CONTRACT.md. Менять
+    форму — только синхронно с правкой parseCfgFromUrl там."""
+    models = []
+    for code, enabled in (
+        ("seedance2", True),
+        ("seedance2_fast", SEEDANCE_FAST_ENABLED),
+        ("kling3", KLING3_ENABLED),
+        ("veo31", VEO31_ENABLED),
+        ("wan27", WAN27_ENABLED),
+        ("gemini_omni", GEMINI_OMNI_ENABLED),
+        ("seedance25", SEEDANCE25_ENABLED),
+    ):
+        if not enabled:
+            continue
+        aspects = get_video_aspect_options(code)
+        modes = get_seedance_mode_options(code)
+        durations = get_seedance_duration_options(code)
+        prices = {}
+        for mode in (modes or [None]):
+            cps = get_video_model_cost_per_second(code, mode)
+            prices[mode or "default"] = {str(d): calc_seedance_cost(d, cps) for d in durations}
+        models.append({
+            "code": code,
+            "label": get_video_model_label(code),
+            "blurb": get_video_model_blurb(code),
+            "aspects": aspects,
+            "modes": modes,
+            "durations": durations,
+            "face_grid": video_model_uses_face_grid(code),
+            "prices": prices,
+        })
+    return {"video_models": models}
+
+
+def _generation_hub_features_payload() -> dict:
+    """Какие конструкторы хаба генерации сейчас включены (docs/specs/
+    2026-08-13_webapp_generation_hub_navigation_full.md, раздел 5.2) —
+    экран «Создать» использует это, чтобы скрывать плитки продуктов,
+    которые ещё не готовы показывать юзерам, вместо «показываем все всегда»
+    (которое молча ведёт на выключенный флагом конструктор). Отдельно от
+    `get_video_constructor_config` (тяжёлая таблица цен видео-моделей,
+    гейтится своим флагом) — эти четыре булевых значения нужны экрану
+    «Создать» независимо от того, включён ли именно видео-конструктор."""
+    return {
+        "video": VIDEO_CONSTRUCTOR_ENABLED,
+        "midjourney": MIDJOURNEY_CONSTRUCTOR_ENABLED,
+        "avatar": AVATAR_CONSTRUCTOR_ENABLED,
+        "photo": PHOTO_CONSTRUCTOR_ENABLED,
+    }
+
+
+def get_prompt_webapp_url(user_id: int = None) -> str:
     base = str(PROMPT_WEBAPP_URL or "").strip()
     if not base:
         return ""
     sep = "&" if "?" in base else "?"
     url = f"{base}{sep}rev={PROMPT_WEBAPP_REV}"
+    try:
+        features_raw = json.dumps(_generation_hub_features_payload(), separators=(",", ":"))
+        url += f"&features={base64.urlsafe_b64encode(features_raw.encode()).decode()}"
+    except Exception as e:
+        logger.warning("Failed to encode generation hub features for webapp URL: %s", e)
+    if VIDEO_CONSTRUCTOR_ENABLED:
+        try:
+            cfg_raw = json.dumps(get_video_constructor_config(), ensure_ascii=False, separators=(",", ":"))
+            url += f"&cfg={base64.urlsafe_b64encode(cfg_raw.encode()).decode()}"
+        except Exception as e:
+            logger.warning("Failed to encode video constructor cfg for webapp URL: %s", e)
     if user_id is not None:
         bal = get_balance(user_id)
         url += f"&balance={bal}"
-        # include_video_cfg=True (Конструктор видео, docs/specs/
-        # 2026-08-13_webapp_generation_hub.md, п.3) пропускает историю генераций
-        # (`h=`) — нерелевантна Конструктору, а её ~2048-байтный бюджет отдаём
-        # под таблицу моделей/цен `cfg` целиком, вместо того чтобы делить один
-        # бюджет на оба параметра.
-        if not include_video_cfg:
-            try:
-                history = get_generation_history(user_id, limit=10)
-                if history:
-                    # Влезаем в лимит URL (~2048). Раньше при 10 записях весь блок
-                    # истории молча отбрасывался — теперь добираем столько свежих
-                    # записей (от новых к старым), сколько помещается.
-                    budget = 2048 - len(url) - len("&h=")
-                    compact = []
-                    for h in history:
-                        compact.append({
-                            "u": h["image_url"],
-                            "p": (h["prompt"] or "")[:60],
-                            "t": (h["created_at"] or "")[:19],  # без микросекунд — короче
-                        })
-                        raw = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
-                        encoded = base64.urlsafe_b64encode(raw.encode()).decode()
-                        if len(encoded) > budget:
-                            compact.pop()
-                            break
-                    if compact:
-                        raw = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
-                        encoded = base64.urlsafe_b64encode(raw.encode()).decode()
-                        url += f"&h={encoded}"
-            except Exception as e:
-                logger.warning("Failed to encode history for webapp URL: %s", e)
-    if include_video_cfg:
         try:
-            cfg_encoded = _encode_webapp_json(get_video_constructor_config())
-            url += f"&cfg={cfg_encoded}"
+            history = get_generation_history(user_id, limit=10)
+            if history:
+                # Влезаем в лимит URL (~2048). Раньше при 10 записях весь блок
+                # истории молча отбрасывался — теперь добираем столько свежих
+                # записей (от новых к старым), сколько помещается.
+                budget = 2048 - len(url) - len("&h=")
+                compact = []
+                for h in history:
+                    compact.append({
+                        "u": h["image_url"],
+                        "p": (h["prompt"] or "")[:60],
+                        "t": (h["created_at"] or "")[:19],  # без микросекунд — короче
+                    })
+                    raw = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+                    encoded = base64.urlsafe_b64encode(raw.encode()).decode()
+                    if len(encoded) > budget:
+                        compact.pop()
+                        break
+                if compact:
+                    raw = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+                    encoded = base64.urlsafe_b64encode(raw.encode()).decode()
+                    url += f"&h={encoded}"
         except Exception as e:
-            logger.warning("Failed to encode video constructor cfg for webapp URL: %s", e)
+            logger.warning("Failed to encode history for webapp URL: %s", e)
     return url
-
-
-def _encode_webapp_json(data: dict) -> str:
-    """base64url без паддинга JSON'а для передачи вебаппу через query-параметр —
-    общий формат с существующим `h=` (история) в get_prompt_webapp_url выше."""
-    raw = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-    return base64.urlsafe_b64encode(raw.encode()).decode()
 
 
 def get_video_aspect_options(model_code: str) -> List[str]:
@@ -1344,30 +1407,6 @@ def get_video_aspect_options(model_code: str) -> List[str]:
 # options возвращает 1 значение или список нерелевантен). Старая полная
 # панель video_kb эту константу не использует — ноль изменений её поведения.
 VIDEO_QUALITY_TOGGLE_MODELS = ("seedance2", "seedance2_fast", "kling3", "seedance25")
-
-# Чистые лейблы моделей (без суффиксов "(бета)"/"(Google)"/"(Alibaba)" и без
-# эмодзи-бейджа) + отдельный бейдж — контракт cfg вебаппа рендерит их как
-# `${label} ${badge}` (constructor.js, renderVcModelGrid), поэтому бейдж
-# нужен отдельным полем, а не склеенным в get_video_model_label (та строка
-# идёт в карточку подтверждения чата, другой контекст отображения).
-VIDEO_MODEL_CONSTRUCTOR_LABELS = {
-    "seedance2": "Seedance 2",
-    "seedance2_fast": "Seedance 2 Fast",
-    "kling3": "Kling 3.0",
-    "veo31": "Veo 3.1",
-    "wan27": "Wan 2.7",
-    "gemini_omni": "Gemini Omni",
-    "seedance25": "Seedance 2.5",
-}
-VIDEO_MODEL_CONSTRUCTOR_BADGES = {
-    "seedance2": None,
-    "seedance2_fast": None,
-    "kling3": "🆕",
-    "veo31": "🆕",
-    "wan27": "🆕",
-    "gemini_omni": "🆕",
-    "seedance25": "💎",
-}
 
 
 def resolve_webapp_video_quality(model_code: str, quality_value: str) -> Optional[str]:
@@ -1420,101 +1459,21 @@ def webapp_video_quality_label(model_code: str, resolved_mode: str) -> Optional[
     return seedance_mode_ui_label(resolved_mode)
 
 
-def get_video_constructor_config() -> dict:
-    """Конфигурация Конструктора видео для вебаппа — единственный канал
-    проброса фичефлагов/цен боту → вебапп (у бота нет публичного HTTP-входа,
-    см. docs/specs/2026-08-13_webapp_generation_hub.md, п.3). Источник истины
-    остаётся в боте (get_video_model_cost_per_second/calc_seedance_cost) —
-    вебапп только отображает переданные цифры для живого пересчёта; финальная
-    цена в карточке подтверждения ВСЕГДА пересчитывается заново на момент
-    показа (build_video_generation_confirm_text), не берётся из payload.
-
-    Схема ЗАФИКСИРОВАНА синхронно с уже смёрженным constructor.js в репо
-    вебаппа (parseConstructorConfig/FALLBACK_CONFIG) — задокументирована в
-    docs/BOT_CONTRACT.md, раздел «Конструктор видео (Хаб генерации)». Менять
-    форму — только синхронно с правкой parseConstructorConfig на стороне
-    вебаппа."""
-    model_order = ("seedance2", "seedance2_fast", "kling3", "veo31", "wan27", "gemini_omni", "seedance25")
-    model_flags = {
-        "seedance2": True,
-        "seedance2_fast": SEEDANCE_FAST_ENABLED,
-        "kling3": KLING3_ENABLED,
-        "veo31": VEO31_ENABLED,
-        "wan27": WAN27_ENABLED,
-        "gemini_omni": GEMINI_OMNI_ENABLED,
-        "seedance25": SEEDANCE25_ENABLED,
-    }
-    models: List[dict] = []
-    for model_code in model_order:
-        if not model_flags.get(model_code):
-            continue
-        formats = get_video_aspect_options(model_code)
-        quality_options = get_seedance_mode_options(model_code)
-        has_quality = model_code in VIDEO_QUALITY_TOGGLE_MODELS and len(quality_options) > 1
-
-        if model_code == "wan27":
-            # Wan 2.7 в Конструкторе — свободный ввод длительности вместо
-            # кнопок (провайдер реально принимает любое целое в диапазоне,
-            # см. video_kb/get_seedance_duration_bounds), без выбора качества —
-            # constructor.js (уже смёржено) ожидает {"custom":[min,max]} и
-            # плоский {"per_second": N} вместо таблицы по длительностям.
-            dur_min, dur_max = get_seedance_duration_bounds(model_code)
-            durations_field: object = {"custom": [dur_min, dur_max]}
-            prices: dict = {"per_second": get_video_model_cost_per_second(model_code)}
-        else:
-            durations = get_seedance_duration_options(model_code)
-            durations_field = durations
-            if has_quality:
-                prices = {
-                    "pro": {
-                        str(sec): calc_seedance_cost(sec, get_video_model_cost_per_second(model_code, quality_options[-1]))
-                        for sec in durations
-                    },
-                    "fast": {
-                        str(sec): calc_seedance_cost(sec, get_video_model_cost_per_second(model_code, quality_options[0]))
-                        for sec in durations
-                    },
-                }
-            else:
-                cps = get_video_model_cost_per_second(model_code)
-                prices = {str(sec): calc_seedance_cost(sec, cps) for sec in durations}
-
-        # Опциональные falsy-поля (badge/quality/face_grid) опускаются вместо
-        # null/[]/false — constructor.js трактует отсутствующий ключ так же
-        # (`model.badge ? ... : label`, `model.quality && model.quality.length`,
-        # `!model.face_grid`) — бюджет URL (~2048-4096 байт, см. get_prompt_
-        # webapp_url) не резиновый: 7 моделей в base64 иначе разрастаются.
-        model_entry = {
-            "id": model_code,
-            "label": VIDEO_MODEL_CONSTRUCTOR_LABELS.get(model_code, get_video_model_label(model_code)),
-            "blurb": get_video_model_blurb(model_code),
-            "formats": formats,
-            "durations": durations_field,
-            "prices": prices,
-        }
-        badge = VIDEO_MODEL_CONSTRUCTOR_BADGES.get(model_code)
-        if badge:
-            model_entry["badge"] = badge
-        if has_quality:
-            model_entry["quality"] = ["pro", "fast"]
-        if video_model_uses_face_grid(model_code):
-            model_entry["face_grid"] = True
-        models.append(model_entry)
-
-    default_model = "seedance2" if model_flags.get("seedance2") else (models[0]["id"] if models else "seedance2")
-    return {"models": models, "default_model": default_model}
-
-
 def get_video_constructor_webapp_url(user_id: int) -> str:
     """Персональный URL Конструктора видео — открытие «🎬 Видео для Reels»
     под VIDEO_CONSTRUCTOR_ENABLED и кнопка «🔁 Начать заново» на карточке
     подтверждения (обе точки входа, docs/specs/2026-08-13_webapp_generation_hub.md).
-    `tab=videoConstructor` — точный tab-id, который constructor.js уже проверяет
-    в репо вебаппа (`switchTab("videoConstructor")`)."""
-    base_url = get_prompt_webapp_url(user_id, include_video_cfg=True)
+    `tab=video_constructor` (snake_case) — точный query-параметр, который
+    реальный constructor.js в репо вебаппа сверяет напрямую из URL перед тем,
+    как перевести UI на внутренний экран `switchTab("videoConstructor")`
+    (camelCase — это внутреннее имя экрана, не значение query-параметра, см.
+    комментарий в начале constructor.js). `cfg` уже пробрасывается
+    get_prompt_webapp_url сама, пока VIDEO_CONSTRUCTOR_ENABLED — отдельно
+    прокидывать его тут не нужно."""
+    base_url = get_prompt_webapp_url(user_id)
     if not base_url:
         return ""
-    return f"{base_url}&tab=videoConstructor"
+    return f"{base_url}&tab=video_constructor"
 
 
 def video_unavailable_text() -> str:
@@ -1623,8 +1582,15 @@ def main_menu_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
 
 
 def photo_menu_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
+    if PHOTO_CONSTRUCTOR_ENABLED and PROMPT_WEBAPP_URL and user_id is not None:
+        generate_button = InlineKeyboardButton(
+            "✨ Сгенерировать фото",
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=photo_constructor"),
+        )
+    else:
+        generate_button = InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")
     rows = [
-        [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
+        [generate_button],
         [
             InlineKeyboardButton("🖼️ Улучшить фото", callback_data="enhance_photo"),
             InlineKeyboardButton("🪄 Аватар", callback_data="avatar_actions"),
@@ -2206,18 +2172,6 @@ def video_status_text(state: UserState) -> str:
         f"Стоимость: {selected_cost} изюминок\n"
         f"Результат: обычно через {eta_min}–{eta_max} мин"
     )
-
-
-def video_constructor_entry_kb(user_id: int) -> InlineKeyboardMarkup:
-    """Вход в Конструктор видео (VIDEO_CONSTRUCTOR_ENABLED) — заменяет
-    video_model_picker_kb() на инлайн-кнопку web_app, открывающую вебапп-экран
-    «Конструктор» (docs/specs/2026-08-13_webapp_generation_hub.md, Экран V1)."""
-    rows = [[InlineKeyboardButton(
-        "🎬 Открыть Конструктор",
-        web_app=WebAppInfo(url=get_video_constructor_webapp_url(user_id)),
-    )]]
-    rows.append([InlineKeyboardButton("◀️ В меню", callback_data="avatar_back_menu")])
-    return InlineKeyboardMarkup(rows)
 
 
 def build_video_generation_confirm_text(state: UserState) -> str:
@@ -3508,22 +3462,23 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE,
         if not SEEDANCE_ENABLED:
             await update.message.reply_text(video_unavailable_text(), reply_markup=main_menu_kb())
             return True
+        # Хаб генерации в вебаппе (docs/specs/2026-08-13_webapp_generation_hub.md) —
+        # вместо пикера модели/панели сразу открываем экран «Конструктор»,
+        # если фича включена и есть URL вебаппа. Kill-switch выключен по
+        # умолчанию — ничего не меняется, пока Аня не включит флаг.
+        if VIDEO_CONSTRUCTOR_ENABLED and PROMPT_WEBAPP_URL:
+            await update.message.reply_text(
+                "🎬 Видео для Reels\n\n"
+                "Настрой модель, формат, качество, фото и описание в конструкторе — "
+                "и возвращайся сюда за запуском.",
+                reply_markup=video_constructor_kb(user.id),
+            )
+            return True
         state = get_or_init_state(context)
         state.video_session_active = True
         state.waiting_for_video_prompt = False
         state.waiting_for_video_image = True
         state.waiting_for_motion_video = False
-        # Хаб генерации (docs/specs/2026-08-13_webapp_generation_hub.md):
-        # persistent_menu_kb уже отдаёт web_app-кнопку под флагом (юзер сюда
-        # текстом почти не попадает), но текстовый путь оставляем рабочим как
-        # честный фолбэк (старый клиент/юзер напечатал текст руками вручную).
-        if VIDEO_CONSTRUCTOR_ENABLED and PROMPT_WEBAPP_URL:
-            await update.message.reply_text(
-                "🎬 Видео для Reels\n\n"
-                "Открой Конструктор — выбери модель, формат, качество и добавь фото на одном экране.",
-                reply_markup=video_constructor_entry_kb(user.id),
-            )
-            return True
         # Сначала только выбор модели — см. комментарий у video_cb == "video"
         # в button_handler (тот же флоу, инлайн-путь). Модель уже выбрана в
         # этой сессии — сразу полная панель (ТЗ video_panel_declutter).
@@ -3542,6 +3497,14 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return True
 
     if text == MENU_BTN_PHOTO:
+        if PHOTO_CONSTRUCTOR_ENABLED and PROMPT_WEBAPP_URL:
+            await update.message.reply_text(
+                "✨ Сгенерировать фото\n\n"
+                "Опиши, что хочешь получить, и добавь фото в конструкторе — "
+                "и возвращайся сюда за запуском.",
+                reply_markup=photo_constructor_kb(user.id),
+            )
+            return True
         state = get_or_init_state(context)
         deactivate_video_session(state)
         await update.message.reply_text(
@@ -4391,6 +4354,191 @@ async def apply_webapp_board_style_analyze_payload(update: Update, context: Cont
     return True
 
 
+def _video_quality_label_from_mode(mode: str) -> str:
+    """Обратная операция к резолву качества в _apply_webapp_generation_video
+    (quality:"fast" -> mode="480p", если модель его поддерживает, иначе
+    "pro" -> 720p) — нужна для префилла «✏️ Изменить», чтобы конструктор
+    открылся с уже выбранным тумблером, а не всегда с дефолтным Pro."""
+    return "fast" if mode == "480p" else "pro"
+
+
+def build_generation_prefill(product: str, state: "UserState") -> dict:
+    """Хаб генерации в вебаппе — Full, раздел 6 спеки
+    (docs/specs/2026-08-13_webapp_generation_hub_navigation_full.md):
+    «✏️ Изменить» с сохранением черновика. Сериализует текущий UserState в
+    ТУ ЖЕ форму полей, что вебапп сам присылает в start_generation/sg —
+    симметрично, чтобы конструктор мог просто заполнить свои инпуты этими
+    значениями, без отдельного формата "только для чтения"."""
+    if product == "video":
+        model = get_video_model(state)
+        return {
+            "product": "video",
+            "video_model": model,
+            "aspect": getattr(state, "video_aspect_ratio", "16:9"),
+            "quality": _video_quality_label_from_mode(get_selected_seedance_mode(state)),
+            "duration": get_selected_seedance_duration(state),
+            "face_grid": get_face_grid(state) if video_model_uses_face_grid(model) else False,
+            "description": (state.video_prompt or "").strip(),
+            "refs": get_video_image_urls(state),
+        }
+    if product == "midjourney":
+        return {
+            "product": "midjourney",
+            "description": (state.mj_prompt or "").strip(),
+            "refs": [state.mj_reference] if state.mj_reference else [],
+        }
+    if product == "avatar":
+        return {
+            "product": "avatar",
+            "avatar_type": state.pending_avatar_kind or "female",
+            "refs": list(state.avatar_photos),
+        }
+    if product == "photo":
+        return {
+            "product": "photo",
+            "description": (state.prompt or "").strip(),
+            "refs": list(state.references),
+            "image_model": state.image_model,
+        }
+    return {}
+
+
+def constructor_prefill_url(user_id: int, tab: str, product: str, state: "UserState") -> str:
+    base = get_prompt_webapp_url(user_id)
+    if not base:
+        return ""
+    try:
+        prefill_raw = json.dumps(build_generation_prefill(product, state), ensure_ascii=False, separators=(",", ":"))
+        return base + f"&tab={tab}&prefill=" + base64.urlsafe_b64encode(prefill_raw.encode()).decode()
+    except Exception as e:
+        logger.warning("Failed to encode generation prefill for webapp URL: %s", e)
+        return base + f"&tab={tab}"
+
+
+def video_constructor_kb(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "🎬 Открыть конструктор",
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=video_constructor"),
+        ),
+    ]])
+
+
+def midjourney_constructor_kb(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "🎨 Открыть конструктор",
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=midjourney_constructor"),
+        ),
+    ]])
+
+
+def avatar_constructor_kb(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "🪄 Открыть конструктор",
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=avatar_constructor"),
+        ),
+    ]])
+
+
+def photo_constructor_kb(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "✨ Открыть конструктор",
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=photo_constructor"),
+        ),
+    ]])
+
+
+# ----------------------------------------------------------------------------
+# Живой прогресс генерации в вебаппе (docs/specs/2026-08-13_webapp_generation_hub_full.md)
+# НЕ очередь (в отличие от studio_worker.py) — тонкое write-only зеркало:
+# бот сам инициирует и выполняет генерацию как сегодня, ДОПОЛНИТЕЛЬНО пишет
+# статус в Cloudflare D1 (таблица generation_progress, отдельная от studio_*),
+# пока юзер может смотреть его в вебаппе. Fire-and-forget по тому же паттерну,
+# что _studio_api/_studio_complete в studio_worker.py — недоставленная запись
+# НЕ блокирует и НЕ проваливает саму генерацию.
+# ----------------------------------------------------------------------------
+
+async def _gen_progress_api(path: str, payload: dict, timeout: int = 15) -> Optional[dict]:
+    if not GEN_PROGRESS_ENABLED:
+        return None
+    url = f"{GEN_PROGRESS_API_BASE}/{path.lstrip('/')}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                headers={"X-Gen-Progress-Secret": GEN_PROGRESS_SECRET, "Content-Type": "application/json"},
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as resp:
+                if not (200 <= resp.status < 300):
+                    body = await resp.text()
+                    logger.warning("gen_progress api %s: status=%s body=%s", path, resp.status, body[:200])
+                    return None
+                return await resp.json()
+    except Exception as e:
+        logger.warning("gen_progress api %s exception: %s", path, e)
+        return None
+
+
+async def gen_progress_create(progress_id: str, user_id: int, product: str, meta: dict) -> bool:
+    """True — Cloudflare подтвердил создание строки, можно безопасно
+    показать юзеру кнопку «Смотреть прогресс» (спека, «Явный fallback:
+    провал записи в D1» — не показываем нерабочую кнопку)."""
+    return await _gen_progress_api("progress.create", {
+        "id": progress_id, "user_id": user_id, "product": product, "meta": meta,
+    }) is not None
+
+
+async def gen_progress_update(progress_id: str, status: str, stage: str) -> None:
+    # progress_pct сознательно не считаем — ни EvoLink, ни Zveno не отдают
+    # реальный процент готовности, а выдуманное число врёт юзеру о точности,
+    # которой нет (спека, риск №2 — "не делать красивый липовый %").
+    await _gen_progress_api("progress.update", {"id": progress_id, "status": status, "stage": stage, "progress_pct": 0})
+
+
+async def gen_progress_complete(progress_id: str, status: str, stage: str) -> None:
+    await _gen_progress_api("progress.complete", {"id": progress_id, "status": status, "stage": stage})
+
+
+def gen_progress_kb(user_id: int, progress_id: str, product: str) -> InlineKeyboardMarkup:
+    """Обязательно инлайн (не reply) — initData нужен progress.get для
+    проверки, что юзер смотрит свой, а не чужой прогресс (спека,
+    «Архитектурное решение №2», по образцу фикса находки №1 прод-аудита
+    Студии)."""
+    url = get_prompt_webapp_url(user_id) + f"&tab=progress&job_id={progress_id}&product={product}"
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("👀 Смотреть прогресс", web_app=WebAppInfo(url=url)),
+    ]])
+
+
+async def apply_webapp_generation_payload(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
+    """Хаб генерации в вебаппе (docs/specs/2026-08-13_webapp_generation_hub.md).
+
+    Вебапп собирает ВСЕ настройки одним экраном («Конструктор») и шлёт ОДИН
+    payload `start_generation`/`sg` с полем `product`. Диспетчер по продукту —
+    каждый со своим kill-switch'ем (можно включать по одному продукту, не
+    всё сразу)."""
+    if not update.effective_message or not update.effective_user:
+        return True
+
+    product = str(payload.get("product") or payload.get("pr") or "").strip().lower()
+    if product == "video":
+        return await _apply_webapp_generation_video(update, context, payload)
+    if product == "midjourney":
+        return await _apply_webapp_generation_midjourney(update, context, payload)
+    if product == "avatar":
+        return await _apply_webapp_generation_avatar(update, context, payload)
+    if product == "photo":
+        return await _apply_webapp_generation_photo(update, context, payload)
+    await update.effective_message.reply_text(
+        "Этот раздел конструктора пока не поддержан ботом — используй чат для этого продукта."
+    )
+    return True
+
+
 def _resolve_webapp_video_description(payload: dict) -> str:
     """Резолвит текст видео-описания для Конструктора (`description`/`p`).
     Если пришли `cat_idx`/`item_idx` (Full: библиотечный стиль подставлен в
@@ -4427,49 +4575,42 @@ def _webapp_bool(value, default: bool) -> bool:
     return bool(value)
 
 
-async def apply_webapp_generation_payload(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
-    """Хаб генерации — Конструктор видео (docs/specs/2026-08-13_webapp_generation_hub.md).
-    Разбирает `action=start_generation`/`sg`, резолвит настройки/refs в
-    UserState и показывает карточку подтверждения (Экран V2) с ценой,
-    пересчитанной актуальными calc_seedance_cost на момент показа — ноль
-    нового кода в биллинге/очереди/доставке результата, «🚀 Запустить видео»
-    переиспользует ровно существующий callback_data="video_start"
-    (_cb_video_start/run_seedance).
+async def _apply_webapp_generation_video(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
+    """product=video — см. докстринг apply_webapp_generation_payload. Резолвим
+    payload в UserState теми же полями, что заполняет сегодняшняя чат-панель
+    (video_kb/video_status_text), и показываем карточку подтверждения с
+    кнопкой `video_start`. Сам запуск/списание/очередь/доставка результата
+    НЕ меняются — это тот же `_cb_video_start`/`run_seedance`, что и всегда
+    (принцип спеки: «подбор — в вебаппе, факт траты денег и результат — в
+    чате»).
 
-    MVP — только product="video" (Midjourney/Аватар-конструкторы вне скоупа,
-    см. спеку «Не в скоупе MVP»). Серверная валидация фичефлагов модели —
-    ОБЯЗАТЕЛЬНА (не только скрытие опций в вебаппе): устаревший кэш вебаппа
-    у юзера может прислать модель, которую владелец уже выключила — тут
-    молча не игнорируем и не падаем, а откатываем на дефолт и предупреждаем."""
-    if not isinstance(payload, dict):
-        return False
-    product = str(payload.get("product") or payload.get("pr") or "").strip().lower()
-    if not product:
-        return False
-    if product != "video":
-        # Midjourney/Аватар-конструкторы — Full, вне скоупа MVP. Честное
-        # сообщение вместо молчаливого игнора/générique "не удалось применить".
-        if update.effective_message:
-            await update.effective_message.reply_text(
-                "Этот тип генерации через Конструктор скоро появится — пока доступно только видео 🎬"
-            )
+    Серверная валидация фичефлагов модели — ОБЯЗАТЕЛЬНА (не только скрытие
+    опций в вебаппе): устаревший кэш вебаппа у юзера может прислать модель,
+    которую владелец уже выключила — тут молча не игнорируем и не падаем, а
+    откатываем на дефолт и предупреждаем."""
+    if not update.effective_message or not update.effective_user:
         return True
-
+    if not VIDEO_CONSTRUCTOR_ENABLED:
+        # Устаревший кэш вебаппа у юзера прислал payload уже выключенной
+        # фичи (спека, «Что нужно от бэкенда» п.2) — честный отказ, а не
+        # тихое игнорирование или падение на резолве несуществующих полей.
+        await update.effective_message.reply_text(
+            "Эта функция сейчас недоступна. Попробуй через обычное меню «🎬 Видео для Reels»."
+        )
+        return True
     if not SEEDANCE_ENABLED:
-        if update.effective_message:
-            await update.effective_message.reply_text(video_unavailable_text(), reply_markup=main_menu_kb())
+        await update.effective_message.reply_text(video_unavailable_text(), reply_markup=main_menu_kb())
         return True
 
-    user = update.effective_user
+    user_id = update.effective_user.id
     state = get_or_init_state(context)
-    # Свежий старт — гасим чужие активные мини-флоу (тот же принцип, что и
-    # _cb_video_open/apply_webapp_board_refs_payload).
+    deactivate_video_session(state)
     state.generating_avatar = False
     state.mj_active = False
     state.waiting_for_mj_prompt = False
     state.waiting_for_mj_image = False
+    state.style_extract = False
 
-    # ── Модель: серверная валидация фичефлагов (п.2 «Что нужно от бэкенда») ──
     model_flags = {
         "seedance2": True,
         "seedance2_fast": SEEDANCE_FAST_ENABLED,
@@ -4483,7 +4624,6 @@ async def apply_webapp_generation_payload(update: Update, context: ContextTypes.
     requested_model = requested_model_raw or "seedance2"
     model_downgraded = requested_model not in model_flags or not model_flags.get(requested_model)
     resolved_model = "seedance2" if model_downgraded else requested_model
-
     state.video_model = resolved_model
     state.video_model_picked = True
 
@@ -4523,8 +4663,6 @@ async def apply_webapp_generation_payload(update: Update, context: ContextTypes.
 
     # ── Описание — резолв по индексам библиотеки, не доверяем присланному тексту. ──
     state.video_prompt = _resolve_webapp_video_description(payload)
-    state.image_prompt = ""
-    state.style_extract = False
 
     # ── Фото — те же потолки, что у ручной загрузки (MAX_SEEDANCE_IMAGE_REFERENCES). ──
     refs_raw = payload.get("refs")
@@ -4535,33 +4673,226 @@ async def apply_webapp_generation_payload(update: Update, context: ContextTypes.
     clean_refs = [str(u).strip() for u in refs_raw if str(u or "").strip()]
     set_video_image_urls(state, clean_refs)
 
-    state.video_session_active = True
-    state.waiting_for_video_prompt = False
-    state.waiting_for_video_image = True
-    state.waiting_for_motion_video = False
-
     if not state.video_prompt.strip() and not get_video_image_urls(state):
-        if update.effective_message:
-            kb = video_constructor_entry_kb(user.id) if (PROMPT_WEBAPP_URL and user) else None
-            await update.effective_message.reply_text(
-                "Нужно описание или хотя бы одно фото — вернись в Конструктор и добавь.",
-                reply_markup=kb,
-            )
+        await update.effective_message.reply_text(
+            "Нужно описание или хотя бы одно фото — вернись в конструктор и добавь что-нибудь одно.",
+            reply_markup=video_constructor_kb(user_id),
+        )
         return True
 
-    if update.effective_message:
-        if model_downgraded:
-            downgraded_label = (
-                get_video_model_label(requested_model) if requested_model in model_flags else requested_model_raw
-            )
-            await update.effective_message.reply_text(
-                f"Модель «{downgraded_label}» сейчас недоступна — показываю карточку с моделью по умолчанию."
-            )
-        text = build_video_generation_confirm_text(state)
-        await update.effective_message.reply_text(
-            text,
-            reply_markup=video_generation_confirm_kb(user.id if user else None),
+    state.video_session_active = True
+    state.waiting_for_video_image = False
+    state.waiting_for_video_prompt = False
+
+    model_fallback_note = ""
+    if model_downgraded and requested_model_raw:
+        downgraded_label = (
+            get_video_model_label(requested_model) if requested_model in model_flags else requested_model_raw
         )
+        model_fallback_note = (
+            f"⚠️ Модель «{downgraded_label}» сейчас недоступна — показываю с моделью по умолчанию.\n\n"
+        )
+
+    # build_video_generation_confirm_text — та же карточка «Экран V2», что
+    # уже используют reply-кнопки/callback-путь конструктора (общий текст
+    # с webapp_video_quality_label вместо самодельного числового режима).
+    confirmation_text = model_fallback_note + build_video_generation_confirm_text(state)
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Запустить видео", callback_data="video_start")],
+        [InlineKeyboardButton(
+            "✏️ Изменить",
+            web_app=WebAppInfo(url=constructor_prefill_url(user_id, "video_constructor", "video", state)),
+        )],
+    ])
+    await update.effective_message.reply_text(confirmation_text, reply_markup=kb)
+    return True
+
+
+async def _apply_webapp_generation_midjourney(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
+    """product=midjourney — тот же принцип, что и video: вебапп собирает
+    текст + опциональный референс, бот резолвит в те же поля, что заполняет
+    сегодняшний текстовый мини-флоу (_cb_menu_midjourney/_cb_mj_generate:
+    state.mj_prompt/state.mj_reference), и показывает карточку подтверждения
+    с кнопкой `mj_generate` — сам запуск/списание/сетка/апскейл НЕ меняются."""
+    if not update.effective_message or not update.effective_user:
+        return True
+    if not MIDJOURNEY_CONSTRUCTOR_ENABLED:
+        await update.effective_message.reply_text(
+            "Эта функция сейчас недоступна. Попробуй через обычное меню «🎨 Midjourney»."
+        )
+        return True
+    if not MIDJOURNEY_ENABLED:
+        await update.effective_message.reply_text("Midjourney пока недоступен.", reply_markup=main_menu_kb())
+        return True
+
+    user_id = update.effective_user.id
+    state = get_or_init_state(context)
+    deactivate_video_session(state)
+    state.generating_avatar = False
+    state.mj_active = True
+    state.waiting_for_mj_prompt = False
+    state.waiting_for_mj_image = False
+
+    description = str(payload.get("description") or payload.get("p") or "").strip()
+    state.mj_prompt = description
+
+    refs_raw = payload.get("refs")
+    if refs_raw is None:
+        refs_raw = payload.get("r")
+    refs = [str(u).strip() for u in refs_raw if str(u or "").strip()] if isinstance(refs_raw, list) else []
+    # Midjourney (EvoLink) принимает ровно один референс — URL подставляется
+    # в НАЧАЛО строки prompt (start_midjourney_task_evolink), не отдельное
+    # поле. Если юзер добавил несколько фото в конструкторе — берём первое.
+    state.mj_reference = refs[0] if refs else None
+
+    if not description:
+        await update.effective_message.reply_text(
+            "Нужно описание — вернись в конструктор и напиши, что сгенерировать.",
+        )
+        return True
+
+    ref_line = "Фото-референс: приложен ✅\n" if state.mj_reference else ""
+    confirmation_text = (
+        "🎨 Готово к запуску\n\n"
+        f"Описание: {description}\n"
+        f"{ref_line}"
+        f"Стоимость: {MIDJOURNEY_GRID_COST} изюминок за сетку из 4 вариантов\n"
+        f"(увеличение понравившегося — отдельно, {MIDJOURNEY_UPSCALE_COST} изюминок)"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Сгенерировать", callback_data="mj_generate")],
+        [InlineKeyboardButton(
+            "✏️ Изменить",
+            web_app=WebAppInfo(url=constructor_prefill_url(user_id, "midjourney_constructor", "midjourney", state)),
+        )],
+    ])
+    await update.effective_message.reply_text(confirmation_text, reply_markup=kb)
+    return True
+
+
+async def _apply_webapp_generation_avatar(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
+    """product=avatar — вебапп собирает тип аватара + фото одним экраном,
+    бот резолвит в те же поля, что заполняет сегодняшний мини-флоу
+    (_cb_avatar_gen_kind/фото-приём: state.pending_avatar_kind/avatar_photos),
+    и показывает карточку подтверждения с кнопкой `avatar_gen_start` — сам
+    запуск/списание/генерация НЕ меняются."""
+    if not update.effective_message or not update.effective_user:
+        return True
+    if not AVATAR_CONSTRUCTOR_ENABLED:
+        await update.effective_message.reply_text(
+            "Эта функция сейчас недоступна. Попробуй через обычное меню «🪄 Аватар»."
+        )
+        return True
+
+    user_id = update.effective_user.id
+    state = get_or_init_state(context)
+    deactivate_video_session(state)
+    state.prompt = AVATAR_REFSHEET_PROMPT
+    state.style_extract = False
+    state.references = []
+    state.avatar_status_msg_id = None
+    state.generating_avatar = True
+
+    avatar_kind = str(payload.get("avatar_type") or payload.get("at") or "").strip().lower()
+    if avatar_kind not in ("female", "male", "child"):
+        avatar_kind = "female"
+    state.pending_avatar_kind = avatar_kind
+
+    refs_raw = payload.get("refs")
+    if refs_raw is None:
+        refs_raw = payload.get("r")
+    refs = [str(u).strip() for u in refs_raw if str(u or "").strip()] if isinstance(refs_raw, list) else []
+    state.avatar_photos = refs[:MAX_AVATAR_PHOTOS]
+
+    if not state.avatar_photos:
+        await update.effective_message.reply_text(
+            "Нужно хотя бы одно фото — вернись в конструктор и добавь фото для аватара.",
+        )
+        return True
+
+    confirmation_text = (
+        "🪄 Готово к запуску\n\n"
+        f"Тип: {avatar_kind_label(avatar_kind)}\n"
+        f"Фото: {len(state.avatar_photos)} шт."
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            f"🚀 Сгенерировать аватар ({len(state.avatar_photos)} фото)",
+            callback_data="avatar_gen_start",
+        )],
+        [InlineKeyboardButton(
+            "✏️ Изменить",
+            web_app=WebAppInfo(url=constructor_prefill_url(user_id, "avatar_constructor", "avatar", state)),
+        )],
+    ])
+    await update.effective_message.reply_text(confirmation_text, reply_markup=kb)
+    return True
+
+
+async def _apply_webapp_generation_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
+    """product=photo — обычная фото-генерация (не Midjourney, не аватар,
+    не библиотечный стиль). Вебапп собирает описание + референсы + модель
+    (Gemini/GPT-5) одним экраном, бот резолвит в те же поля, что заполняет
+    сегодняшний текстовый флоу (MENU_BTN_PHOTO/photo_draft_kb: state.prompt/
+    state.references/state.image_model), и показывает карточку
+    подтверждения с кнопкой `generate` (существующий коллбэк
+    `_cb_generate`/`run_generation`) — сам запуск/списание/доставка
+    результата НЕ меняются."""
+    if not update.effective_message or not update.effective_user:
+        return True
+    if not PHOTO_CONSTRUCTOR_ENABLED:
+        await update.effective_message.reply_text(
+            "Эта функция сейчас недоступна. Попробуй через обычное меню «✨ Сгенерировать фото»."
+        )
+        return True
+
+    user_id = update.effective_user.id
+    state = get_or_init_state(context)
+    deactivate_video_session(state)
+    state.generating_avatar = False
+    state.style_extract = False
+
+    description = str(payload.get("description") or payload.get("p") or "").strip()
+    state.prompt = description
+    state.image_prompt = ""
+
+    image_model = str(payload.get("image_model") or payload.get("im") or "").strip().lower()
+    if image_model == "gpt5" and GPT5_IMAGE_ENABLED:
+        state.image_model = "gpt5"
+    else:
+        state.image_model = "gemini"
+
+    refs_raw = payload.get("refs")
+    if refs_raw is None:
+        refs_raw = payload.get("r")
+    refs = [str(u).strip() for u in refs_raw if str(u or "").strip()] if isinstance(refs_raw, list) else []
+    state.references = refs[:8]
+    state.references_updated_at = time.time() if state.references else 0.0
+
+    if not description:
+        await update.effective_message.reply_text(
+            "Нужно описание — вернись в конструктор и напиши, что сгенерировать.",
+            reply_markup=photo_constructor_kb(user_id),
+        )
+        return True
+
+    photo_line = f"Фото: {len(state.references)} шт." if state.references else "Фото: своё не добавлено (возьму аватар, если есть)"
+    model_line = f"Модель: {get_image_model_label(state.image_model)}\n" if GPT5_IMAGE_ENABLED else ""
+    confirmation_text = (
+        "✨ Готово к запуску\n\n"
+        f"Описание: {description}\n"
+        f"{model_line}"
+        f"{photo_line}"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Запустить генерацию", callback_data="generate")],
+        [InlineKeyboardButton(
+            "✏️ Изменить",
+            web_app=WebAppInfo(url=constructor_prefill_url(user_id, "photo_constructor", "photo", state)),
+        )],
+    ])
+    await update.effective_message.reply_text(confirmation_text, reply_markup=kb)
     return True
 
 
@@ -4746,13 +5077,29 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
 
     if update.effective_message:
         if action in {"set_video_prompt", "set_video_prompt_ref"}:
+            user_id_for_kb = update.effective_user.id if update.effective_user else None
+            # Хаб генерации, раздел 4.1 (docs/specs/2026-08-13_webapp_generation_hub_navigation_full.md):
+            # «Использовать» на видео-стиле открывает Конструктор с уже
+            # подставленным описанием, а не сегодняшнюю чат-панель — GPT
+            # Image-стилизация (image_prompt) не переносим в эту версию
+            # Конструктора (там нет полей для неё), поэтому в этом одном
+            # случае оставляем старый чат-путь без изменений.
+            if VIDEO_CONSTRUCTOR_ENABLED and PROMPT_WEBAPP_URL and not image_prompt and user_id_for_kb is not None:
+                await update.effective_message.reply_text(
+                    style_applied_message(title, item, "video", user_note=user_note) + "\n"
+                    "Донастрой в конструкторе и запускай видео.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                        "🎬 Открыть конструктор",
+                        web_app=WebAppInfo(url=constructor_prefill_url(user_id_for_kb, "video_constructor", "video", state)),
+                    )]]),
+                )
+                return True
             hint = "Теперь отправь фото и запускай видео."
             if image_prompt:
                 hint = (
                     "Теперь отправь фото и запускай видео.\n"
                     "💡 Бот сначала стилизует фото через GPT Image, затем сгенерит видео."
                 )
-            user_id_for_kb = update.effective_user.id if update.effective_user else None
             await update.effective_message.reply_text(
                 style_applied_message(title, item, "video", user_note=user_note) + "\n" + hint,
                 reply_markup=persistent_menu_kb(user_id_for_kb),
@@ -6223,6 +6570,16 @@ async def _cb_avatar_use(update, context, query, user):
 
 
 async def _cb_avatar_gen_refsheet(update, context, query, user):
+    # Хаб генерации в вебаппе (docs/specs/2026-08-13_webapp_generation_hub.md) —
+    # тот же kill-switch-паттерн, что у видео: выключен по умолчанию, ничего
+    # не меняется, пока Аня не включит флаг.
+    if AVATAR_CONSTRUCTOR_ENABLED and PROMPT_WEBAPP_URL:
+        await query.message.reply_text(
+            "Создаём аватар 🪄\n\n"
+            "Выбери тип и загрузи фото в конструкторе — и возвращайся сюда за запуском.",
+            reply_markup=avatar_constructor_kb(user.id),
+        )
+        return
     # Фото принимаются сразу, до выбора типа — порядок действий (сначала
     # фото или сначала тип) юзеру не важен, и фото больше не улетают в
     # обычный фото-черновик, если тип ещё не выбран (макет утверждён
@@ -6499,14 +6856,15 @@ async def _cb_video_open(update, context, query, user):
     state.waiting_for_video_image = True
     state.waiting_for_motion_video = False
 
-    # Хаб генерации (docs/specs/2026-08-13_webapp_generation_hub.md) — та же
-    # пара точек входа, что persistent_menu_kb/handle_menu_button выше, синхронно
-    # под одним флагом (kill-switch: VIDEO_CONSTRUCTOR_ENABLED=False — ноль изменений).
+    # Хаб генерации в вебаппе (docs/specs/2026-08-13_webapp_generation_hub.md) —
+    # тот же выключенный по умолчанию kill-switch, что и в reply-входе
+    # (handle_menu_button, MENU_BTN_VIDEO).
     if VIDEO_CONSTRUCTOR_ENABLED and PROMPT_WEBAPP_URL:
         await query.message.reply_text(
             "🎬 Видео для Reels\n\n"
-            "Открой Конструктор — выбери модель, формат, качество и добавь фото на одном экране.",
-            reply_markup=video_constructor_entry_kb(user.id),
+            "Настрой модель, формат, качество, фото и описание в конструкторе — "
+            "и возвращайся сюда за запуском.",
+            reply_markup=video_constructor_kb(user.id),
         )
         return
 
@@ -6659,6 +7017,15 @@ def mj_draft_kb(state: UserState) -> InlineKeyboardMarkup:
 async def _cb_menu_midjourney(update, context, query, user):
     if not MIDJOURNEY_ENABLED:
         await query.message.reply_text("Midjourney пока недоступен.", reply_markup=main_menu_kb())
+        return
+    # Хаб генерации в вебаппе — тот же kill-switch-паттерн, что у видео/
+    # аватара: выключен по умолчанию, ничего не меняется, пока флаг не включён.
+    if MIDJOURNEY_CONSTRUCTOR_ENABLED and PROMPT_WEBAPP_URL:
+        await query.message.reply_text(
+            "🎨 Midjourney\n\n"
+            "Опиши, что хочешь сгенерировать, в конструкторе — и возвращайся сюда за запуском.",
+            reply_markup=midjourney_constructor_kb(user.id),
+        )
         return
     state = get_or_init_state(context)
     # deactivate_video_session гасит video/motion/mj — вызываем ДО того, как
@@ -8719,6 +9086,7 @@ def _push_top_styles_to_webapp_repo(days: int = 30, limit: int = 10) -> None:
     import base64 as _b64
 
     def _gh(method, path, body=None):
+        import urllib.error as _err
         url = f"https://api.github.com{path}"
         data = json.dumps(body).encode() if body else None
         req = _req.Request(url, data=data, method=method)
@@ -8730,6 +9098,18 @@ def _push_top_styles_to_webapp_repo(days: int = 30, limit: int = 10) -> None:
         try:
             with _req.urlopen(req, timeout=15) as resp:
                 return json.loads(resp.read())
+        except _err.HTTPError as e:
+            # Логируем код и тело ответа GitHub — иначе "403 недостаточно прав
+            # у GITHUB_TOKEN на WEBAPP_GITHUB_REPO" (задокументированный
+            # риск в config.py, ни разу не подтверждённый вручную) неотличим
+            # в логах от "404 репо не существует" или "401 токен протух" —
+            # публикация тихо не работает месяцами без единой зацепки, почему.
+            try:
+                err_body = e.read().decode("utf-8", errors="replace")[:300]
+            except Exception:
+                err_body = ""
+            logger.warning("GitHub top_styles push HTTP %s %s %s: %s", e.code, method, path, err_body)
+            return None
         except Exception as e:
             logger.warning("GitHub top_styles push error %s %s: %s", method, path, e)
             return None
@@ -9164,6 +9544,8 @@ async def run_midjourney_grid(update: Update, context: ContextTypes.DEFAULT_TYPE
     мини-флоу — не GenerationJob/generation_queue (тот контракт «один клик,
     один результат», у Midjourney есть промежуточный выбор варианта)."""
     user = None
+    _progress_id = None
+    _progress_kb = None
     try:
         user = update.effective_user
         reply_target = update.callback_query.message if update.callback_query else update.message
@@ -9225,9 +9607,18 @@ async def run_midjourney_grid(update: Update, context: ContextTypes.DEFAULT_TYPE
         await reply_target.reply_text("Запускаю Midjourney 🎨\nОбычно занимает пару минут.")
         status_msg = await reply_target.reply_text("⏳ Генерирую сетку вариантов…")
 
+        if GEN_PROGRESS_ENABLED:
+            _progress_id = str(uuid.uuid4())
+            if await gen_progress_create(_progress_id, user.id, "midjourney", {"cost": cost}):
+                _progress_kb = gen_progress_kb(user.id, _progress_id, "midjourney")
+                try:
+                    await status_msg.edit_text("⏳ Генерирую сетку вариантов…", reply_markup=_progress_kb)
+                except Exception:
+                    pass
+
         async def _edit_status(text: str) -> None:
             try:
-                await status_msg.edit_text(text)
+                await status_msg.edit_text(text, reply_markup=_progress_kb)
             except Exception:
                 pass
 
@@ -9261,6 +9652,8 @@ async def run_midjourney_grid(update: Update, context: ContextTypes.DEFAULT_TYPE
             # (send_media_group) и сообщение с кнопками — best-effort с
             # ретраями внутри _deliver_mj_grid_and_picker, см. её докстринг.
             await _deliver_mj_grid_and_picker(context, update.effective_chat.id, user.id, grid_urls)
+            if GEN_PROGRESS_ENABLED and _progress_kb is not None:
+                await gen_progress_complete(_progress_id, "done", "Готово!")
             log_generation_event(
                 user_id=user.id, kind="image", status="success", provider="EVOLINK_MIDJOURNEY",
                 cost=cost, was_free=False, references_count=1 if reference else 0,
@@ -9271,6 +9664,8 @@ async def run_midjourney_grid(update: Update, context: ContextTypes.DEFAULT_TYPE
         except BaseException as e:
             logger.exception("Midjourney grid generation failed")
             add_izyminki(user.id, cost)
+            if GEN_PROGRESS_ENABLED and _progress_kb is not None:
+                await gen_progress_complete(_progress_id, "error", "Не получилось")
             log_generation_event(
                 user_id=user.id, kind="image", status="failed", provider="EVOLINK_MIDJOURNEY",
                 cost=cost, was_free=False, references_count=1 if reference else 0,
@@ -9756,6 +10151,12 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         eta_min = max(2, int(selected_duration * 0.8))
         eta_max = max(eta_min + 1, int(selected_duration * 2.0))
+        # Инициализируем ДО try — если reply_text ниже сам бросит исключение
+        # раньше, чем дойдёт до создания progress-строки, except-блок должен
+        # безопасно прочитать _progress_kb (None), а не упасть NameError'ом
+        # и не замаскировать реальную ошибку/рефанд.
+        _progress_id = None
+        _progress_kb = None
         try:
             await reply_target.reply_text(
                 f"Запускаю {selected_model_label} 🎬\n"
@@ -9776,13 +10177,33 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
             # Single status message that gets edited in place — no chat spam
             status_msg = await reply_target.reply_text("⏳ Генерирую видео…")
-    
+
+            # Живой прогресс в вебаппе (docs/specs/2026-08-13_webapp_generation_hub_full.md) —
+            # тонкое зеркало, не блокирует и не может провалить саму генерацию
+            # (gen_progress_create просто вернёт False, если Cloudflare недоступен).
+            _progress_id = str(uuid.uuid4())
+            _progress_kb = None
+            if GEN_PROGRESS_ENABLED:
+                _progress_created = await gen_progress_create(_progress_id, user.id, "video", {
+                    "model_label": selected_model_label,
+                    "aspect": getattr(state, "video_aspect_ratio", "16:9"),
+                    "duration": selected_duration,
+                })
+                if _progress_created:
+                    _progress_kb = gen_progress_kb(user.id, _progress_id, "video")
+                    try:
+                        await status_msg.edit_text("⏳ Генерирую видео…", reply_markup=_progress_kb)
+                    except Exception:
+                        pass
+
             async def _edit_status(text: str) -> None:
                 try:
-                    await status_msg.edit_text(text)
+                    await status_msg.edit_text(text, reply_markup=_progress_kb)
                 except Exception:
                     pass
-    
+                if GEN_PROGRESS_ENABLED and _progress_kb is not None:
+                    await gen_progress_update(_progress_id, "processing", "Генерируем…")
+
             video_url = None
             last_seedance_error: Optional[Exception] = None
             for seedance_attempt in range(1, max_seedance_attempts + 1):
@@ -9873,6 +10294,8 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=video_caption,
                 reply_markup=upsell_markup,
             )
+            if GEN_PROGRESS_ENABLED and _progress_kb is not None:
+                await gen_progress_complete(_progress_id, "done", "Готово!")
             log_generation_event(
                 user_id=user.id,
                 kind="video",
@@ -9908,6 +10331,8 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except BaseException as e:
             logger.exception("Video generation failed")
             add_izyminki(user.id, selected_cost)
+            if GEN_PROGRESS_ENABLED and _progress_kb is not None:
+                await gen_progress_complete(_progress_id, "error", "Не получилось")
             # Restore state so "Повторить" can reuse the same images/prompt
             state.animation_source_urls = _saved_animation_source_urls
             state.video_prompt = _saved_video_prompt
@@ -10717,6 +11142,18 @@ def log_provider_config() -> None:
         logger.warning("SEEDANCE25_ENABLED=1, но EVOLINK_API_KEY пуст — Seedance 2.5 будет падать (ВСЕГДА EvoLink)")
     if not ZVENO_API_KEY:
         logger.warning("ZVENO_API_KEY пуст — видео (Seedance/Kling/Veo/Wan) недоступно вне зависимости от AI_PROVIDER")
+    if not (GITHUB_TOKEN and WEBAPP_GITHUB_REPO):
+        # Фид «Топ-стили» (docs/specs/2026-07-16_top_styles_stats_feed.md) —
+        # без токена/репо _push_top_styles_to_webapp_repo() молча ничего не
+        # делает каждый день, раздел в вебаппе никогда не появится, и раньше
+        # это никак не было видно в логах (сама top_styles.json не появилась
+        # в репо вебаппа ни разу за месяц — обнаружено при разборе брифа
+        # фронта 2026-08-14). Не хватает токена — не паникуем (может, фича
+        # ещё не нужна), но факт отсутствия канала теперь виден при старте.
+        logger.warning(
+            "GITHUB_TOKEN/WEBAPP_GITHUB_REPO не заданы — top_styles.json (раздел "
+            "«Топ-стили» в вебаппе) никогда не публикуется"
+        )
 
 
 def main():

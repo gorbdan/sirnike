@@ -1315,12 +1315,34 @@ def _video_constructor_cfg_payload() -> dict:
     return {"video_models": models}
 
 
+def _generation_hub_features_payload() -> dict:
+    """Какие конструкторы хаба генерации сейчас включены (docs/specs/
+    2026-08-13_webapp_generation_hub_navigation_full.md, раздел 5.2) —
+    экран «Создать» использует это, чтобы скрывать плитки продуктов,
+    которые ещё не готовы показывать юзерам, вместо «показываем все всегда»
+    (которое молча ведёт на выключенный флагом конструктор). Отдельно от
+    `_video_constructor_cfg_payload` (тяжёлая таблица цен видео-моделей,
+    гейтится своим флагом) — эти четыре булевых значения нужны экрану
+    «Создать» независимо от того, включён ли именно видео-конструктор."""
+    return {
+        "video": VIDEO_CONSTRUCTOR_ENABLED,
+        "midjourney": MIDJOURNEY_CONSTRUCTOR_ENABLED,
+        "avatar": AVATAR_CONSTRUCTOR_ENABLED,
+        "photo": PHOTO_CONSTRUCTOR_ENABLED,
+    }
+
+
 def get_prompt_webapp_url(user_id: int = None) -> str:
     base = str(PROMPT_WEBAPP_URL or "").strip()
     if not base:
         return ""
     sep = "&" if "?" in base else "?"
     url = f"{base}{sep}rev={PROMPT_WEBAPP_REV}"
+    try:
+        features_raw = json.dumps(_generation_hub_features_payload(), separators=(",", ":"))
+        url += f"&features={base64.urlsafe_b64encode(features_raw.encode()).decode()}"
+    except Exception as e:
+        logger.warning("Failed to encode generation hub features for webapp URL: %s", e)
     if VIDEO_CONSTRUCTOR_ENABLED:
         try:
             cfg_raw = json.dumps(_video_constructor_cfg_payload(), ensure_ascii=False, separators=(",", ":"))

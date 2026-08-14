@@ -515,3 +515,30 @@ def test_block_24s2_photo_entry_unchanged_when_flag_off():
         )
     finally:
         S.PHOTO_CONSTRUCTOR_ENABLED = _orig_flag
+
+
+def test_block_24t2_features_payload_reflects_all_four_flags():
+    # Экран «Создать» (единая навигация, docs/specs/2026-08-13_webapp_generation_hub_navigation_full.md)
+    # скрывает плитки продуктов по этому полю — независимо от &cfg=
+    # (который несёт только тяжёлую таблицу цен видео и гейтится отдельно).
+    _orig = (
+        S.VIDEO_CONSTRUCTOR_ENABLED, S.MIDJOURNEY_CONSTRUCTOR_ENABLED,
+        S.AVATAR_CONSTRUCTOR_ENABLED, S.PHOTO_CONSTRUCTOR_ENABLED, S.PROMPT_WEBAPP_URL,
+    )
+    S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
+    try:
+        S.VIDEO_CONSTRUCTOR_ENABLED = False
+        S.MIDJOURNEY_CONSTRUCTOR_ENABLED = True
+        S.AVATAR_CONSTRUCTOR_ENABLED = False
+        S.PHOTO_CONSTRUCTOR_ENABLED = True
+        url = S.get_prompt_webapp_url(1)
+        assert "&features=" in url, f"24t2.1 features всегда проброшены (не гейтятся видео-флагом): {url}"
+        import base64 as b64, json as js
+        raw = url.split("&features=", 1)[1].split("&", 1)[0]
+        decoded = js.loads(b64.urlsafe_b64decode(raw.encode()).decode())
+        assert decoded == {"video": False, "midjourney": True, "avatar": False, "photo": True}, (
+            f"24t2.2 значения соответствуют реальным флагам: {decoded}"
+        )
+    finally:
+        (S.VIDEO_CONSTRUCTOR_ENABLED, S.MIDJOURNEY_CONSTRUCTOR_ENABLED,
+         S.AVATAR_CONSTRUCTOR_ENABLED, S.PHOTO_CONSTRUCTOR_ENABLED, S.PROMPT_WEBAPP_URL) = _orig

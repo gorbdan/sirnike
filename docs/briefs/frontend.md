@@ -59,7 +59,7 @@
       Live-смоук после деплоя — нужны секреты у Ани (без изменений
       относительно уже заведённых для Студии/Досок) + включение флага на
       тестовом юзере.
-- [ ] P1 · Хаб генерации в вебаппе, Full — конструкторы Midjourney и Аватар —
+- [x] P1 · Хаб генерации в вебаппе, Full — конструкторы Midjourney и Аватар —
       **UI** (вебапп), после MVP по видео. Бэкенд-парсер уже готов для обоих
       продуктов (тот же файл SirNike.py, функции
       `_apply_webapp_generation_midjourney`/`_apply_webapp_generation_avatar`,
@@ -92,6 +92,36 @@
       (`constructor.js`, PR gorbdan/_webapp#39): Midjourney — поле текста +
       опциональный один референс; Аватар — выбор типа (жен/муж/детский) +
       аплоадер фото (тот же imgbb-загрузчик, что у видео/Досок/Студии).
+      ✅ Ночная автономная сессия 2026-08-13 (вебапп, репо `_webapp`, PR
+      [gorbdan/_webapp#40](https://github.com/gorbdan/_webapp/pull/40),
+      ветка от `feat/generation-hub-video-constructor-mvp`/PR #39, ещё не
+      смёржен в main вебаппа на момент открытия): новые файлы
+      `mj_constructor.js` (экран `midjourney_constructor` — текстовое поле
+      описания + один опциональный референс, аплоадер намеренно ограничен
+      одним файлом — EvoLink Midjourney принимает только один, лишнее
+      бэкенд и так молча отбрасывает) и `avatar_constructor.js` (экран
+      `avatar_constructor` — сегмент жен/муж/детский, дефолт `female`, +
+      аплоадер до `MAX_AVATAR_PHOTOS`=8 фото), плюс правки `index.html`
+      (два новых `tab-page`, скрипты подключены после `constructor.js`),
+      `constructor.css` (расширила общий селектор паддинга под sticky-
+      подвал на новые экраны, новых визуальных примитивов не вводила —
+      переиспользует `.vc-block`/`.vc-textarea`/`.vc-refs`/`.segmented`),
+      `app.js` (`APP_TITLES` дополнен `midjourneyConstructor`/
+      `avatarConstructor`). Оба экрана переиспользуют imgbb-аплоадер
+      Студии (`studioCall`/`studioCompressImageToBase64`) и шлют
+      `tg.sendData()` с `start_generation`/`sg`, `product: "midjourney"`/
+      `"avatar"` — поля сверены буквально с бэкенд-парсером и тестами
+      24k/24l/24n/24o/24p (`tests/test_block_24_webapp_generation_hub.py`).
+      Открытый вопрос из брифа решён самостоятельно: у этих двух продуктов
+      нет `&cfg=`/`price_table` от бота (в отличие от видео) — показываю
+      статичную текстовую подсказку по цене (дефолты
+      `MIDJOURNEY_GRID_COST`/`MIDJOURNEY_UPSCALE_COST` из config.py) с
+      явной пометкой «точная цена — в чате», не выдумываю живой пересчёт
+      без данных от бэкенда; финальная карточка подтверждения в чате — как
+      и раньше, источник истины по цене. Live-смоук после мёржа обоих PR
+      (#39 и #40) и деплоя Pages — не проверен (нет доступа к прод-
+      Cloudflare из сессии), нужно включение обоих флагов на тестовом
+      юзере.
 - [x] P0 · Живой прогресс генерации в вебаппе (D1-зеркало) — **UI + Cloudflare
       Functions** (вебапп). Спека готова:
       [docs/specs/2026-08-13_webapp_generation_hub_full.md](../specs/2026-08-13_webapp_generation_hub_full.md)

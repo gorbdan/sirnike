@@ -142,6 +142,7 @@ from config import (
     MIDJOURNEY_CONSTRUCTOR_ENABLED,
     AVATAR_CONSTRUCTOR_ENABLED,
     PHOTO_CONSTRUCTOR_ENABLED,
+    ENHANCE_CONSTRUCTOR_ENABLED,
     GEN_PROGRESS_ENABLED,
     GEN_PROGRESS_API_BASE,
     GEN_PROGRESS_SECRET,
@@ -1326,13 +1327,14 @@ def _generation_hub_features_payload() -> dict:
     которые ещё не готовы показывать юзерам, вместо «показываем все всегда»
     (которое молча ведёт на выключенный флагом конструктор). Отдельно от
     `get_video_constructor_config` (тяжёлая таблица цен видео-моделей,
-    гейтится своим флагом) — эти четыре булевых значения нужны экрану
+    гейтится своим флагом) — эти пять булевых значений нужны экрану
     «Создать» независимо от того, включён ли именно видео-конструктор."""
     return {
         "video": VIDEO_CONSTRUCTOR_ENABLED,
         "midjourney": MIDJOURNEY_CONSTRUCTOR_ENABLED,
         "avatar": AVATAR_CONSTRUCTOR_ENABLED,
         "photo": PHOTO_CONSTRUCTOR_ENABLED,
+        "enhance": ENHANCE_CONSTRUCTOR_ENABLED,
     }
 
 
@@ -1460,9 +1462,14 @@ def webapp_video_quality_label(model_code: str, resolved_mode: str) -> Optional[
 
 
 def get_video_constructor_webapp_url(user_id: int) -> str:
-    """Персональный URL Конструктора видео — открытие «🎬 Видео для Reels»
-    под VIDEO_CONSTRUCTOR_ENABLED и кнопка «🔁 Начать заново» на карточке
-    подтверждения (обе точки входа, docs/specs/2026-08-13_webapp_generation_hub.md).
+    """Персональный URL Конструктора видео — кнопка «🔁 Начать заново» на
+    карточке подтверждения (docs/specs/2026-08-13_webapp_generation_hub.md).
+    Раньше также была прямой web_app-кнопкой «🎬 Видео для Reels» в
+    persistent_menu_kb под VIDEO_CONSTRUCTOR_ENABLED — убрана вместе с самой
+    кнопкой при радикальном упрощении меню (docs/specs/2026-08-14_menu_
+    simplification_and_enhance_constructor.md), MENU_BTN_VIDEO больше не
+    рисуется ни в одной клавиатуре, только резервный текстовый путь в
+    handle_menu_button (через video_constructor_kb/tab=video_constructor).
     `tab=video_constructor` (snake_case) — точный query-параметр, который
     реальный constructor.js в репо вебаппа сверяет напрямую из URL перед тем,
     как перевести UI на внутренний экран `switchTab("videoConstructor")`
@@ -1546,36 +1553,38 @@ def _prompt_library_button(user_id: Optional[int] = None) -> InlineKeyboardButto
     # callback, обрабатывается ниже) вместо sendData (который для инлайн-кнопок
     # молча терял данные — живой аудит 2026-07-07, поэтому раньше был откат на
     # callback_data=pl_open_webapp). Без user_id — старый 2-кликовый fallback.
+    #
+    # НЕ форсируем `&tab=library` (docs/specs/2026-08-14_menu_simplification_
+    # and_enhance_constructor.md) — эта кнопка теперь единственный вход во ВЕСЬ
+    # хаб генерации (Библиотека/Фото/Видео/Аватар/Midjourney/Улучшить фото/
+    # Доски/Студия), пусть открывается дефолтный экран вебаппа («Создать»).
+    # Остальные 12 точек входа из PR #124 (photo_draft_kb, persistent_menu_kb
+    # и т.д.) продолжают форсировать `&tab=library` — это другая, не
+    # пересекающаяся с этой задача, их не трогаем.
     if PROMPT_WEBAPP_URL and user_id is not None:
         return InlineKeyboardButton(
-            "📚 Библиотека стилей",
-            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=library"),
+            MENU_BTN_LIBRARY,
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)),
         )
     pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
-    return InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb)
+    return InlineKeyboardButton(MENU_BTN_LIBRARY, callback_data=pl_cb)
 
 
 def main_menu_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
-    # Главное меню — только 2 входные точки в продукты (📸 Фото / 🎬 Видео,
-    # каждая открывает свой экран через photo_menu_kb/video_menu_kb) + общие
-    # разделы. Раньше все 6 продуктовых кнопок торчали прямо в главном меню —
-    # Аня попросила разнести по этапам, фото отдельно от видео (2026-07-29).
-    # «📚 Библиотека стилей» намеренно НЕ внутри «Фото»/«Видео» — там и
-    # фото-, и видео-стили вперемешку, класть только в один раздел нечестно.
+    # Радикальное упрощение (docs/specs/2026-08-14_menu_simplification_and_
+    # enhance_constructor.md, продуктовое решение Ани): Хаб генерации в
+    # вебаппе теперь закрывает ВСЕ продукты (Фото/Видео/Аватар/Midjourney/
+    # Улучшить фото/Доски/Студия) одним экраном — держать их ЕЩЁ РАЗ
+    # отдельными чат-флоу в меню бота избыточно. Меню сжато до 3 кнопок:
+    # «Библиотека и генерация» (единственный вход во весь вебапп) +
+    # Баг-баунти + Баланс. Хендлеры Фото/Видео/Аватар/Midjourney/
+    # реферала/help/report НЕ удалены из кода (см. спеку, «Что НЕ
+    # удаляется») — только убраны как кнопки меню.
     rows = [
-        [
-            InlineKeyboardButton("📸 Фото", callback_data="menu_photo"),
-            InlineKeyboardButton("🎬 Видео", callback_data="menu_video"),
-        ],
         [_prompt_library_button(user_id)],
         [
-            InlineKeyboardButton("💰 Баланс", callback_data="show_buy"),
-            InlineKeyboardButton("🎁 Пригласить друга", callback_data="open_ref"),
-        ],
-        [InlineKeyboardButton("❓ Как пользоваться", callback_data="show_help")],
-        [
-            InlineKeyboardButton("🚨 Проблема", callback_data="report_problem"),
-            InlineKeyboardButton("🐞 Баг-баунти", callback_data="bug_bounty"),
+            InlineKeyboardButton(MENU_BTN_BUG_BOUNTY, callback_data="bug_bounty"),
+            InlineKeyboardButton(MENU_BTN_BALANCE, callback_data="show_buy"),
         ],
     ]
     return InlineKeyboardMarkup(rows)
@@ -1631,18 +1640,21 @@ def video_menu_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
 
 
 # Постоянная reply-клавиатура: всегда под полем ввода, не пропадает.
-# Единственная постоянная навигация (docs/specs/2026-07-02_navigatsiya.md) —
-# 7 кнопок, паритет с продуктами полного инлайн-меню (main_menu_kb), тексты
-# буква в букву совпадают с одноимёнными кнопками там. «Модель картинок» —
-# настройка, а не раздел, «Пригласить друга» — разовое действие: оба остаются
-# только в полном инлайн-меню, на постоянную клавиатуру не выносим.
+# Радикальное упрощение (docs/specs/2026-08-14_menu_simplification_and_
+# enhance_constructor.md) — сжата до 3 кнопок, паритет с main_menu_kb,
+# тексты буква в букву совпадают с одноимёнными кнопками там. Остальные
+# константы (MENU_BTN_PHOTO/VIDEO/AVATAR/ENHANCE/HELP) НЕ удалены — они
+# сравниваются в handle_menu_button как резервные текстовые ярлыки для уже
+# открытых у части юзеров старых клавиатур и для ручных сценариев (см.
+# спеку, «Что НЕ удаляется»), просто больше не рисуются ни в одной клавиатуре.
 MENU_BTN_PHOTO = "✨ Сгенерировать фото"
 MENU_BTN_VIDEO = "🎬 Видео для Reels"
 MENU_BTN_AVATAR = "🪄 Аватар"
 MENU_BTN_ENHANCE = "🖼️ Улучшить фото"
-MENU_BTN_LIBRARY = "📚 Библиотека стилей"
+MENU_BTN_LIBRARY = "📚 Библиотека и генерация"
 MENU_BTN_BALANCE = "💰 Баланс"
 MENU_BTN_HELP = "❓ Как пользоваться"
+MENU_BTN_BUG_BOUNTY = "🐞 Баг-баунти"
 PERSISTENT_MENU_BUTTONS = {
     MENU_BTN_PHOTO,
     MENU_BTN_VIDEO,
@@ -1651,12 +1663,16 @@ PERSISTENT_MENU_BUTTONS = {
     MENU_BTN_LIBRARY,
     MENU_BTN_BALANCE,
     MENU_BTN_HELP,
+    MENU_BTN_BUG_BOUNTY,
 }
 
 
 def persistent_menu_kb(user_id: Optional[int] = None) -> ReplyKeyboardMarkup:
-    # Если есть webapp-библиотека — делаем «Библиотека стилей» web_app-кнопкой,
-    # чтобы открывалась сразу, без промежуточного тапа «Открыть библиотеку».
+    # Если есть webapp-библиотека — делаем «Библиотека и генерация» web_app-
+    # кнопкой, чтобы открывалась сразу, без промежуточного тапа. &tab=library
+    # тут форсированно остаётся (PR #124, не в скоупе этой задачи) — это
+    # другая из 12 точек входа, не единственная (в отличие от
+    # _prompt_library_button, см. её комментарий).
     if PROMPT_WEBAPP_URL and user_id is not None:
         library_btn = KeyboardButton(
             MENU_BTN_LIBRARY,
@@ -1664,23 +1680,9 @@ def persistent_menu_kb(user_id: Optional[int] = None) -> ReplyKeyboardMarkup:
         )
     else:
         library_btn = KeyboardButton(MENU_BTN_LIBRARY)
-    # Хаб генерации (docs/specs/2026-08-13_webapp_generation_hub.md) —
-    # VIDEO_CONSTRUCTOR_ENABLED делает «🎬 Видео для Reels» web_app-кнопкой
-    # (тот же приём, что уже у MENU_BTN_LIBRARY) — открывает Конструктор
-    # напрямую, без похода в бота за пикером модели. Флаг=False (дефолт) —
-    # ноль изменений, обычная текстовая кнопка (handle_menu_button её ловит).
-    if VIDEO_CONSTRUCTOR_ENABLED and PROMPT_WEBAPP_URL and user_id is not None:
-        video_btn = KeyboardButton(
-            MENU_BTN_VIDEO,
-            web_app=WebAppInfo(url=get_video_constructor_webapp_url(user_id)),
-        )
-    else:
-        video_btn = KeyboardButton(MENU_BTN_VIDEO)
     rows = [
-        [KeyboardButton(MENU_BTN_PHOTO), video_btn],
-        [KeyboardButton(MENU_BTN_ENHANCE), KeyboardButton(MENU_BTN_AVATAR)],
-        [library_btn, KeyboardButton(MENU_BTN_BALANCE)],
-        [KeyboardButton(MENU_BTN_HELP)],
+        [library_btn],
+        [KeyboardButton(MENU_BTN_BUG_BOUNTY), KeyboardButton(MENU_BTN_BALANCE)],
     ]
     return ReplyKeyboardMarkup(
         rows,
@@ -1722,13 +1724,13 @@ def promo_try_kb(promo_id: str, user_id: Optional[int] = None) -> InlineKeyboard
     rows = [[InlineKeyboardButton("✨ Хочу так же", callback_data=f"promo_try_{promo_id}")]]
     if PROMPT_WEBAPP_URL and user_id is not None:
         rows.append([InlineKeyboardButton(
-            "📚 Библиотека стилей",
+            MENU_BTN_LIBRARY,
             web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=library"),
         )])
     elif PROMPT_WEBAPP_URL:
-        rows.append([InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open_webapp")])
+        rows.append([InlineKeyboardButton(MENU_BTN_LIBRARY, callback_data="pl_open_webapp")])
     else:
-        rows.append([InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open")])
+        rows.append([InlineKeyboardButton(MENU_BTN_LIBRARY, callback_data="pl_open")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -2307,16 +2309,16 @@ def broadcast_library_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     if PROMPT_WEBAPP_URL and user_id is not None:
         return InlineKeyboardMarkup([
             [InlineKeyboardButton(
-                "📚 Библиотека стилей",
+                MENU_BTN_LIBRARY,
                 web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=library"),
             )]
         ])
     if PROMPT_WEBAPP_URL:
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open_webapp")]
+            [InlineKeyboardButton(MENU_BTN_LIBRARY, callback_data="pl_open_webapp")]
         ])
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open")]
+        [InlineKeyboardButton(MENU_BTN_LIBRARY, callback_data="pl_open")]
     ])
 
 
@@ -2425,12 +2427,12 @@ def result_actions_kb(user_id: int = 0, bot_username: str = "") -> InlineKeyboar
     # см. комментарий в main_menu_kb.
     if PROMPT_WEBAPP_URL and user_id:
         switchers.append(InlineKeyboardButton(
-            "📚 Библиотека стилей",
+            MENU_BTN_LIBRARY,
             web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=library"),
         ))
     else:
         pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
-        switchers.append(InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb))
+        switchers.append(InlineKeyboardButton(MENU_BTN_LIBRARY, callback_data=pl_cb))
     return InlineKeyboardMarkup([
         actions,
         switchers,
@@ -2529,9 +2531,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🎁 Подарок на старте — {START_BONUS} изюминок (хватит на ~{bonus_photos} фото).\n"
             f"   Изюминки — внутренняя валюта бота: 1 фото = {BASE_GENERATION_COST} изюминок\n\n"
             f"⚡ Попробуй прямо сейчас:\n"
-            f"  Нажми «📚 Библиотека стилей» → выбери стиль → «✨ Сгенерировать фото»\n\n"
-            f"🪄 Чтобы не загружать своё фото каждый раз — зайди в «🪄 Аватар», "
-            f"и бот запомнит твою внешность.\n"
+            f"  Нажми «{MENU_BTN_LIBRARY}» → выбери стиль или продукт → запусти генерацию\n\n"
+            f"🪄 Чтобы не загружать своё фото каждый раз — там же есть Аватар: "
+            f"бот запомнит твою внешность.\n"
             f"❓ Подробнее: /help"
         )
     else:
@@ -2617,11 +2619,11 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bal = get_balance(user.id)
     if PROMPT_WEBAPP_URL:
         library_button = InlineKeyboardButton(
-            "📚 Библиотека стилей",
+            MENU_BTN_LIBRARY,
             web_app=WebAppInfo(url=get_prompt_webapp_url(user.id) + "&tab=library"),
         )
     else:
-        library_button = InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open")
+        library_button = InlineKeyboardButton(MENU_BTN_LIBRARY, callback_data="pl_open")
     # Главный вопрос юзера — «на сколько хватит?», а не абстрактное число.
     _video_cps = SEEDANCE_FAST_COST_PER_SECOND if SEEDANCE_FAST_ENABLED else SEEDANCE_COST_PER_SECOND
     _video_10s = calc_seedance_cost(10, _video_cps)
@@ -3233,7 +3235,7 @@ async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             await asyncio.sleep(0.02)
                         await context.bot.send_message(
                             chat_id=target_user_id,
-                            text="Библиотека стилей 👇",
+                            text=f"{MENU_BTN_LIBRARY} 👇",
                             reply_markup=library_kb,
                         )
                     else:
@@ -3258,7 +3260,7 @@ async def broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             )
                         await context.bot.send_message(
                             chat_id=target_user_id,
-                            text="Библиотека стилей 👇",
+                            text=f"{MENU_BTN_LIBRARY} 👇",
                             reply_markup=library_kb,
                         )
                 else:
@@ -3314,7 +3316,7 @@ async def broadcast_hide_keyboard(update: Update, context: ContextTypes.DEFAULT_
     try:
         text = (
             "Обновили библиотеку стилей 📚\n"
-            "Открывай через кнопку «Библиотека стилей» в меню бота."
+            f"Открывай через кнопку «{MENU_BTN_LIBRARY}» в меню бота."
         )
         users = get_all_user_ids()
         sent = 0
@@ -3551,6 +3553,10 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
     if text == MENU_BTN_HELP:
         await help_command(update, context)
+        return True
+
+    if text == MENU_BTN_BUG_BOUNTY:
+        await bug_bounty_command(update, context)
         return True
 
     return False
@@ -4455,6 +4461,15 @@ def photo_constructor_kb(user_id: int) -> InlineKeyboardMarkup:
     ]])
 
 
+def enhance_constructor_kb(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "🖼️ Открыть конструктор",
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=enhance_constructor"),
+        ),
+    ]])
+
+
 # ----------------------------------------------------------------------------
 # Живой прогресс генерации в вебаппе (docs/specs/2026-08-13_webapp_generation_hub_full.md)
 # НЕ очередь (в отличие от studio_worker.py) — тонкое write-only зеркало:
@@ -4537,6 +4552,8 @@ async def apply_webapp_generation_payload(update: Update, context: ContextTypes.
         return await _apply_webapp_generation_avatar(update, context, payload)
     if product == "photo":
         return await _apply_webapp_generation_photo(update, context, payload)
+    if product == "enhance":
+        return await _apply_webapp_generation_enhance(update, context, payload)
     await update.effective_message.reply_text(
         "Этот раздел конструктора пока не поддержан ботом — используй чат для этого продукта."
     )
@@ -4900,6 +4917,53 @@ async def _apply_webapp_generation_photo(update: Update, context: ContextTypes.D
     return True
 
 
+async def _apply_webapp_generation_enhance(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
+    """product=enhance (docs/specs/2026-08-14_menu_simplification_and_enhance_constructor.md)
+    — простейший из конструкторов: ровно одно фото, без текстовых полей,
+    фиксированный промт/модель (тот же принцип, что и сегодняшний ручной
+    флоу `_cb_enhance_photo`). Вебапп шлёт РОВНО 1 URL в `refs` — если
+    пришло больше, берём первый, это не ошибка. Карточка подтверждения
+    переиспользует `photo_draft_text`/`photo_draft_kb` (та же функция, что
+    заканчивает сегодняшний ручной флоу после присылки фото) — не пишем
+    новый текст карточки."""
+    if not update.effective_message or not update.effective_user:
+        return True
+    if not ENHANCE_CONSTRUCTOR_ENABLED:
+        await update.effective_message.reply_text(
+            "Эта функция сейчас недоступна. Попробуй через обычное меню «🖼️ Улучшить фото»."
+        )
+        return True
+
+    user_id = update.effective_user.id
+    state = get_or_init_state(context)
+    deactivate_video_session(state)
+    state.generating_avatar = False
+    state.style_extract = False
+
+    refs_raw = payload.get("refs")
+    if refs_raw is None:
+        refs_raw = payload.get("r")
+    refs = [str(u).strip() for u in refs_raw if str(u or "").strip()] if isinstance(refs_raw, list) else []
+
+    if not refs:
+        await update.effective_message.reply_text(
+            "Нужно фото — вернись и добавь.",
+            reply_markup=enhance_constructor_kb(user_id),
+        )
+        return True
+
+    state.prompt = ENHANCE_PHOTO_PROMPT
+    state.image_prompt = ""
+    state.references = refs[:1]
+    state.references_updated_at = time.time()
+    state.image_model = "gemini"  # nano banana, фикс по требованию функции
+
+    await update.effective_message.reply_text(
+        photo_draft_text(state, user_id), reply_markup=photo_draft_kb(state, user_id)
+    )
+    return True
+
+
 async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
     if not isinstance(payload, dict):
         return False
@@ -5038,11 +5102,11 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
         if update.effective_message and update.effective_user:
             if PROMPT_WEBAPP_URL:
                 retry_btn = InlineKeyboardButton(
-                    "📚 Библиотека стилей",
+                    MENU_BTN_LIBRARY,
                     web_app=WebAppInfo(url=get_prompt_webapp_url(update.effective_user.id) + "&tab=library"),
                 )
             else:
-                retry_btn = InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open")
+                retry_btn = InlineKeyboardButton(MENU_BTN_LIBRARY, callback_data="pl_open")
             await update.effective_message.reply_text(
                 "Не удалось применить именно эту карточку (возможно, устарела).\n"
                 "Открой библиотеку и выбери стиль из категории заново:",
@@ -7248,13 +7312,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning("Showcase callback failed (%s): %s", query.data, e)
             if PROMPT_WEBAPP_URL:
                 retry_btn = InlineKeyboardButton(
-                    "📚 Библиотека стилей",
+                    MENU_BTN_LIBRARY,
                     web_app=WebAppInfo(url=get_prompt_webapp_url(user.id) + "&tab=library"),
                 )
             else:
-                retry_btn = InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open")
+                retry_btn = InlineKeyboardButton(MENU_BTN_LIBRARY, callback_data="pl_open")
             await query.message.reply_text(
-                "Этот стиль обновился — открой «📚 Библиотека стилей» и выбери оттуда.",
+                f"Этот стиль обновился — открой «{MENU_BTN_LIBRARY}» и выбери оттуда.",
                 reply_markup=InlineKeyboardMarkup([[retry_btn]]),
             )
             return
@@ -7538,11 +7602,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # заблуждение — с теми же индексами повторный тап даст тот же отказ.
             if PROMPT_WEBAPP_URL:
                 retry_btn = InlineKeyboardButton(
-                    "📚 Библиотека стилей",
+                    MENU_BTN_LIBRARY,
                     web_app=WebAppInfo(url=get_prompt_webapp_url(user.id) + "&tab=library"),
                 )
             else:
-                retry_btn = InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open")
+                retry_btn = InlineKeyboardButton(MENU_BTN_LIBRARY, callback_data="pl_open")
             await _reply_after_callback(
                 query, context, user.id,
                 "Не удалось применить именно эту карточку (возможно, устарела).\n"

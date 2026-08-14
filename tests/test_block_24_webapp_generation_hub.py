@@ -379,25 +379,38 @@ def test_block_24h2_inline_video_entry_point_parity():
         S.PROMPT_WEBAPP_URL = _orig_url
 
 
-def test_block_24h3_persistent_menu_video_button_uses_snake_case_tab():
-    # get_video_constructor_webapp_url — персональный URL, зашитый в reply-кнопку
-    # «🎬 Видео для Reels» (persistent_menu_kb). Реальный constructor.js
+def test_block_24h3_video_constructor_url_uses_snake_case_tab():
+    # get_video_constructor_webapp_url — персональный URL, зашитый в кнопку
+    # «🔁 Начать заново» (video_generation_confirm_kb). Реальный constructor.js
     # (репо вебаппа) сверяет query-параметр `tab` дословно со строкой
     # "video_constructor" (snake_case) — "videoConstructor" (camelCase) там
     # только внутреннее имя экрана для switchTab(), не значение параметра.
+    #
+    # Радикальное упрощение меню (docs/specs/2026-08-14_menu_simplification_
+    # and_enhance_constructor.md) убрало прямую web_app-кнопку «🎬 Видео для
+    # Reels» из persistent_menu_kb вместе со всей кнопкой — persistent_menu_kb
+    # теперь НЕ содержит MENU_BTN_VIDEO ни при каком значении флага (см.
+    # 24h3.0 ниже), get_video_constructor_webapp_url проверяется через
+    # оставшуюся живую точку входа.
     _orig_flag = S.VIDEO_CONSTRUCTOR_ENABLED
     _orig_url = S.PROMPT_WEBAPP_URL
     S.VIDEO_CONSTRUCTOR_ENABLED = True
     S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
     try:
         kb = S.persistent_menu_kb(9714)
-        video_btn = [b for row in kb.keyboard for b in row if b.text == S.MENU_BTN_VIDEO][0]
-        assert video_btn.web_app is not None, "24h3.1 флаг включён — прямая web_app-кнопка"
-        assert "tab=video_constructor" in video_btn.web_app.url, (
-            f"24h3.2 snake_case tab, дословно как ждёт constructor.js: {video_btn.web_app.url}"
+        video_btns = [b for row in kb.keyboard for b in row if b.text == S.MENU_BTN_VIDEO]
+        assert not video_btns, (
+            f"24h3.0 persistent_menu_kb упрощено — нет кнопки видео ни при каком флаге: {video_btns}"
         )
-        assert "tab=videoConstructor" not in video_btn.web_app.url, (
-            f"24h3.3 НЕ camelCase (то внутреннее имя экрана, не query-параметр): {video_btn.web_app.url}"
+
+        confirm_kb = S.video_generation_confirm_kb(9714)
+        restart_btn = [b for row in confirm_kb.inline_keyboard for b in row if b.text == "🔁 Начать заново"][0]
+        assert restart_btn.web_app is not None, "24h3.1 «Начать заново» — web_app-кнопка"
+        assert "tab=video_constructor" in restart_btn.web_app.url, (
+            f"24h3.2 snake_case tab, дословно как ждёт constructor.js: {restart_btn.web_app.url}"
+        )
+        assert "tab=videoConstructor" not in restart_btn.web_app.url, (
+            f"24h3.3 НЕ camelCase (то внутреннее имя экрана, не query-параметр): {restart_btn.web_app.url}"
         )
     finally:
         S.VIDEO_CONSTRUCTOR_ENABLED = _orig_flag
@@ -666,13 +679,96 @@ def test_block_24s2_photo_entry_unchanged_when_flag_off():
         S.PHOTO_CONSTRUCTOR_ENABLED = _orig_flag
 
 
-def test_block_24t2_features_payload_reflects_all_four_flags():
+# product=enhance (docs/specs/2026-08-14_menu_simplification_and_enhance_constructor.md)
+# — простейший конструктор: ровно одно фото, без текстовых полей, фиксированный
+# промт/модель (тот же принцип, что и сегодняшний ручной флоу `_cb_enhance_photo`).
+# Карточка подтверждения — НЕ новый текст, а прямой вызов photo_draft_text/photo_draft_kb.
+
+def test_block_24u_enhance_flag_off_declines():
+    _orig = S.ENHANCE_CONSTRUCTOR_ENABLED
+    S.ENHANCE_CONSTRUCTOR_ENABLED = False
+    try:
+        update, context, message = make_webapp_update_context()
+        applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "sg", "pr": "enhance", "refs": ["https://i.ibb.co/enh/1.jpg"],
+        }))
+        assert applied is True, "24u.1 payload распознан (даже при выключенном флаге — честный отказ)"
+        text = message.reply_text.await_args_list[0].args[0]
+        assert "недоступна" in text.lower(), f"24u.2 честный отказ, не крэш: {text!r}"
+        assert "state" not in context.user_data, "24u.3 UserState не создаётся при отказе"
+    finally:
+        S.ENHANCE_CONSTRUCTOR_ENABLED = _orig
+
+
+def test_block_24v_enhance_full_payload_reuses_photo_draft_card():
+    _orig = S.ENHANCE_CONSTRUCTOR_ENABLED
+    S.ENHANCE_CONSTRUCTOR_ENABLED = True
+    try:
+        update, context, message = make_webapp_update_context()
+        applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "sg", "pr": "enhance",
+            "refs": ["https://i.ibb.co/enh/1.jpg", "https://i.ibb.co/enh/2.jpg"],
+        }))
+        assert applied is True, "24v.1 payload применён"
+        state = context.user_data["state"]
+        assert state.prompt == S.ENHANCE_PHOTO_PROMPT, "24v.2 фиксированный промт «Улучшить фото»"
+        assert state.image_model == "gemini", "24v.3 фиксированная модель — gemini (nano banana)"
+        assert state.references == ["https://i.ibb.co/enh/1.jpg"], (
+            f"24v.4 ровно 1 референс — первый из refs, лишние не ошибка: {state.references}"
+        )
+        assert state.style_extract is False, "24v.5 не двух-референсный пайплайн"
+
+        text = message.reply_text.await_args_list[0].args[0]
+        assert text == S.photo_draft_text(state, update.effective_user.id), (
+            f"24v.6 карточка — ровно photo_draft_text, не новый текст: {text!r}"
+        )
+        kb = message.reply_text.await_args_list[0].kwargs.get("reply_markup")
+        launch_btn = kb.inline_keyboard[0][0]
+        assert launch_btn.text == "🚀 Запустить генерацию" and launch_btn.callback_data == "generate", (
+            f"24v.7 переиспользует существующий коллбэк запуска: {launch_btn.text!r}/{launch_btn.callback_data!r}"
+        )
+    finally:
+        S.ENHANCE_CONSTRUCTOR_ENABLED = _orig
+
+
+def test_block_24w_enhance_empty_refs_declines():
+    _orig = S.ENHANCE_CONSTRUCTOR_ENABLED
+    S.ENHANCE_CONSTRUCTOR_ENABLED = True
+    try:
+        update, context, message = make_webapp_update_context()
+        applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {"action": "sg", "pr": "enhance"}))
+        assert applied is True, "24w.1 payload распознан"
+        text = message.reply_text.await_args_list[0].args[0]
+        assert "фото" in text.lower(), f"24w.2 пустые refs — честный отказ, просит фото: {text!r}"
+        state = context.user_data.get("state")
+        assert state is None or state.prompt != S.ENHANCE_PHOTO_PROMPT, (
+            "24w.3 без фото не молчаливое создание состояния улучшения"
+        )
+    finally:
+        S.ENHANCE_CONSTRUCTOR_ENABLED = _orig
+
+
+def test_block_24x2_enhance_feature_flag_in_hub_payload():
+    _orig = S.ENHANCE_CONSTRUCTOR_ENABLED
+    try:
+        S.ENHANCE_CONSTRUCTOR_ENABLED = True
+        assert S._generation_hub_features_payload()["enhance"] is True, "24x2.1 включённый флаг отражён в &features="
+        S.ENHANCE_CONSTRUCTOR_ENABLED = False
+        assert S._generation_hub_features_payload()["enhance"] is False, "24x2.2 выключенный флаг отражён в &features="
+    finally:
+        S.ENHANCE_CONSTRUCTOR_ENABLED = _orig
+
+
+def test_block_24t2_features_payload_reflects_all_five_flags():
     # Экран «Создать» (единая навигация, docs/specs/2026-08-13_webapp_generation_hub_navigation_full.md)
     # скрывает плитки продуктов по этому полю — независимо от &cfg=
     # (который несёт только тяжёлую таблицу цен видео и гейтится отдельно).
+    # Пятое поле — enhance (docs/specs/2026-08-14_menu_simplification_and_
+    # enhance_constructor.md), ENHANCE_CONSTRUCTOR_ENABLED.
     _orig = (
         S.VIDEO_CONSTRUCTOR_ENABLED, S.MIDJOURNEY_CONSTRUCTOR_ENABLED,
-        S.AVATAR_CONSTRUCTOR_ENABLED, S.PHOTO_CONSTRUCTOR_ENABLED, S.PROMPT_WEBAPP_URL,
+        S.AVATAR_CONSTRUCTOR_ENABLED, S.PHOTO_CONSTRUCTOR_ENABLED,
+        S.ENHANCE_CONSTRUCTOR_ENABLED, S.PROMPT_WEBAPP_URL,
     )
     S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
     try:
@@ -680,17 +776,19 @@ def test_block_24t2_features_payload_reflects_all_four_flags():
         S.MIDJOURNEY_CONSTRUCTOR_ENABLED = True
         S.AVATAR_CONSTRUCTOR_ENABLED = False
         S.PHOTO_CONSTRUCTOR_ENABLED = True
+        S.ENHANCE_CONSTRUCTOR_ENABLED = True
         url = S.get_prompt_webapp_url(1)
         assert "&features=" in url, f"24t2.1 features всегда проброшены (не гейтятся видео-флагом): {url}"
         import base64 as b64, json as js
         raw = url.split("&features=", 1)[1].split("&", 1)[0]
         decoded = js.loads(b64.urlsafe_b64decode(raw.encode()).decode())
-        assert decoded == {"video": False, "midjourney": True, "avatar": False, "photo": True}, (
+        assert decoded == {"video": False, "midjourney": True, "avatar": False, "photo": True, "enhance": True}, (
             f"24t2.2 значения соответствуют реальным флагам: {decoded}"
         )
     finally:
         (S.VIDEO_CONSTRUCTOR_ENABLED, S.MIDJOURNEY_CONSTRUCTOR_ENABLED,
-         S.AVATAR_CONSTRUCTOR_ENABLED, S.PHOTO_CONSTRUCTOR_ENABLED, S.PROMPT_WEBAPP_URL) = _orig
+         S.AVATAR_CONSTRUCTOR_ENABLED, S.PHOTO_CONSTRUCTOR_ENABLED,
+         S.ENHANCE_CONSTRUCTOR_ENABLED, S.PROMPT_WEBAPP_URL) = _orig
 
 
 def _decode_prefill(url):
@@ -794,6 +892,11 @@ def test_block_24x_library_entry_points_get_explicit_tab_library():
     # переключает дефолт на «Создать» — значит КАЖДЫЙ существующий вход
     # «Открыть библиотеку»/«Библиотека стилей» обязан получить явный
     # &tab=library, иначе кнопка перестанет открывать то, что называет.
+    #
+    # Единственное намеренное исключение (docs/specs/2026-08-14_menu_
+    # simplification_and_enhance_constructor.md) — _prompt_library_button:
+    # она стала единственным входом во ВЕСЬ хаб (не только каталог), поэтому
+    # НЕ форсирует tab, см. отдельную проверку 24x.7 ниже.
     _orig_url = S.PROMPT_WEBAPP_URL
     S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
     try:
@@ -820,9 +923,9 @@ def test_block_24x_library_entry_points_get_explicit_tab_library():
             f"24x.3 persistent_menu_kb библиотека: {lib_btn.web_app.url if lib_btn.web_app else None}"
         )
 
-        # result_actions_kb — «📚 Библиотека стилей» под результатом генерации.
+        # result_actions_kb — библиотечная кнопка (MENU_BTN_LIBRARY) под результатом генерации.
         result_kb = S.result_actions_kb(uid)
-        result_btn = [b for row in result_kb.inline_keyboard for b in row if b.text == "📚 Библиотека стилей"][0]
+        result_btn = [b for row in result_kb.inline_keyboard for b in row if b.text == S.MENU_BTN_LIBRARY][0]
         assert result_btn.web_app is not None and "&tab=library" in result_btn.web_app.url, (
             f"24x.4 result_actions_kb библиотека: {result_btn.web_app.url if result_btn.web_app else None}"
         )
@@ -841,5 +944,14 @@ def test_block_24x_library_entry_points_get_explicit_tab_library():
         assert "&tab=video_constructor" in video_url and "&tab=library" not in video_url, (
             f"24x.6 конструктор видео не получает library вместо своего таба: {video_url}"
         )
+
+        # _prompt_library_button — единственный вход во весь хаб (main_menu_kb),
+        # НЕ форсирует &tab=library, в отличие от всех точек выше.
+        lib_button = S._prompt_library_button(uid)
+        assert lib_button.web_app is not None and "&tab=library" not in lib_button.web_app.url, (
+            f"24x.7 _prompt_library_button НЕ форсирует tab=library (единственный вход в весь хаб): "
+            f"{lib_button.web_app.url if lib_button.web_app else None}"
+        )
+        assert lib_button.text == S.MENU_BTN_LIBRARY, f"24x.8 текст кнопки — MENU_BTN_LIBRARY: {lib_button.text}"
     finally:
         S.PROMPT_WEBAPP_URL = _orig_url

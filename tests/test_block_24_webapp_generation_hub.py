@@ -33,7 +33,9 @@ def test_block_24_flag_off_declines_payload():
 
 def test_block_24b_full_payload_builds_state_and_confirmation_card():
     _orig = S.VIDEO_CONSTRUCTOR_ENABLED
+    _orig_url = S.PROMPT_WEBAPP_URL
     S.VIDEO_CONSTRUCTOR_ENABLED = True
+    S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
     try:
         update, context, message = make_webapp_update_context()
         refs = ["https://i.ibb.co/vid/1.jpg", "https://i.ibb.co/vid/2.jpg"]
@@ -69,11 +71,14 @@ def test_block_24b_full_payload_builds_state_and_confirmation_card():
         launch_btn = rows[0][0]
         assert launch_btn.text == "🚀 Запустить видео", f"24b.12 кнопка запуска — дословно текст video_kb: {launch_btn.text!r}"
         assert launch_btn.callback_data == "video_start", "24b.13 переиспользует существующий коллбэк, не новый биллинг-путь"
-        restart_btn = rows[1][0]
-        assert restart_btn.text == "🔁 Начать заново", "24b.14 кнопка сброса — не «Изменить» (нет префилла в MVP)"
-        assert restart_btn.web_app is not None, "24b.15 сброс снова открывает конструктор в вебаппе"
+        edit_btn = rows[1][0]
+        assert edit_btn.text == "✏️ Изменить", f"24b.14 кнопка правки с сохранением черновика (Full, prefill): {edit_btn.text!r}"
+        assert edit_btn.web_app is not None and "prefill=" in edit_btn.web_app.url, (
+            f"24b.15 открывает конструктор с префиллом текущих настроек: {edit_btn.web_app.url if edit_btn.web_app else None}"
+        )
     finally:
         S.VIDEO_CONSTRUCTOR_ENABLED = _orig
+        S.PROMPT_WEBAPP_URL = _orig_url
 
 
 def test_block_24c_disabled_model_falls_back_with_warning():
@@ -542,3 +547,97 @@ def test_block_24t2_features_payload_reflects_all_four_flags():
     finally:
         (S.VIDEO_CONSTRUCTOR_ENABLED, S.MIDJOURNEY_CONSTRUCTOR_ENABLED,
          S.AVATAR_CONSTRUCTOR_ENABLED, S.PHOTO_CONSTRUCTOR_ENABLED, S.PROMPT_WEBAPP_URL) = _orig
+
+
+def _decode_prefill(url):
+    import base64 as b64, json as js
+    raw = url.split("&prefill=", 1)[1].split("&", 1)[0]
+    return js.loads(b64.urlsafe_b64decode(raw.encode()).decode())
+
+
+def test_block_24u_build_generation_prefill_roundtrips_all_four_products():
+    st = S.UserState()
+    st.video_model = "seedance2"
+    st.video_aspect_ratio = "9:16"
+    st.video_mode = "480p"
+    st.video_duration = 10
+    st.video_face_grid = True
+    st.video_prompt = "кино"
+    S.set_video_image_urls(st, ["https://i.ibb.co/v/1.jpg"])
+    video_pf = S.build_generation_prefill("video", st)
+    assert video_pf["video_model"] == "seedance2" and video_pf["aspect"] == "9:16"
+    assert video_pf["quality"] == "fast", f"24u.1 480p -> quality fast: {video_pf}"
+    assert video_pf["duration"] == 10 and video_pf["face_grid"] is True
+    assert video_pf["description"] == "кино" and video_pf["refs"] == ["https://i.ibb.co/v/1.jpg"]
+
+    st2 = S.UserState()
+    st2.mj_prompt = "девушка"
+    st2.mj_reference = "https://i.ibb.co/m/1.jpg"
+    mj_pf = S.build_generation_prefill("midjourney", st2)
+    assert mj_pf == {"product": "midjourney", "description": "девушка", "refs": ["https://i.ibb.co/m/1.jpg"]}
+
+    st3 = S.UserState()
+    st3.pending_avatar_kind = "child"
+    st3.avatar_photos = ["https://i.ibb.co/a/1.jpg"]
+    av_pf = S.build_generation_prefill("avatar", st3)
+    assert av_pf == {"product": "avatar", "avatar_type": "child", "refs": ["https://i.ibb.co/a/1.jpg"]}
+
+    st4 = S.UserState()
+    st4.prompt = "кот"
+    st4.references = ["https://i.ibb.co/p/1.jpg"]
+    st4.image_model = "gemini"
+    ph_pf = S.build_generation_prefill("photo", st4)
+    assert ph_pf == {"product": "photo", "description": "кот", "refs": ["https://i.ibb.co/p/1.jpg"], "image_model": "gemini"}
+
+
+def test_block_24v_library_video_style_redirects_to_constructor_with_prefill():
+    _orig_flag = S.VIDEO_CONSTRUCTOR_ENABLED
+    _orig_url = S.PROMPT_WEBAPP_URL
+    S.VIDEO_CONSTRUCTOR_ENABLED = True
+    S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
+    try:
+        update, context, message = make_webapp_update_context()
+        applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "set_video_prompt",
+            "title": "Кино-стиль",
+            "prompt": "cinematic dance video",
+        }))
+        assert applied is True, "24v.1 payload применён"
+        assert len(message.reply_text.await_args_list) == 1, (
+            "24v.2 ОДНО сообщение с кнопкой конструктора, не старая двухсообщенческая чат-панель"
+        )
+        text = message.reply_text.await_args_list[0].args[0]
+        assert "Кино-стиль" in text, f"24v.3 название стиля в сообщении: {text!r}"
+        kb = message.reply_text.await_args_list[0].kwargs.get("reply_markup")
+        btn = kb.inline_keyboard[0][0]
+        assert btn.web_app is not None and "tab=video_constructor" in btn.web_app.url, (
+            f"24v.4 ведёт в конструктор видео: {btn.web_app.url if btn.web_app else None}"
+        )
+        prefill = _decode_prefill(btn.web_app.url)
+        assert prefill["description"] == "cinematic dance video", (
+            f"24v.5 промт стиля предзаполнен в конструкторе: {prefill}"
+        )
+    finally:
+        S.VIDEO_CONSTRUCTOR_ENABLED = _orig_flag
+        S.PROMPT_WEBAPP_URL = _orig_url
+
+
+def test_block_24w_library_video_style_unchanged_when_flag_off():
+    _orig_flag = S.VIDEO_CONSTRUCTOR_ENABLED
+    S.VIDEO_CONSTRUCTOR_ENABLED = False
+    try:
+        update, context, message = make_webapp_update_context()
+        asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "set_video_prompt",
+            "title": "Кино-стиль",
+            "prompt": "cinematic dance video",
+        }))
+        assert len(message.reply_text.await_args_list) == 2, (
+            "24w.1 kill-switch выключен — старая двухсообщенческая чат-панель без регрессий"
+        )
+        second_kb = message.reply_text.await_args_list[1].kwargs.get("reply_markup")
+        assert second_kb is not None and any(
+            "Запустить видео" in b.text for row in second_kb.inline_keyboard for b in row
+        ), "24w.2 второе сообщение — обычная video_kb-панель"
+    finally:
+        S.VIDEO_CONSTRUCTOR_ENABLED = _orig_flag

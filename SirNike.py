@@ -4176,6 +4176,67 @@ async def apply_webapp_board_style_analyze_payload(update: Update, context: Cont
     return True
 
 
+def _video_quality_label_from_mode(mode: str) -> str:
+    """Обратная операция к резолву качества в _apply_webapp_generation_video
+    (quality:"fast" -> mode="480p", если модель его поддерживает, иначе
+    "pro" -> 720p) — нужна для префилла «✏️ Изменить», чтобы конструктор
+    открылся с уже выбранным тумблером, а не всегда с дефолтным Pro."""
+    return "fast" if mode == "480p" else "pro"
+
+
+def build_generation_prefill(product: str, state: "UserState") -> dict:
+    """Хаб генерации в вебаппе — Full, раздел 6 спеки
+    (docs/specs/2026-08-13_webapp_generation_hub_navigation_full.md):
+    «✏️ Изменить» с сохранением черновика. Сериализует текущий UserState в
+    ТУ ЖЕ форму полей, что вебапп сам присылает в start_generation/sg —
+    симметрично, чтобы конструктор мог просто заполнить свои инпуты этими
+    значениями, без отдельного формата "только для чтения"."""
+    if product == "video":
+        model = get_video_model(state)
+        return {
+            "product": "video",
+            "video_model": model,
+            "aspect": getattr(state, "video_aspect_ratio", "16:9"),
+            "quality": _video_quality_label_from_mode(get_selected_seedance_mode(state)),
+            "duration": get_selected_seedance_duration(state),
+            "face_grid": get_face_grid(state) if video_model_uses_face_grid(model) else False,
+            "description": (state.video_prompt or "").strip(),
+            "refs": get_video_image_urls(state),
+        }
+    if product == "midjourney":
+        return {
+            "product": "midjourney",
+            "description": (state.mj_prompt or "").strip(),
+            "refs": [state.mj_reference] if state.mj_reference else [],
+        }
+    if product == "avatar":
+        return {
+            "product": "avatar",
+            "avatar_type": state.pending_avatar_kind or "female",
+            "refs": list(state.avatar_photos),
+        }
+    if product == "photo":
+        return {
+            "product": "photo",
+            "description": (state.prompt or "").strip(),
+            "refs": list(state.references),
+            "image_model": state.image_model,
+        }
+    return {}
+
+
+def constructor_prefill_url(user_id: int, tab: str, product: str, state: "UserState") -> str:
+    base = get_prompt_webapp_url(user_id)
+    if not base:
+        return ""
+    try:
+        prefill_raw = json.dumps(build_generation_prefill(product, state), ensure_ascii=False, separators=(",", ":"))
+        return base + f"&tab={tab}&prefill=" + base64.urlsafe_b64encode(prefill_raw.encode()).decode()
+    except Exception as e:
+        logger.warning("Failed to encode generation prefill for webapp URL: %s", e)
+        return base + f"&tab={tab}"
+
+
 def video_constructor_kb(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
         InlineKeyboardButton(
@@ -4403,8 +4464,8 @@ async def _apply_webapp_generation_video(update: Update, context: ContextTypes.D
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🚀 Запустить видео", callback_data="video_start")],
         [InlineKeyboardButton(
-            "🔁 Начать заново",
-            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=video_constructor"),
+            "✏️ Изменить",
+            web_app=WebAppInfo(url=constructor_prefill_url(user_id, "video_constructor", "video", state)),
         )],
     ])
     await update.effective_message.reply_text(confirmation_text, reply_markup=kb)
@@ -4464,6 +4525,10 @@ async def _apply_webapp_generation_midjourney(update: Update, context: ContextTy
     )
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🚀 Сгенерировать", callback_data="mj_generate")],
+        [InlineKeyboardButton(
+            "✏️ Изменить",
+            web_app=WebAppInfo(url=constructor_prefill_url(user_id, "midjourney_constructor", "midjourney", state)),
+        )],
     ])
     await update.effective_message.reply_text(confirmation_text, reply_markup=kb)
     return True
@@ -4483,6 +4548,7 @@ async def _apply_webapp_generation_avatar(update: Update, context: ContextTypes.
         )
         return True
 
+    user_id = update.effective_user.id
     state = get_or_init_state(context)
     deactivate_video_session(state)
     state.prompt = AVATAR_REFSHEET_PROMPT
@@ -4517,6 +4583,10 @@ async def _apply_webapp_generation_avatar(update: Update, context: ContextTypes.
         [InlineKeyboardButton(
             f"🚀 Сгенерировать аватар ({len(state.avatar_photos)} фото)",
             callback_data="avatar_gen_start",
+        )],
+        [InlineKeyboardButton(
+            "✏️ Изменить",
+            web_app=WebAppInfo(url=constructor_prefill_url(user_id, "avatar_constructor", "avatar", state)),
         )],
     ])
     await update.effective_message.reply_text(confirmation_text, reply_markup=kb)
@@ -4580,6 +4650,10 @@ async def _apply_webapp_generation_photo(update: Update, context: ContextTypes.D
     )
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🚀 Запустить генерацию", callback_data="generate")],
+        [InlineKeyboardButton(
+            "✏️ Изменить",
+            web_app=WebAppInfo(url=constructor_prefill_url(user_id, "photo_constructor", "photo", state)),
+        )],
     ])
     await update.effective_message.reply_text(confirmation_text, reply_markup=kb)
     return True
@@ -4766,13 +4840,29 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
 
     if update.effective_message:
         if action in {"set_video_prompt", "set_video_prompt_ref"}:
+            user_id_for_kb = update.effective_user.id if update.effective_user else None
+            # Хаб генерации, раздел 4.1 (docs/specs/2026-08-13_webapp_generation_hub_navigation_full.md):
+            # «Использовать» на видео-стиле открывает Конструктор с уже
+            # подставленным описанием, а не сегодняшнюю чат-панель — GPT
+            # Image-стилизация (image_prompt) не переносим в эту версию
+            # Конструктора (там нет полей для неё), поэтому в этом одном
+            # случае оставляем старый чат-путь без изменений.
+            if VIDEO_CONSTRUCTOR_ENABLED and PROMPT_WEBAPP_URL and not image_prompt and user_id_for_kb is not None:
+                await update.effective_message.reply_text(
+                    style_applied_message(title, item, "video", user_note=user_note) + "\n"
+                    "Донастрой в конструкторе и запускай видео.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                        "🎬 Открыть конструктор",
+                        web_app=WebAppInfo(url=constructor_prefill_url(user_id_for_kb, "video_constructor", "video", state)),
+                    )]]),
+                )
+                return True
             hint = "Теперь отправь фото и запускай видео."
             if image_prompt:
                 hint = (
                     "Теперь отправь фото и запускай видео.\n"
                     "💡 Бот сначала стилизует фото через GPT Image, затем сгенерит видео."
                 )
-            user_id_for_kb = update.effective_user.id if update.effective_user else None
             await update.effective_message.reply_text(
                 style_applied_message(title, item, "video", user_note=user_note) + "\n" + hint,
                 reply_markup=persistent_menu_kb(user_id_for_kb),

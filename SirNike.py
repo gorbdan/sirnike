@@ -4147,6 +4147,24 @@ def video_constructor_kb(user_id: int) -> InlineKeyboardMarkup:
     ]])
 
 
+def midjourney_constructor_kb(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "🎨 Открыть конструктор",
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=midjourney_constructor"),
+        ),
+    ]])
+
+
+def avatar_constructor_kb(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "🪄 Открыть конструктор",
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=avatar_constructor"),
+        ),
+    ]])
+
+
 # ----------------------------------------------------------------------------
 # Живой прогресс генерации в вебаппе (docs/specs/2026-08-13_webapp_generation_hub_full.md)
 # НЕ очередь (в отличие от studio_worker.py) — тонкое write-only зеркало:
@@ -6114,6 +6132,16 @@ async def _cb_avatar_use(update, context, query, user):
 
 
 async def _cb_avatar_gen_refsheet(update, context, query, user):
+    # Хаб генерации в вебаппе (docs/specs/2026-08-13_webapp_generation_hub.md) —
+    # тот же kill-switch-паттерн, что у видео: выключен по умолчанию, ничего
+    # не меняется, пока Аня не включит флаг.
+    if AVATAR_CONSTRUCTOR_ENABLED and PROMPT_WEBAPP_URL:
+        await query.message.reply_text(
+            "Создаём аватар 🪄\n\n"
+            "Выбери тип и загрузи фото в конструкторе — и возвращайся сюда за запуском.",
+            reply_markup=avatar_constructor_kb(user.id),
+        )
+        return
     # Фото принимаются сразу, до выбора типа — порядок действий (сначала
     # фото или сначала тип) юзеру не важен, и фото больше не улетают в
     # обычный фото-черновик, если тип ещё не выбран (макет утверждён
@@ -6551,6 +6579,15 @@ def mj_draft_kb(state: UserState) -> InlineKeyboardMarkup:
 async def _cb_menu_midjourney(update, context, query, user):
     if not MIDJOURNEY_ENABLED:
         await query.message.reply_text("Midjourney пока недоступен.", reply_markup=main_menu_kb())
+        return
+    # Хаб генерации в вебаппе — тот же kill-switch-паттерн, что у видео/
+    # аватара: выключен по умолчанию, ничего не меняется, пока флаг не включён.
+    if MIDJOURNEY_CONSTRUCTOR_ENABLED and PROMPT_WEBAPP_URL:
+        await query.message.reply_text(
+            "🎨 Midjourney\n\n"
+            "Опиши, что хочешь сгенерировать, в конструкторе — и возвращайся сюда за запуском.",
+            reply_markup=midjourney_constructor_kb(user.id),
+        )
         return
     state = get_or_init_state(context)
     # deactivate_video_session гасит video/motion/mj — вызываем ДО того, как

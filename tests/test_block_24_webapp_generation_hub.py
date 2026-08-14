@@ -338,3 +338,73 @@ def test_block_24i_cfg_appended_to_webapp_url_only_when_enabled():
     finally:
         S.VIDEO_CONSTRUCTOR_ENABLED = _orig_flag
         S.PROMPT_WEBAPP_URL = _orig_url
+
+
+def test_block_24j_midjourney_entry_routes_to_constructor_when_enabled():
+    _orig_flag = S.MIDJOURNEY_CONSTRUCTOR_ENABLED
+    _orig_mj = S.MIDJOURNEY_ENABLED
+    _orig_url = S.PROMPT_WEBAPP_URL
+    S.MIDJOURNEY_CONSTRUCTOR_ENABLED = True
+    S.MIDJOURNEY_ENABLED = True
+    S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
+    try:
+        update, context, query = make_update_context("menu_midjourney")
+        user = types.SimpleNamespace(id=901, username="test")
+        asyncio.run(S._cb_menu_midjourney(update, context, query, user))
+        kb = query.message.reply_text.await_args_list[0].kwargs.get("reply_markup")
+        btn = kb.inline_keyboard[0][0]
+        assert btn.web_app is not None, "24j.1 сразу кнопка вебаппа, не текстовый флоу"
+        assert "tab=midjourney_constructor" in btn.web_app.url, f"24j.2 URL нужного экрана: {btn.web_app.url}"
+    finally:
+        S.MIDJOURNEY_CONSTRUCTOR_ENABLED = _orig_flag
+        S.MIDJOURNEY_ENABLED = _orig_mj
+        S.PROMPT_WEBAPP_URL = _orig_url
+
+
+def test_block_24k_midjourney_entry_unchanged_when_flag_off():
+    _orig_flag = S.MIDJOURNEY_CONSTRUCTOR_ENABLED
+    _orig_mj = S.MIDJOURNEY_ENABLED
+    S.MIDJOURNEY_CONSTRUCTOR_ENABLED = False
+    S.MIDJOURNEY_ENABLED = True
+    try:
+        update, context, query = make_update_context("menu_midjourney")
+        user = types.SimpleNamespace(id=902, username="test")
+        asyncio.run(S._cb_menu_midjourney(update, context, query, user))
+        text = query.message.reply_text.await_args_list[0].args[0]
+        assert "Опиши, что хочешь сгенерировать, одним текстовым сообщением" in text, (
+            f"24k.1 kill-switch выключен — старый текстовый флоу без регрессий: {text!r}"
+        )
+    finally:
+        S.MIDJOURNEY_CONSTRUCTOR_ENABLED = _orig_flag
+        S.MIDJOURNEY_ENABLED = _orig_mj
+
+
+def test_block_24l_avatar_entry_routes_to_constructor_when_enabled():
+    _orig_flag = S.AVATAR_CONSTRUCTOR_ENABLED
+    _orig_url = S.PROMPT_WEBAPP_URL
+    S.AVATAR_CONSTRUCTOR_ENABLED = True
+    S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
+    try:
+        update, context, query = make_update_context("avatar_gen_refsheet")
+        user = types.SimpleNamespace(id=903, username="test")
+        asyncio.run(S._cb_avatar_gen_refsheet(update, context, query, user))
+        kb = query.message.reply_text.await_args_list[0].kwargs.get("reply_markup")
+        btn = kb.inline_keyboard[0][0]
+        assert btn.web_app is not None, "24l.1 сразу кнопка вебаппа, не сбор фото текстом"
+        assert "tab=avatar_constructor" in btn.web_app.url, f"24l.2 URL нужного экрана: {btn.web_app.url}"
+    finally:
+        S.AVATAR_CONSTRUCTOR_ENABLED = _orig_flag
+        S.PROMPT_WEBAPP_URL = _orig_url
+
+
+def test_block_24m_avatar_entry_unchanged_when_flag_off():
+    _orig_flag = S.AVATAR_CONSTRUCTOR_ENABLED
+    S.AVATAR_CONSTRUCTOR_ENABLED = False
+    try:
+        update, context, query = make_update_context("avatar_gen_refsheet")
+        user = types.SimpleNamespace(id=904, username="test")
+        asyncio.run(S._cb_avatar_gen_refsheet(update, context, query, user))
+        text = query.message.reply_text.await_args_list[0].args[0]
+        assert "Пришли 3–6 фото" in text, f"24m.1 kill-switch выключен — старый сбор фото без регрессий: {text!r}"
+    finally:
+        S.AVATAR_CONSTRUCTOR_ENABLED = _orig_flag

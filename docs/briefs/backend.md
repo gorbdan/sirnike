@@ -4,6 +4,23 @@
 
 ## Очередь
 
+- [ ] P2 · Проверить/расширить права `GITHUB_TOKEN` на репо `gorbdan/_webapp` —
+      **не код, действие Ани в панели GitHub**. `_push_top_styles_to_webapp_repo()`
+      (docs/specs/2026-07-16_top_styles_stats_feed.md, коммит `609825f`, на
+      main с 2026-07-16) должна публиковать `top_styles.json` в репо вебаппа
+      раз в сутки — но файл там ни разу не появился за месяц. Вероятная
+      причина: `GITHUB_TOKEN` выдан только под `GITHUB_REPO`=`gorbdan/sirnike`,
+      без прав записи в `WEBAPP_GITHUB_REPO`=`gorbdan/_webapp` (риск был
+      явно задокументирован в config.py при заведении токена, но никогда не
+      проверен вручную). Диагностика добавлена 2026-08-14: `log_provider_config()`
+      теперь предупреждает при старте, если токена/репо нет вовсе; HTTP-ошибки
+      GitHub (403/404/401) теперь логируются с кодом+телом ответа вместо
+      тихого проглатывания. Критерий: после следующего суточного цикла в
+      логах бота есть строка `top_styles.json pushed to gorbdan/_webapp
+      (N styles)` — если вместо неё WARNING с кодом 403, токену нужен
+      write-доступ и к этому репо тоже (GitHub PAT → Settings → тот же
+      токен → добавить репозиторий в scope, или новый fine-grained токен на
+      оба репо).
 - [ ] P2 · Явный `&tab=library` на всех сегодняшних вызовах `get_prompt_webapp_url(...)`
       без `tab` — БЛОКИРУЕТСЯ фронтом (ждёт, пока вебапп реально сделает
       «Создать» дефолтным экраном, см. [docs/specs/2026-08-13_webapp_generation_hub_navigation_full.md](../specs/2026-08-13_webapp_generation_hub_navigation_full.md),

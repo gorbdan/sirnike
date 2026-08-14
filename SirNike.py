@@ -8840,6 +8840,7 @@ def _push_top_styles_to_webapp_repo(days: int = 30, limit: int = 10) -> None:
     import base64 as _b64
 
     def _gh(method, path, body=None):
+        import urllib.error as _err
         url = f"https://api.github.com{path}"
         data = json.dumps(body).encode() if body else None
         req = _req.Request(url, data=data, method=method)
@@ -8851,6 +8852,18 @@ def _push_top_styles_to_webapp_repo(days: int = 30, limit: int = 10) -> None:
         try:
             with _req.urlopen(req, timeout=15) as resp:
                 return json.loads(resp.read())
+        except _err.HTTPError as e:
+            # Логируем код и тело ответа GitHub — иначе "403 недостаточно прав
+            # у GITHUB_TOKEN на WEBAPP_GITHUB_REPO" (задокументированный
+            # риск в config.py, ни разу не подтверждённый вручную) неотличим
+            # в логах от "404 репо не существует" или "401 токен протух" —
+            # публикация тихо не работает месяцами без единой зацепки, почему.
+            try:
+                err_body = e.read().decode("utf-8", errors="replace")[:300]
+            except Exception:
+                err_body = ""
+            logger.warning("GitHub top_styles push HTTP %s %s %s: %s", e.code, method, path, err_body)
+            return None
         except Exception as e:
             logger.warning("GitHub top_styles push error %s %s: %s", method, path, e)
             return None
@@ -10872,6 +10885,18 @@ def log_provider_config() -> None:
         logger.warning("SEEDANCE25_ENABLED=1, но EVOLINK_API_KEY пуст — Seedance 2.5 будет падать (ВСЕГДА EvoLink)")
     if not ZVENO_API_KEY:
         logger.warning("ZVENO_API_KEY пуст — видео (Seedance/Kling/Veo/Wan) недоступно вне зависимости от AI_PROVIDER")
+    if not (GITHUB_TOKEN and WEBAPP_GITHUB_REPO):
+        # Фид «Топ-стили» (docs/specs/2026-07-16_top_styles_stats_feed.md) —
+        # без токена/репо _push_top_styles_to_webapp_repo() молча ничего не
+        # делает каждый день, раздел в вебаппе никогда не появится, и раньше
+        # это никак не было видно в логах (сама top_styles.json не появилась
+        # в репо вебаппа ни разу за месяц — обнаружено при разборе брифа
+        # фронта 2026-08-14). Не хватает токена — не паникуем (может, фича
+        # ещё не нужна), но факт отсутствия канала теперь виден при старте.
+        logger.warning(
+            "GITHUB_TOKEN/WEBAPP_GITHUB_REPO не заданы — top_styles.json (раздел "
+            "«Топ-стили» в вебаппе) никогда не публикуется"
+        )
 
 
 def main():

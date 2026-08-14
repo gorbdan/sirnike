@@ -141,6 +141,7 @@ from config import (
     VIDEO_CONSTRUCTOR_ENABLED,
     MIDJOURNEY_CONSTRUCTOR_ENABLED,
     AVATAR_CONSTRUCTOR_ENABLED,
+    PHOTO_CONSTRUCTOR_ENABLED,
     GEN_PROGRESS_ENABLED,
     GEN_PROGRESS_API_BASE,
     GEN_PROGRESS_SECRET,
@@ -1463,8 +1464,15 @@ def main_menu_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
 
 
 def photo_menu_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
+    if PHOTO_CONSTRUCTOR_ENABLED and PROMPT_WEBAPP_URL and user_id is not None:
+        generate_button = InlineKeyboardButton(
+            "✨ Сгенерировать фото",
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=photo_constructor"),
+        )
+    else:
+        generate_button = InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")
     rows = [
-        [InlineKeyboardButton("✨ Сгенерировать фото", callback_data="generate")],
+        [generate_button],
         [
             InlineKeyboardButton("🖼️ Улучшить фото", callback_data="enhance_photo"),
             InlineKeyboardButton("🪄 Аватар", callback_data="avatar_actions"),
@@ -3289,6 +3297,14 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return True
 
     if text == MENU_BTN_PHOTO:
+        if PHOTO_CONSTRUCTOR_ENABLED and PROMPT_WEBAPP_URL:
+            await update.message.reply_text(
+                "✨ Сгенерировать фото\n\n"
+                "Опиши, что хочешь получить, и добавь фото в конструкторе — "
+                "и возвращайся сюда за запуском.",
+                reply_markup=photo_constructor_kb(user.id),
+            )
+            return True
         state = get_or_init_state(context)
         deactivate_video_session(state)
         await update.message.reply_text(
@@ -4165,6 +4181,15 @@ def avatar_constructor_kb(user_id: int) -> InlineKeyboardMarkup:
     ]])
 
 
+def photo_constructor_kb(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "✨ Открыть конструктор",
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=photo_constructor"),
+        ),
+    ]])
+
+
 # ----------------------------------------------------------------------------
 # Живой прогресс генерации в вебаппе (docs/specs/2026-08-13_webapp_generation_hub_full.md)
 # НЕ очередь (в отличие от studio_worker.py) — тонкое write-only зеркало:
@@ -4245,6 +4270,8 @@ async def apply_webapp_generation_payload(update: Update, context: ContextTypes.
         return await _apply_webapp_generation_midjourney(update, context, payload)
     if product == "avatar":
         return await _apply_webapp_generation_avatar(update, context, payload)
+    if product == "photo":
+        return await _apply_webapp_generation_photo(update, context, payload)
     await update.effective_message.reply_text(
         "Этот раздел конструктора пока не поддержан ботом — используй чат для этого продукта."
     )
@@ -4469,6 +4496,68 @@ async def _apply_webapp_generation_avatar(update: Update, context: ContextTypes.
             f"🚀 Сгенерировать аватар ({len(state.avatar_photos)} фото)",
             callback_data="avatar_gen_start",
         )],
+    ])
+    await update.effective_message.reply_text(confirmation_text, reply_markup=kb)
+    return True
+
+
+async def _apply_webapp_generation_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
+    """product=photo — обычная фото-генерация (не Midjourney, не аватар,
+    не библиотечный стиль). Вебапп собирает описание + референсы + модель
+    (Gemini/GPT-5) одним экраном, бот резолвит в те же поля, что заполняет
+    сегодняшний текстовый флоу (MENU_BTN_PHOTO/photo_draft_kb: state.prompt/
+    state.references/state.image_model), и показывает карточку
+    подтверждения с кнопкой `generate` (существующий коллбэк
+    `_cb_generate`/`run_generation`) — сам запуск/списание/доставка
+    результата НЕ меняются."""
+    if not update.effective_message or not update.effective_user:
+        return True
+    if not PHOTO_CONSTRUCTOR_ENABLED:
+        await update.effective_message.reply_text(
+            "Эта функция сейчас недоступна. Попробуй через обычное меню «✨ Сгенерировать фото»."
+        )
+        return True
+
+    user_id = update.effective_user.id
+    state = get_or_init_state(context)
+    deactivate_video_session(state)
+    state.generating_avatar = False
+    state.style_extract = False
+
+    description = str(payload.get("description") or payload.get("p") or "").strip()
+    state.prompt = description
+    state.image_prompt = ""
+
+    image_model = str(payload.get("image_model") or payload.get("im") or "").strip().lower()
+    if image_model == "gpt5" and GPT5_IMAGE_ENABLED:
+        state.image_model = "gpt5"
+    else:
+        state.image_model = "gemini"
+
+    refs_raw = payload.get("refs")
+    if refs_raw is None:
+        refs_raw = payload.get("r")
+    refs = [str(u).strip() for u in refs_raw if str(u or "").strip()] if isinstance(refs_raw, list) else []
+    state.references = refs[:8]
+    state.references_updated_at = time.time() if state.references else 0.0
+
+    if not description:
+        await update.effective_message.reply_text(
+            "Нужно описание — вернись в конструктор и напиши, что сгенерировать.",
+            reply_markup=photo_constructor_kb(user_id),
+        )
+        return True
+
+    photo_line = f"Фото: {len(state.references)} шт." if state.references else "Фото: своё не добавлено (возьму аватар, если есть)"
+    model_line = f"Модель: {get_image_model_label(state.image_model)}\n" if GPT5_IMAGE_ENABLED else ""
+    confirmation_text = (
+        "✨ Готово к запуску\n\n"
+        f"Описание: {description}\n"
+        f"{model_line}"
+        f"{photo_line}"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Запустить генерацию", callback_data="generate")],
     ])
     await update.effective_message.reply_text(confirmation_text, reply_markup=kb)
     return True

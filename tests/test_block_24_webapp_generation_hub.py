@@ -408,3 +408,110 @@ def test_block_24m_avatar_entry_unchanged_when_flag_off():
         assert "Пришли 3–6 фото" in text, f"24m.1 kill-switch выключен — старый сбор фото без регрессий: {text!r}"
     finally:
         S.AVATAR_CONSTRUCTOR_ENABLED = _orig_flag
+
+
+def test_block_24n2_photo_flag_off_declines():
+    update, context, message = make_webapp_update_context()
+    applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+        "action": "sg", "pr": "photo", "p": "кот в космосе",
+    }))
+    assert applied is True, "24n2.1 payload распознан"
+    text = message.reply_text.await_args_list[0].args[0]
+    assert "недоступна" in text.lower(), f"24n2.2 честный отказ при выключенном флаге: {text!r}"
+
+
+def test_block_24o2_photo_full_payload_builds_state_and_card():
+    _orig = S.PHOTO_CONSTRUCTOR_ENABLED
+    S.PHOTO_CONSTRUCTOR_ENABLED = True
+    try:
+        update, context, message = make_webapp_update_context()
+        refs = [f"https://i.ibb.co/photo/{i}.jpg" for i in range(2)]
+        applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "sg", "pr": "photo", "p": "кот-космонавт, кинематографично", "refs": refs,
+        }))
+        assert applied is True, "24o2.1 payload применён"
+        state = context.user_data["state"]
+        assert state.prompt == "кот-космонавт, кинематографично", "24o2.2 описание сохранено"
+        assert state.references == refs, f"24o2.3 фото легли в те же поля, что и ручная загрузка: {state.references}"
+        assert state.image_model == "gemini", "24o2.4 дефолт модели — gemini (gpt5 не запрошен)"
+        text = message.reply_text.await_args_list[0].args[0]
+        assert text.startswith("✨ Готово к запуску"), f"24o2.5 карточка подтверждения: {text!r}"
+        kb = message.reply_text.await_args_list[0].kwargs.get("reply_markup")
+        btn = kb.inline_keyboard[0][0]
+        assert btn.text == "🚀 Запустить генерацию" and btn.callback_data == "generate", (
+            f"24o2.6 переиспользует существующий коллбэк запуска: {btn.text!r}/{btn.callback_data!r}"
+        )
+    finally:
+        S.PHOTO_CONSTRUCTOR_ENABLED = _orig
+
+
+def test_block_24p2_photo_gpt5_model_requires_flag():
+    _orig = S.PHOTO_CONSTRUCTOR_ENABLED
+    _orig_gpt5 = S.GPT5_IMAGE_ENABLED
+    S.PHOTO_CONSTRUCTOR_ENABLED = True
+    S.GPT5_IMAGE_ENABLED = False
+    try:
+        update, context, message = make_webapp_update_context()
+        asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "sg", "pr": "photo", "p": "тест", "im": "gpt5",
+        }))
+        state = context.user_data["state"]
+        assert state.image_model == "gemini", (
+            f"24p2.1 gpt5 запрошен, но выключен флагом -> откат на gemini, не крэш: {state.image_model}"
+        )
+    finally:
+        S.PHOTO_CONSTRUCTOR_ENABLED = _orig
+        S.GPT5_IMAGE_ENABLED = _orig_gpt5
+
+
+def test_block_24q2_photo_empty_description_declines():
+    _orig = S.PHOTO_CONSTRUCTOR_ENABLED
+    S.PHOTO_CONSTRUCTOR_ENABLED = True
+    try:
+        update, context, message = make_webapp_update_context()
+        asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {"action": "sg", "pr": "photo"}))
+        text = message.reply_text.await_args_list[0].args[0]
+        assert "описание" in text.lower(), f"24q2.1 пустое описание — честный отказ: {text!r}"
+    finally:
+        S.PHOTO_CONSTRUCTOR_ENABLED = _orig
+
+
+def test_block_24r2_photo_entry_points_route_to_constructor_when_enabled():
+    _orig_flag = S.PHOTO_CONSTRUCTOR_ENABLED
+    _orig_url = S.PROMPT_WEBAPP_URL
+    S.PHOTO_CONSTRUCTOR_ENABLED = True
+    S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
+    try:
+        # Reply-вход
+        update, context, message = make_webapp_update_context()
+        update.message = message
+        applied = asyncio.run(S.handle_menu_button(update, context, S.MENU_BTN_PHOTO))
+        assert applied is True, "24r2.1 кнопка меню распознана"
+        kb = message.reply_text.await_args_list[0].kwargs.get("reply_markup")
+        btn = kb.inline_keyboard[0][0]
+        assert btn.web_app is not None and "tab=photo_constructor" in btn.web_app.url, (
+            f"24r2.2 reply-вход ведёт в конструктор: {btn.web_app.url if btn.web_app else None}"
+        )
+
+        # Инлайн-вход (photo_menu_kb)
+        kb2 = S.photo_menu_kb(905)
+        btn2 = kb2.inline_keyboard[0][0]
+        assert btn2.web_app is not None and "tab=photo_constructor" in btn2.web_app.url, (
+            f"24r2.3 инлайн-вход тоже ведёт в конструктор (оба входа синхронно)"
+        )
+    finally:
+        S.PHOTO_CONSTRUCTOR_ENABLED = _orig_flag
+        S.PROMPT_WEBAPP_URL = _orig_url
+
+
+def test_block_24s2_photo_entry_unchanged_when_flag_off():
+    _orig_flag = S.PHOTO_CONSTRUCTOR_ENABLED
+    S.PHOTO_CONSTRUCTOR_ENABLED = False
+    try:
+        kb = S.photo_menu_kb(906)
+        btn = kb.inline_keyboard[0][0]
+        assert btn.callback_data == "generate" and btn.web_app is None, (
+            "24s2.1 kill-switch выключен — старый коллбэк без регрессий"
+        )
+    finally:
+        S.PHOTO_CONSTRUCTOR_ENABLED = _orig_flag

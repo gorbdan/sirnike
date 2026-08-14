@@ -6,7 +6,7 @@
 
 - [ ] P2 · Явный `&tab=library` на всех сегодняшних вызовах `get_prompt_webapp_url(...)`
       без `tab` — БЛОКИРУЕТСЯ фронтом (ждёт, пока вебапп реально сделает
-      «Создать» дефолтным экраном, см. [docs/specs/2026-08-13_webapp_generation_hub_navigation.md](../specs/2026-08-13_webapp_generation_hub_navigation.md),
+      «Создать» дефолтным экраном, см. [docs/specs/2026-08-13_webapp_generation_hub_navigation_full.md](../specs/2026-08-13_webapp_generation_hub_navigation_full.md),
       раздел 1.4). Полный список мест — 12 вызовов, точные номера строк
       в самой спеке (проверено `grep`, включая обе кнопки «📚 Открыть
       библиотеку», `webapp_open_kb`). Причина: если дефолт вебаппа

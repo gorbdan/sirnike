@@ -8238,6 +8238,15 @@ async def pnl_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "",
         "🎁 Бесплатные генерации",
         f"• Всего: {r['free_total']} · успешных: {r['free_success']}",
+        # Значение из env прода — иначе «откуда халява?» не диагностируется без
+        # доступа к панели BotHost (инцидент 2026-08-14: код списывал везде,
+        # а was_free-события продолжали появляться).
+        (
+            f"• Лимит в конфиге: {FREE_GENERATIONS_PER_DAY}/день ⚠️ ХАЛЯВА ВКЛЮЧЕНА "
+            f"(выключается в BotHost: env FREE_GENERATIONS_PER_DAY=0 + рестарт)"
+            if FREE_GENERATIONS_PER_DAY > 0
+            else "• Лимит в конфиге: 0 — халява выключена (новых was_free-событий быть не должно)"
+        ),
         "",
         "📈 Источники — новые юзеры",
     ]
@@ -9196,6 +9205,17 @@ async def post_init(app: Application):
     refresh_prompt_library()
     queue_worker_task = asyncio.create_task(_queue_worker_supervised(app))
     _cleanup_old_outputs(max_age_days=3)
+    # Явный след в логах, чем реально сконфигурирована халява на этом контейнере —
+    # env живёт в панели BotHost и из кода/репо не виден (инцидент 2026-08-14).
+    if FREE_GENERATIONS_PER_DAY > 0:
+        logger.warning(
+            "FREE_GENERATIONS_PER_DAY=%s — бесплатные генерации ВКЛЮЧЕНЫ для всех юзеров "
+            "(каждому по %s фото/аватар-генераций в день без списания). Если это не задумано — "
+            "поставь FREE_GENERATIONS_PER_DAY=0 в панели BotHost и перезапусти бота.",
+            FREE_GENERATIONS_PER_DAY, FREE_GENERATIONS_PER_DAY,
+        )
+    else:
+        logger.info("FREE_GENERATIONS_PER_DAY=0 — бесплатные генерации выключены")
     asyncio.create_task(_daily_log_push_loop())
     asyncio.create_task(_daily_top_styles_push_loop())
     if STUDIO_ENABLED:

@@ -9036,6 +9036,8 @@ async def run_midjourney_grid(update: Update, context: ContextTypes.DEFAULT_TYPE
     мини-флоу — не GenerationJob/generation_queue (тот контракт «один клик,
     один результат», у Midjourney есть промежуточный выбор варианта)."""
     user = None
+    _progress_id = None
+    _progress_kb = None
     try:
         user = update.effective_user
         reply_target = update.callback_query.message if update.callback_query else update.message
@@ -9097,9 +9099,18 @@ async def run_midjourney_grid(update: Update, context: ContextTypes.DEFAULT_TYPE
         await reply_target.reply_text("Запускаю Midjourney 🎨\nОбычно занимает пару минут.")
         status_msg = await reply_target.reply_text("⏳ Генерирую сетку вариантов…")
 
+        if GEN_PROGRESS_ENABLED:
+            _progress_id = str(uuid.uuid4())
+            if await gen_progress_create(_progress_id, user.id, "midjourney", {"cost": cost}):
+                _progress_kb = gen_progress_kb(user.id, _progress_id, "midjourney")
+                try:
+                    await status_msg.edit_text("⏳ Генерирую сетку вариантов…", reply_markup=_progress_kb)
+                except Exception:
+                    pass
+
         async def _edit_status(text: str) -> None:
             try:
-                await status_msg.edit_text(text)
+                await status_msg.edit_text(text, reply_markup=_progress_kb)
             except Exception:
                 pass
 
@@ -9133,6 +9144,8 @@ async def run_midjourney_grid(update: Update, context: ContextTypes.DEFAULT_TYPE
             # (send_media_group) и сообщение с кнопками — best-effort с
             # ретраями внутри _deliver_mj_grid_and_picker, см. её докстринг.
             await _deliver_mj_grid_and_picker(context, update.effective_chat.id, user.id, grid_urls)
+            if GEN_PROGRESS_ENABLED and _progress_kb is not None:
+                await gen_progress_complete(_progress_id, "done", "Готово!")
             log_generation_event(
                 user_id=user.id, kind="image", status="success", provider="EVOLINK_MIDJOURNEY",
                 cost=cost, was_free=False, references_count=1 if reference else 0,
@@ -9143,6 +9156,8 @@ async def run_midjourney_grid(update: Update, context: ContextTypes.DEFAULT_TYPE
         except BaseException as e:
             logger.exception("Midjourney grid generation failed")
             add_izyminki(user.id, cost)
+            if GEN_PROGRESS_ENABLED and _progress_kb is not None:
+                await gen_progress_complete(_progress_id, "error", "Не получилось")
             log_generation_event(
                 user_id=user.id, kind="image", status="failed", provider="EVOLINK_MIDJOURNEY",
                 cost=cost, was_free=False, references_count=1 if reference else 0,

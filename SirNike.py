@@ -153,6 +153,7 @@ from config import (
     STUDIO_MAX_SCENES,
     STUDIO_POLL_INTERVAL,
     STUDIO_CONCURRENCY,
+    VIDEO_CONSTRUCTOR_ENABLED,
 )
 
 # Видео-провайдер-клиенты (Zveno/EvoLink/MashaGPT/fal.ai) — вынесены из
@@ -1264,7 +1265,7 @@ def generation_failure_user_text(refunded: bool) -> str:
     )
 
 
-def get_prompt_webapp_url(user_id: int = None) -> str:
+def get_prompt_webapp_url(user_id: int = None, include_video_cfg: bool = False) -> str:
     base = str(PROMPT_WEBAPP_URL or "").strip()
     if not base:
         return ""
@@ -1273,32 +1274,247 @@ def get_prompt_webapp_url(user_id: int = None) -> str:
     if user_id is not None:
         bal = get_balance(user_id)
         url += f"&balance={bal}"
+        # include_video_cfg=True (Конструктор видео, docs/specs/
+        # 2026-08-13_webapp_generation_hub.md, п.3) пропускает историю генераций
+        # (`h=`) — нерелевантна Конструктору, а её ~2048-байтный бюджет отдаём
+        # под таблицу моделей/цен `cfg` целиком, вместо того чтобы делить один
+        # бюджет на оба параметра.
+        if not include_video_cfg:
+            try:
+                history = get_generation_history(user_id, limit=10)
+                if history:
+                    # Влезаем в лимит URL (~2048). Раньше при 10 записях весь блок
+                    # истории молча отбрасывался — теперь добираем столько свежих
+                    # записей (от новых к старым), сколько помещается.
+                    budget = 2048 - len(url) - len("&h=")
+                    compact = []
+                    for h in history:
+                        compact.append({
+                            "u": h["image_url"],
+                            "p": (h["prompt"] or "")[:60],
+                            "t": (h["created_at"] or "")[:19],  # без микросекунд — короче
+                        })
+                        raw = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+                        encoded = base64.urlsafe_b64encode(raw.encode()).decode()
+                        if len(encoded) > budget:
+                            compact.pop()
+                            break
+                    if compact:
+                        raw = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+                        encoded = base64.urlsafe_b64encode(raw.encode()).decode()
+                        url += f"&h={encoded}"
+            except Exception as e:
+                logger.warning("Failed to encode history for webapp URL: %s", e)
+    if include_video_cfg:
         try:
-            history = get_generation_history(user_id, limit=10)
-            if history:
-                # Влезаем в лимит URL (~2048). Раньше при 10 записях весь блок
-                # истории молча отбрасывался — теперь добираем столько свежих
-                # записей (от новых к старым), сколько помещается.
-                budget = 2048 - len(url) - len("&h=")
-                compact = []
-                for h in history:
-                    compact.append({
-                        "u": h["image_url"],
-                        "p": (h["prompt"] or "")[:60],
-                        "t": (h["created_at"] or "")[:19],  # без микросекунд — короче
-                    })
-                    raw = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
-                    encoded = base64.urlsafe_b64encode(raw.encode()).decode()
-                    if len(encoded) > budget:
-                        compact.pop()
-                        break
-                if compact:
-                    raw = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
-                    encoded = base64.urlsafe_b64encode(raw.encode()).decode()
-                    url += f"&h={encoded}"
+            cfg_encoded = _encode_webapp_json(get_video_constructor_config())
+            url += f"&cfg={cfg_encoded}"
         except Exception as e:
-            logger.warning("Failed to encode history for webapp URL: %s", e)
+            logger.warning("Failed to encode video constructor cfg for webapp URL: %s", e)
     return url
+
+
+def _encode_webapp_json(data: dict) -> str:
+    """base64url без паддинга JSON'а для передачи вебаппу через query-параметр —
+    общий формат с существующим `h=` (история) в get_prompt_webapp_url выше."""
+    raw = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    return base64.urlsafe_b64encode(raw.encode()).decode()
+
+
+def get_video_aspect_options(model_code: str) -> List[str]:
+    """Допустимые aspect ratio для модели — вынесено в отдельную функцию из
+    инлайн-фильтра в video_kb (та же логика: Veo 3.1/Wan 2.7/Gemini Omni/
+    Seedance 2.5 не поддерживают квадрат и 4:3), чтобы её мог переиспользовать
+    и Конструктор вебаппа (get_video_constructor_config/
+    apply_webapp_generation_payload), не имеющий готового state с моделью на
+    момент валидации формата."""
+    aspects = ["16:9", "9:16", "1:1", "4:3"]
+    if model_code in ("veo31", "wan27", "gemini_omni", "seedance25"):
+        aspects = [a for a in aspects if a not in ("1:1", "4:3")]
+    return aspects
+
+
+# Модели, для которых Конструктор вебаппа/карточка подтверждения показывают
+# бинарный переключатель качества «Pro»/«Fast». НЕ идентично условию в
+# video_kb (там же список другой — включает wan27): Wan 2.7 в Конструкторе
+# сознательно упрощён до одной свободной длительности без выбора качества
+# (фронтенд, constructor.js — durations: {"custom":[min,max]}, prices:
+# {"per_second": N}, quality: [] — уже смёржено в репо вебаппа), Veo 3.1/
+# Gemini Omni физически имеют одно фиксированное качество (get_seedance_mode_
+# options возвращает 1 значение или список нерелевантен). Старая полная
+# панель video_kb эту константу не использует — ноль изменений её поведения.
+VIDEO_QUALITY_TOGGLE_MODELS = ("seedance2", "seedance2_fast", "kling3", "seedance25")
+
+# Чистые лейблы моделей (без суффиксов "(бета)"/"(Google)"/"(Alibaba)" и без
+# эмодзи-бейджа) + отдельный бейдж — контракт cfg вебаппа рендерит их как
+# `${label} ${badge}` (constructor.js, renderVcModelGrid), поэтому бейдж
+# нужен отдельным полем, а не склеенным в get_video_model_label (та строка
+# идёт в карточку подтверждения чата, другой контекст отображения).
+VIDEO_MODEL_CONSTRUCTOR_LABELS = {
+    "seedance2": "Seedance 2",
+    "seedance2_fast": "Seedance 2 Fast",
+    "kling3": "Kling 3.0",
+    "veo31": "Veo 3.1",
+    "wan27": "Wan 2.7",
+    "gemini_omni": "Gemini Omni",
+    "seedance25": "Seedance 2.5",
+}
+VIDEO_MODEL_CONSTRUCTOR_BADGES = {
+    "seedance2": None,
+    "seedance2_fast": None,
+    "kling3": "🆕",
+    "veo31": "🆕",
+    "wan27": "🆕",
+    "gemini_omni": "🆕",
+    "seedance25": "💎",
+}
+
+
+def resolve_webapp_video_quality(model_code: str, quality_value: str) -> Optional[str]:
+    """Конструктор вебаппа сознательно упрощает выбор качества до бинарного
+    «Pro»/«Fast» (контракт `quality`/`q`, docs/specs/
+    2026-08-13_webapp_generation_hub.md) поверх существующих числовых режимов
+    Seedance (480p/720p/1080p, get_seedance_mode_options) — «Pro» = самый
+    качественный доступный режим модели (последний в списке), «Fast» = самый
+    лёгкий (первый). Средний режим (например 720p при 480/720/1080) через
+    Конструктор недостижим — это сознательное упрощение UI, полная панель
+    video_kb по-прежнему даёт доступ ко всем режимам. Пустое значение — не
+    аргумент «пользователь не выбрал», а команда взять ДЕФОЛТ ПРОДУКТА (тот
+    же, что у нового юзера в чате, а не автоматически «Pro» — иначе молчаливое
+    удорожание генерации при неполном payload)."""
+    options = get_seedance_mode_options(model_code)
+    if not options:
+        return None
+    raw = str(quality_value or "").strip().lower()
+    if not raw:
+        default_source = (
+            SEEDANCE_FAST_MODE if model_code == "seedance2_fast"
+            else SEEDANCE25_MODE if model_code == "seedance25"
+            else SEEDANCE_MODE
+        )
+        default_mode = normalize_seedance_mode(default_source)
+        return default_mode if default_mode in options else options[0]
+    if raw in ("fast", "low", "480", "480p"):
+        return options[0]
+    if raw in ("pro", "high", "best", "1080", "1080p"):
+        return options[-1]
+    normalized = normalize_seedance_mode(raw)
+    return normalized if normalized in options else options[0]
+
+
+def webapp_video_quality_label(model_code: str, resolved_mode: str) -> Optional[str]:
+    """Текст строки «Качество:» в карточке подтверждения Конструктора (Экран
+    V2) — «Pro»/«Fast» по бинарной упрощённой модели resolve_webapp_video_quality.
+    None — модель не показывает качество вообще (см. VIDEO_QUALITY_TOGGLE_MODELS)."""
+    if model_code not in VIDEO_QUALITY_TOGGLE_MODELS:
+        return None
+    options = get_seedance_mode_options(model_code)
+    if len(options) <= 1:
+        return None
+    if resolved_mode == options[-1]:
+        return "Pro"
+    if resolved_mode == options[0]:
+        return "Fast"
+    # Средний режим достижим только через старую полную панель (video_kb),
+    # не через Конструктор — честный числовой фолбэк вместо вымышленного Pro/Fast.
+    return seedance_mode_ui_label(resolved_mode)
+
+
+def get_video_constructor_config() -> dict:
+    """Конфигурация Конструктора видео для вебаппа — единственный канал
+    проброса фичефлагов/цен боту → вебапп (у бота нет публичного HTTP-входа,
+    см. docs/specs/2026-08-13_webapp_generation_hub.md, п.3). Источник истины
+    остаётся в боте (get_video_model_cost_per_second/calc_seedance_cost) —
+    вебапп только отображает переданные цифры для живого пересчёта; финальная
+    цена в карточке подтверждения ВСЕГДА пересчитывается заново на момент
+    показа (build_video_generation_confirm_text), не берётся из payload.
+
+    Схема ЗАФИКСИРОВАНА синхронно с уже смёрженным constructor.js в репо
+    вебаппа (parseConstructorConfig/FALLBACK_CONFIG) — задокументирована в
+    docs/BOT_CONTRACT.md, раздел «Конструктор видео (Хаб генерации)». Менять
+    форму — только синхронно с правкой parseConstructorConfig на стороне
+    вебаппа."""
+    model_order = ("seedance2", "seedance2_fast", "kling3", "veo31", "wan27", "gemini_omni", "seedance25")
+    model_flags = {
+        "seedance2": True,
+        "seedance2_fast": SEEDANCE_FAST_ENABLED,
+        "kling3": KLING3_ENABLED,
+        "veo31": VEO31_ENABLED,
+        "wan27": WAN27_ENABLED,
+        "gemini_omni": GEMINI_OMNI_ENABLED,
+        "seedance25": SEEDANCE25_ENABLED,
+    }
+    models: List[dict] = []
+    for model_code in model_order:
+        if not model_flags.get(model_code):
+            continue
+        formats = get_video_aspect_options(model_code)
+        quality_options = get_seedance_mode_options(model_code)
+        has_quality = model_code in VIDEO_QUALITY_TOGGLE_MODELS and len(quality_options) > 1
+
+        if model_code == "wan27":
+            # Wan 2.7 в Конструкторе — свободный ввод длительности вместо
+            # кнопок (провайдер реально принимает любое целое в диапазоне,
+            # см. video_kb/get_seedance_duration_bounds), без выбора качества —
+            # constructor.js (уже смёржено) ожидает {"custom":[min,max]} и
+            # плоский {"per_second": N} вместо таблицы по длительностям.
+            dur_min, dur_max = get_seedance_duration_bounds(model_code)
+            durations_field: object = {"custom": [dur_min, dur_max]}
+            prices: dict = {"per_second": get_video_model_cost_per_second(model_code)}
+        else:
+            durations = get_seedance_duration_options(model_code)
+            durations_field = durations
+            if has_quality:
+                prices = {
+                    "pro": {
+                        str(sec): calc_seedance_cost(sec, get_video_model_cost_per_second(model_code, quality_options[-1]))
+                        for sec in durations
+                    },
+                    "fast": {
+                        str(sec): calc_seedance_cost(sec, get_video_model_cost_per_second(model_code, quality_options[0]))
+                        for sec in durations
+                    },
+                }
+            else:
+                cps = get_video_model_cost_per_second(model_code)
+                prices = {str(sec): calc_seedance_cost(sec, cps) for sec in durations}
+
+        # Опциональные falsy-поля (badge/quality/face_grid) опускаются вместо
+        # null/[]/false — constructor.js трактует отсутствующий ключ так же
+        # (`model.badge ? ... : label`, `model.quality && model.quality.length`,
+        # `!model.face_grid`) — бюджет URL (~2048-4096 байт, см. get_prompt_
+        # webapp_url) не резиновый: 7 моделей в base64 иначе разрастаются.
+        model_entry = {
+            "id": model_code,
+            "label": VIDEO_MODEL_CONSTRUCTOR_LABELS.get(model_code, get_video_model_label(model_code)),
+            "blurb": get_video_model_blurb(model_code),
+            "formats": formats,
+            "durations": durations_field,
+            "prices": prices,
+        }
+        badge = VIDEO_MODEL_CONSTRUCTOR_BADGES.get(model_code)
+        if badge:
+            model_entry["badge"] = badge
+        if has_quality:
+            model_entry["quality"] = ["pro", "fast"]
+        if video_model_uses_face_grid(model_code):
+            model_entry["face_grid"] = True
+        models.append(model_entry)
+
+    default_model = "seedance2" if model_flags.get("seedance2") else (models[0]["id"] if models else "seedance2")
+    return {"models": models, "default_model": default_model}
+
+
+def get_video_constructor_webapp_url(user_id: int) -> str:
+    """Персональный URL Конструктора видео — открытие «🎬 Видео для Reels»
+    под VIDEO_CONSTRUCTOR_ENABLED и кнопка «🔁 Начать заново» на карточке
+    подтверждения (обе точки входа, docs/specs/2026-08-13_webapp_generation_hub.md).
+    `tab=videoConstructor` — точный tab-id, который constructor.js уже проверяет
+    в репо вебаппа (`switchTab("videoConstructor")`)."""
+    base_url = get_prompt_webapp_url(user_id, include_video_cfg=True)
+    if not base_url:
+        return ""
+    return f"{base_url}&tab=videoConstructor"
 
 
 def video_unavailable_text() -> str:
@@ -1482,8 +1698,20 @@ def persistent_menu_kb(user_id: Optional[int] = None) -> ReplyKeyboardMarkup:
         )
     else:
         library_btn = KeyboardButton(MENU_BTN_LIBRARY)
+    # Хаб генерации (docs/specs/2026-08-13_webapp_generation_hub.md) —
+    # VIDEO_CONSTRUCTOR_ENABLED делает «🎬 Видео для Reels» web_app-кнопкой
+    # (тот же приём, что уже у MENU_BTN_LIBRARY) — открывает Конструктор
+    # напрямую, без похода в бота за пикером модели. Флаг=False (дефолт) —
+    # ноль изменений, обычная текстовая кнопка (handle_menu_button её ловит).
+    if VIDEO_CONSTRUCTOR_ENABLED and PROMPT_WEBAPP_URL and user_id is not None:
+        video_btn = KeyboardButton(
+            MENU_BTN_VIDEO,
+            web_app=WebAppInfo(url=get_video_constructor_webapp_url(user_id)),
+        )
+    else:
+        video_btn = KeyboardButton(MENU_BTN_VIDEO)
     rows = [
-        [KeyboardButton(MENU_BTN_PHOTO), KeyboardButton(MENU_BTN_VIDEO)],
+        [KeyboardButton(MENU_BTN_PHOTO), video_btn],
         [KeyboardButton(MENU_BTN_ENHANCE), KeyboardButton(MENU_BTN_AVATAR)],
         [library_btn, KeyboardButton(MENU_BTN_BALANCE)],
         [KeyboardButton(MENU_BTN_HELP)],
@@ -1978,6 +2206,88 @@ def video_status_text(state: UserState) -> str:
         f"Стоимость: {selected_cost} изюминок\n"
         f"Результат: обычно через {eta_min}–{eta_max} мин"
     )
+
+
+def video_constructor_entry_kb(user_id: int) -> InlineKeyboardMarkup:
+    """Вход в Конструктор видео (VIDEO_CONSTRUCTOR_ENABLED) — заменяет
+    video_model_picker_kb() на инлайн-кнопку web_app, открывающую вебапп-экран
+    «Конструктор» (docs/specs/2026-08-13_webapp_generation_hub.md, Экран V1)."""
+    rows = [[InlineKeyboardButton(
+        "🎬 Открыть Конструктор",
+        web_app=WebAppInfo(url=get_video_constructor_webapp_url(user_id)),
+    )]]
+    rows.append([InlineKeyboardButton("◀️ В меню", callback_data="avatar_back_menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_video_generation_confirm_text(state: UserState) -> str:
+    """Экран V2 «Хаба генерации» — карточка подтверждения в чате (docs/specs/
+    2026-08-13_webapp_generation_hub.md, «Экран V2»). Сознательно НЕ
+    переиспользует video_status_text — другой набор строк (без «Результат:
+    через N мин», длительность форматируется «10с», а не «10 сек», Фото/
+    Описание показываются, только если реально заполнены) — общий рефакторинг
+    рискует затронуть уже проверенный текст старой чат-панели."""
+    resolved_model = get_video_model(state)
+    model_label = get_video_model_label(resolved_model)
+    model_blurb = get_video_model_blurb(resolved_model)
+    model_line = f"Модель: {model_label} — {model_blurb}" if model_blurb else f"Модель: {model_label}"
+
+    aspect = getattr(state, "video_aspect_ratio", "9:16")
+    aspect_names = {"16:9": "горизонталь", "9:16": "вертикаль, Reels", "1:1": "квадрат", "4:3": "классика"}
+    aspect_label = f"{aspect} ({aspect_names[aspect]})" if aspect in aspect_names else aspect
+
+    duration = get_selected_seedance_duration(state)
+    resolved_mode = get_selected_seedance_mode(state)
+    cps = get_video_model_cost_per_second(resolved_model, resolved_mode)
+    cost = calc_seedance_cost(duration, cps)
+
+    lines = [
+        "🎬 Готово к запуску",
+        "",
+        model_line,
+        f"Формат: {aspect_label}",
+    ]
+
+    quality_label = webapp_video_quality_label(resolved_model, resolved_mode)
+    if quality_label:
+        lines.append(f"Качество: {quality_label}")
+
+    lines.append(f"Длительность: {duration}с")
+
+    if video_model_uses_face_grid(resolved_model):
+        face_grid_on = get_face_grid(state)
+        lines.append(
+            "Детектор лиц: " + ("вкл 🟢 (защита от отказа модерации)" if face_grid_on else "выкл ⚪️ (чистый кадр)")
+        )
+
+    photos_count = len(get_video_image_urls(state))
+    if photos_count:
+        lines.append(f"Фото: {photos_count} шт.")
+
+    if (state.video_prompt or "").strip():
+        lines.append("Описание: есть")
+
+    lines.append("")
+    lines.append(f"Стоимость: {cost} 🍇")
+    return "\n".join(lines)
+
+
+def video_generation_confirm_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
+    """Клавиатура карточки подтверждения (Экран V2) — «🚀 Запустить видео»
+    переиспользует ровно существующий callback_data="video_start"/
+    _cb_video_start/run_seedance (ноль нового кода в биллинге/очереди/доставке
+    результата). «🔁 Начать заново» — сознательно НЕ «✏️ Изменить» (MVP не
+    сохраняет черновик, см. спеку) — открывает пустой Конструктор заново
+    прямым web_app URL, без похода в бота."""
+    rows = [[InlineKeyboardButton("🚀 Запустить видео", callback_data="video_start")]]
+    if PROMPT_WEBAPP_URL and user_id is not None:
+        rows.append([InlineKeyboardButton(
+            "🔁 Начать заново",
+            web_app=WebAppInfo(url=get_video_constructor_webapp_url(user_id)),
+        )])
+    else:
+        rows.append([InlineKeyboardButton("🔁 Начать заново", callback_data="video")])
+    return InlineKeyboardMarkup(rows)
 
 
 async def update_video_panel(query, text: str, reply_markup: InlineKeyboardMarkup) -> None:
@@ -3203,6 +3513,17 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE,
         state.waiting_for_video_prompt = False
         state.waiting_for_video_image = True
         state.waiting_for_motion_video = False
+        # Хаб генерации (docs/specs/2026-08-13_webapp_generation_hub.md):
+        # persistent_menu_kb уже отдаёт web_app-кнопку под флагом (юзер сюда
+        # текстом почти не попадает), но текстовый путь оставляем рабочим как
+        # честный фолбэк (старый клиент/юзер напечатал текст руками вручную).
+        if VIDEO_CONSTRUCTOR_ENABLED and PROMPT_WEBAPP_URL:
+            await update.message.reply_text(
+                "🎬 Видео для Reels\n\n"
+                "Открой Конструктор — выбери модель, формат, качество и добавь фото на одном экране.",
+                reply_markup=video_constructor_entry_kb(user.id),
+            )
+            return True
         # Сначала только выбор модели — см. комментарий у video_cb == "video"
         # в button_handler (тот же флоу, инлайн-путь). Модель уже выбрана в
         # этой сессии — сразу полная панель (ТЗ video_panel_declutter).
@@ -4070,6 +4391,180 @@ async def apply_webapp_board_style_analyze_payload(update: Update, context: Cont
     return True
 
 
+def _resolve_webapp_video_description(payload: dict) -> str:
+    """Резолвит текст видео-описания для Конструктора (`description`/`p`).
+    Если пришли `cat_idx`/`item_idx` (Full: библиотечный стиль подставлен в
+    Конструктор) — описание берётся ИЗ БИБЛИОТЕКИ по индексам, присланный
+    текст игнорируется (тот же принцип, что apply_webapp_prompt_payload_v2:
+    «резолвить по индексам, а не по присланной строке», устойчиво к
+    рассинхрону версий каталога). MVP-вебапп индексы пока не шлёт вообще —
+    ветка на будущее, но обязана быть по контракту (docs/BOT_CONTRACT.md)."""
+    try:
+        raw_cat_idx = payload.get("cat_idx") if payload.get("cat_idx") is not None else payload.get("ci")
+        raw_item_idx = payload.get("item_idx") if payload.get("item_idx") is not None else payload.get("ii")
+        cat_idx = int(raw_cat_idx)
+        item_idx = int(raw_item_idx)
+        if 0 <= cat_idx < len(PROMPT_LIBRARY):
+            cat_items = PROMPT_LIBRARY[cat_idx].get("items") or []
+            if 0 <= item_idx < len(cat_items):
+                library_prompt = str(cat_items[item_idx].get("prompt") or "").strip()
+                if library_prompt:
+                    return library_prompt
+    except Exception:
+        pass
+    return str(payload.get("description") or payload.get("p") or "").strip()
+
+
+def _webapp_bool(value, default: bool) -> bool:
+    """Толерантный парсинг булева поля из webapp-payload — JSON.stringify шлёт
+    настоящий boolean, но loose-парсер/ручной curl-тест может прислать строку."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
+async def apply_webapp_generation_payload(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
+    """Хаб генерации — Конструктор видео (docs/specs/2026-08-13_webapp_generation_hub.md).
+    Разбирает `action=start_generation`/`sg`, резолвит настройки/refs в
+    UserState и показывает карточку подтверждения (Экран V2) с ценой,
+    пересчитанной актуальными calc_seedance_cost на момент показа — ноль
+    нового кода в биллинге/очереди/доставке результата, «🚀 Запустить видео»
+    переиспользует ровно существующий callback_data="video_start"
+    (_cb_video_start/run_seedance).
+
+    MVP — только product="video" (Midjourney/Аватар-конструкторы вне скоупа,
+    см. спеку «Не в скоупе MVP»). Серверная валидация фичефлагов модели —
+    ОБЯЗАТЕЛЬНА (не только скрытие опций в вебаппе): устаревший кэш вебаппа
+    у юзера может прислать модель, которую владелец уже выключила — тут
+    молча не игнорируем и не падаем, а откатываем на дефолт и предупреждаем."""
+    if not isinstance(payload, dict):
+        return False
+    product = str(payload.get("product") or payload.get("pr") or "").strip().lower()
+    if not product:
+        return False
+    if product != "video":
+        # Midjourney/Аватар-конструкторы — Full, вне скоупа MVP. Честное
+        # сообщение вместо молчаливого игнора/générique "не удалось применить".
+        if update.effective_message:
+            await update.effective_message.reply_text(
+                "Этот тип генерации через Конструктор скоро появится — пока доступно только видео 🎬"
+            )
+        return True
+
+    if not SEEDANCE_ENABLED:
+        if update.effective_message:
+            await update.effective_message.reply_text(video_unavailable_text(), reply_markup=main_menu_kb())
+        return True
+
+    user = update.effective_user
+    state = get_or_init_state(context)
+    # Свежий старт — гасим чужие активные мини-флоу (тот же принцип, что и
+    # _cb_video_open/apply_webapp_board_refs_payload).
+    state.generating_avatar = False
+    state.mj_active = False
+    state.waiting_for_mj_prompt = False
+    state.waiting_for_mj_image = False
+
+    # ── Модель: серверная валидация фичефлагов (п.2 «Что нужно от бэкенда») ──
+    model_flags = {
+        "seedance2": True,
+        "seedance2_fast": SEEDANCE_FAST_ENABLED,
+        "kling3": KLING3_ENABLED,
+        "veo31": VEO31_ENABLED,
+        "wan27": WAN27_ENABLED,
+        "gemini_omni": GEMINI_OMNI_ENABLED,
+        "seedance25": SEEDANCE25_ENABLED,
+    }
+    requested_model_raw = str(payload.get("video_model") or payload.get("vm") or "").strip().lower()
+    requested_model = requested_model_raw or "seedance2"
+    model_downgraded = requested_model not in model_flags or not model_flags.get(requested_model)
+    resolved_model = "seedance2" if model_downgraded else requested_model
+
+    state.video_model = resolved_model
+    state.video_model_picked = True
+
+    # ── Формат ──
+    aspect_options = get_video_aspect_options(resolved_model)
+    requested_aspect = str(payload.get("aspect") or payload.get("ar") or "").strip()
+    if requested_aspect in aspect_options:
+        resolved_aspect = requested_aspect
+    elif "9:16" in aspect_options:
+        resolved_aspect = "9:16"
+    else:
+        resolved_aspect = aspect_options[0] if aspect_options else "16:9"
+    state.video_aspect_ratio = resolved_aspect
+
+    # ── Длительность (normalize_seedance_duration клампит в границы модели,
+    # включая свободный диапазон Wan 2.7 — тот же хелпер, что и video_kb). ──
+    duration_options = get_seedance_duration_options(resolved_model)
+    default_duration = duration_options[0] if duration_options else int(SEEDANCE_DURATION)
+    raw_duration = payload.get("duration") if payload.get("duration") is not None else payload.get("d")
+    try:
+        requested_duration = int(raw_duration) if raw_duration is not None else default_duration
+    except (TypeError, ValueError):
+        requested_duration = default_duration
+    state.video_duration = normalize_seedance_duration(requested_duration, resolved_model)
+
+    # ── Качество — только для моделей с бинарным Pro/Fast (VIDEO_QUALITY_TOGGLE_MODELS). ──
+    if resolved_model in VIDEO_QUALITY_TOGGLE_MODELS:
+        requested_quality = str(payload.get("quality") or payload.get("q") or "").strip().lower()
+        state.video_mode = resolve_webapp_video_quality(resolved_model, requested_quality)
+    else:
+        state.video_mode = None
+
+    # ── Детектор лиц — только Seedance 2 / 2 Fast. ──
+    if video_model_uses_face_grid(resolved_model):
+        raw_face_grid = payload.get("face_grid") if payload.get("face_grid") is not None else payload.get("fg")
+        state.video_face_grid = _webapp_bool(raw_face_grid, SEEDANCE_FACE_GRID)
+
+    # ── Описание — резолв по индексам библиотеки, не доверяем присланному тексту. ──
+    state.video_prompt = _resolve_webapp_video_description(payload)
+    state.image_prompt = ""
+    state.style_extract = False
+
+    # ── Фото — те же потолки, что у ручной загрузки (MAX_SEEDANCE_IMAGE_REFERENCES). ──
+    refs_raw = payload.get("refs")
+    if refs_raw is None:
+        refs_raw = payload.get("r")
+    if not isinstance(refs_raw, list):
+        refs_raw = []
+    clean_refs = [str(u).strip() for u in refs_raw if str(u or "").strip()]
+    set_video_image_urls(state, clean_refs)
+
+    state.video_session_active = True
+    state.waiting_for_video_prompt = False
+    state.waiting_for_video_image = True
+    state.waiting_for_motion_video = False
+
+    if not state.video_prompt.strip() and not get_video_image_urls(state):
+        if update.effective_message:
+            kb = video_constructor_entry_kb(user.id) if (PROMPT_WEBAPP_URL and user) else None
+            await update.effective_message.reply_text(
+                "Нужно описание или хотя бы одно фото — вернись в Конструктор и добавь.",
+                reply_markup=kb,
+            )
+        return True
+
+    if update.effective_message:
+        if model_downgraded:
+            downgraded_label = (
+                get_video_model_label(requested_model) if requested_model in model_flags else requested_model_raw
+            )
+            await update.effective_message.reply_text(
+                f"Модель «{downgraded_label}» сейчас недоступна — показываю карточку с моделью по умолчанию."
+            )
+        text = build_video_generation_confirm_text(state)
+        await update.effective_message.reply_text(
+            text,
+            reply_markup=video_generation_confirm_kb(user.id if user else None),
+        )
+    return True
+
+
 async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
     if not isinstance(payload, dict):
         return False
@@ -4082,6 +4577,8 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
         return await apply_webapp_board_refs_payload(update, context, payload)
     if action in {"board_style_analyze", "bsa"}:
         return await apply_webapp_board_style_analyze_payload(update, context, payload)
+    if action in {"start_generation", "sg"}:
+        return await apply_webapp_generation_payload(update, context, payload)
     if action == "topup":
         if update.effective_message:
             user_id_for_kb = update.effective_user.id if update.effective_user else None
@@ -6001,6 +6498,17 @@ async def _cb_video_open(update, context, query, user):
     state.waiting_for_video_prompt = False
     state.waiting_for_video_image = True
     state.waiting_for_motion_video = False
+
+    # Хаб генерации (docs/specs/2026-08-13_webapp_generation_hub.md) — та же
+    # пара точек входа, что persistent_menu_kb/handle_menu_button выше, синхронно
+    # под одним флагом (kill-switch: VIDEO_CONSTRUCTOR_ENABLED=False — ноль изменений).
+    if VIDEO_CONSTRUCTOR_ENABLED and PROMPT_WEBAPP_URL:
+        await query.message.reply_text(
+            "🎬 Видео для Reels\n\n"
+            "Открой Конструктор — выбери модель, формат, качество и добавь фото на одном экране.",
+            reply_markup=video_constructor_entry_kb(user.id),
+        )
+        return
 
     # Сначала только выбор модели — полная панель настроек открывается
     # (редактированием этого же сообщения) уже после выбора, см.

@@ -276,6 +276,56 @@ def test_block_16_evolink_http_client():
         "task_id": "task-unified-abc", "image_number": 2, "type": "standard",
     }, f"15.52 upscale: model_params корректны: {p15_48.get('model_params')}"
 
+    # 15.53 Seedance 2.5 (EvoLink, ВСЕГДА, у Zveno этой модели нет): payload
+    # корректный, @imageN теги, quality-поле, до 50 референсов.
+    evo_calls.clear()
+    s25_ref = asyncio.run(S.start_seedance25_task_evolink(
+        prompt="девушка гуляет по городу", image_url="https://example.com/ref.jpg", user_id=1,
+        duration=10, mode="720p", aspect_ratio="9:16",
+    ))
+    assert s25_ref.startswith("__EVOLINK__:"), f"15.54 seedance25 возвращает __EVOLINK__: префикс: {s25_ref}"
+    p15_53 = evo_calls[0]["payload"]
+    assert p15_53.get("model") == S.SEEDANCE25_MODEL, f"15.55 seedance25: model из конфига: {p15_53}"
+    assert p15_53.get("image_urls") == ["https://example.com/ref.jpg"], (
+        f"15.56 seedance25: image_urls содержит фото: {p15_53}"
+    )
+    assert p15_53.get("duration") == 10, "15.57 seedance25: duration = 10"
+    assert p15_53.get("quality") == "720p", f"15.58 seedance25: quality=720p: {p15_53.get('quality')}"
+    assert p15_53.get("aspect_ratio") == "9:16", "15.59 seedance25: aspect_ratio = 9:16"
+    assert p15_53.get("generate_audio") is True, "15.60 seedance25: generate_audio=True"
+    assert "@image1" in p15_53.get("prompt", "") and "[Image1]" not in p15_53.get("prompt", ""), (
+        f"15.61 seedance25: EvoLink-тег @imageN, не [ImageN]: {p15_53.get('prompt')}"
+    )
+
+    # 15.62 Seedance 2.5: без фото — понятная ошибка, HTTP не улетает
+    evo_calls.clear()
+    try:
+        asyncio.run(S.start_seedance25_task_evolink(prompt="x", image_url=None, user_id=1))
+        assert False, "15.62 start_seedance25_task_evolink без фото должен падать"
+    except Exception as e:
+        assert "фото" in str(e).lower(), f"15.62 текст ошибки про отсутствие фото: {e}"
+    assert evo_calls == [], "15.63 без фото HTTP-запрос не отправлен"
+
+    # 15.64 Seedance 2.5: duration клампится к нативному потолку 30 сек (не 15, как у 2.0)
+    evo_calls.clear()
+    asyncio.run(S.start_seedance25_task_evolink(
+        prompt="x", image_url="https://example.com/ref.jpg", user_id=1, duration=45,
+    ))
+    assert evo_calls[0]["payload"].get("duration") == 30, (
+        f"15.65 seedance25: 45с клампится к 30 (нативный потолок), не к 15: {evo_calls[0]['payload'].get('duration')}"
+    )
+
+    # 15.66 Seedance 2.5: до 50 референсов не обрезаются (не потолок 9, как у обычной Seedance)
+    evo_calls.clear()
+    many_refs = [f"https://example.com/r{i}.jpg" for i in range(20)]
+    asyncio.run(S.start_seedance25_task_evolink(
+        prompt="x", image_url=None, image_urls=many_refs, user_id=1,
+    ))
+    assert evo_calls[0]["payload"].get("image_urls") == many_refs, (
+        f"15.67 seedance25: 20 фото (< лимита 50) доходят все: {len(evo_calls[0]['payload'].get('image_urls', []))}"
+    )
+    assert S.SEEDANCE25_MAX_IMAGES == 50, "15.68 SEEDANCE25_MAX_IMAGES = 50"
+
     S.EVOLINK_API_KEY = _orig_evo_key
     S.aiohttp.ClientSession = _orig_evo_cs
     S.asyncio.sleep = _orig_sleep
@@ -333,6 +383,52 @@ def test_block_16_evolink_http_client():
         "15.42 get_video_model(gemini_omni, disabled) -> seedance2 (фолбэк)"
     )
     S.GEMINI_OMNI_ENABLED = True
+
+    # 15.53b Seedance 2.5 — та же схема: кнопка в пикере только по флагу,
+    # выбор через callback ставит модель + дефолтное качество 480p + аспект.
+    _orig_s25_enabled = S.SEEDANCE25_ENABLED
+    S.SEEDANCE25_ENABLED = False
+    cbs15_s25_off = [b.callback_data for row in S.video_model_picker_kb().inline_keyboard for b in row]
+    assert "video_model_seedance25" not in cbs15_s25_off, (
+        f"15.53c seedance25 выключен -> кнопки нет в пикере: {cbs15_s25_off}"
+    )
+    S.SEEDANCE25_ENABLED = True
+    cbs15_s25_on = [b.callback_data for row in S.video_model_picker_kb().inline_keyboard for b in row]
+    assert "video_model_seedance25" in cbs15_s25_on, f"15.53d seedance25 включён -> кнопка в пикере: {cbs15_s25_on}"
+
+    update_s25, context_s25, query_s25 = make_update_context("video_model_seedance25", user_id=1502)
+    context_s25.user_data["state"] = S.UserState(video_aspect_ratio="4:3")
+    asyncio.run(S.button_handler(update_s25, context_s25))
+    st15_s25 = context_s25.user_data["state"]
+    assert st15_s25.video_model == "seedance25", f"15.53e video_model_seedance25 ставит модель: {st15_s25.video_model}"
+    assert st15_s25.video_mode == "480p", f"15.53f дефолтное качество 480p (дешевле): {st15_s25.video_mode}"
+    assert st15_s25.video_aspect_ratio == "16:9", (
+        f"15.53g seedance25 сбрасывает несовместимый аспект 4:3 -> 16:9: {st15_s25.video_aspect_ratio}"
+    )
+
+    # 15.53h переключение качества 480p -> 720p через video_mode_ callback
+    update_mode, context_mode, query_mode = make_update_context("video_mode_720", user_id=1502)
+    context_mode.user_data["state"] = st15_s25
+    asyncio.run(S.button_handler(update_mode, context_mode))
+    assert context_mode.user_data["state"].video_mode == "720p", (
+        f"15.53i клик по 720 переключает качество seedance25: {context_mode.user_data['state'].video_mode}"
+    )
+
+    S.SEEDANCE25_ENABLED = False
+    assert S.get_video_model(S.UserState(video_model="seedance25")) == "seedance2", (
+        "15.53j get_video_model(seedance25, disabled) -> seedance2 (фолбэк)"
+    )
+    S.SEEDANCE25_ENABLED = True
+    assert S.get_video_model(S.UserState(video_model="seedance25")) == "seedance25", (
+        "15.53k get_video_model(seedance25, enabled) -> seedance25"
+    )
+    # Осознанно вне скоупа: студия нейромультиков не получает Seedance 2.5
+    # в этой задаче (её cost-модель — один cost_per_second без quality,
+    # для 2.5 с двумя тарифами это отдельный дизайн, не в критериях брифа).
+    assert "seedance25" not in S._studio_video_models(), (
+        "15.53l seedance25 НЕ в студийных моделях (осознанно вне скоупа этой задачи)"
+    )
+    S.SEEDANCE25_ENABLED = _orig_s25_enabled
 
     # 15.43 _studio_video_models включает gemini_omni, только когда флаг включён
     assert "gemini_omni" in S._studio_video_models(), (

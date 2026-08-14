@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Блок 24: хаб генерации в вебаппе, MVP — экран «Конструктор» для видео
-(docs/specs/2026-08-13_webapp_generation_hub.md). Вебапп собирает все
-настройки одним экраном и шлёт один payload `start_generation`/`sg` —
-бот резолвит его в UserState (те же поля, что заполняет video_kb) и
-показывает карточку подтверждения с кнопкой video_start. Сам запуск/
-списание/очередь/доставка результата не меняются — это тот же
-_cb_video_start/run_seedance, что и всегда."""
+"""Блок 24: хаб генерации в вебаппе (docs/specs/2026-08-13_webapp_generation_hub.md,
+docs/specs/2026-08-13_webapp_generation_hub_navigation_full.md). Вебапп собирает все
+настройки одним экраном («Конструктор» — видео/Midjourney/Аватар/фото) и шлёт один
+payload `start_generation`/`sg` с полем `product` — бот резолвит его в UserState (те
+же поля, что заполняют сегодняшние чат-панели/мини-флоу) и показывает карточку
+подтверждения с существующей кнопкой запуска (`video_start`/`mj_generate`/
+`avatar_gen_start`/`generate`). Сам запуск/списание/очередь/доставка результата НЕ
+меняются — это тот же биллинг-путь, что и всегда."""
 import asyncio
 import types
 
@@ -56,7 +57,10 @@ def test_block_24b_full_payload_builds_state_and_confirmation_card():
         assert state.video_model == "seedance2", "24b.2 модель сохранена"
         assert state.video_model_picked is True, "24b.3 model_picked, чтобы video_kb не показывал пикер повторно"
         assert state.video_aspect_ratio == "9:16", "24b.4 формат сохранён"
-        assert state.video_mode == "720p", "24b.5 quality=pro -> 720p"
+        # resolve_webapp_video_quality: "pro" -> самый качественный ДОСТУПНЫЙ режим
+        # модели (последний в списке get_seedance_mode_options), не фиксированный
+        # 720p — у seedance2 это 1080p (480p/720p/1080p по умолчанию).
+        assert state.video_mode == "1080p", f"24b.5 quality=pro -> самый качественный режим: {state.video_mode}"
         assert state.video_duration == 10, "24b.6 длительность сохранена"
         assert state.video_face_grid is True, "24b.7 детектор лиц сохранён"
         assert state.video_prompt == "девушка на закате, кино", "24b.8 описание сохранено"
@@ -64,7 +68,9 @@ def test_block_24b_full_payload_builds_state_and_confirmation_card():
 
         text = message.reply_text.await_args_list[0].args[0]
         assert text.startswith("🎬 Готово к запуску"), f"24b.10 заголовок карточки подтверждения: {text!r}"
-        assert "Seedance 2" in text and "9:16" in text and "10 сек" in text, f"24b.11 параметры видны в карточке: {text!r}"
+        # build_video_generation_confirm_text форматирует длительность «10с», не «10 сек».
+        assert "Seedance 2" in text and "9:16" in text and "10с" in text, f"24b.11 параметры видны в карточке: {text!r}"
+        assert "Качество: Pro" in text, f"24b.11b качество отражено в карточке: {text!r}"
 
         kb = message.reply_text.await_args_list[0].kwargs.get("reply_markup")
         rows = kb.inline_keyboard
@@ -79,6 +85,30 @@ def test_block_24b_full_payload_builds_state_and_confirmation_card():
     finally:
         S.VIDEO_CONSTRUCTOR_ENABLED = _orig
         S.PROMPT_WEBAPP_URL = _orig_url
+
+
+def test_block_24b2_quality_fast_alias_maps_to_lowest_mode():
+    # У seedance2 (480p/720p/1080p) fast/pro должны различаться — тест 24b уже
+    # проверяет "pro", тут отдельно "fast" -> самый лёгкий режим (options[0]).
+    _orig = S.VIDEO_CONSTRUCTOR_ENABLED
+    S.VIDEO_CONSTRUCTOR_ENABLED = True
+    try:
+        update, context, message = make_webapp_update_context()
+        applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "start_generation",
+            "product": "video",
+            "video_model": "seedance2",
+            "quality": "fast",
+            "duration": 5,
+            "description": "морской пейзаж на закате",
+        }))
+        assert applied is True
+        state = context.user_data["state"]
+        assert state.video_mode == "480p", f"24b2.1 quality=fast -> самый лёгкий режим: {state.video_mode}"
+        text = message.reply_text.await_args_list[0].args[0]
+        assert "Качество: Fast" in text, f"24b2.2 карточка показывает Fast: {text!r}"
+    finally:
+        S.VIDEO_CONSTRUCTOR_ENABLED = _orig
 
 
 def test_block_24c_disabled_model_falls_back_with_warning():
@@ -104,6 +134,27 @@ def test_block_24c_disabled_model_falls_back_with_warning():
     finally:
         S.VIDEO_CONSTRUCTOR_ENABLED = _orig_flag
         S.KLING3_ENABLED = _orig_kling
+
+
+def test_block_24c2_seedance_disabled_shows_unavailable_text():
+    _orig_flag = S.VIDEO_CONSTRUCTOR_ENABLED
+    _orig_seedance = S.SEEDANCE_ENABLED
+    S.VIDEO_CONSTRUCTOR_ENABLED = True
+    S.SEEDANCE_ENABLED = False
+    try:
+        update, context, message = make_webapp_update_context()
+        applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "start_generation",
+            "product": "video",
+            "video_model": "seedance2",
+            "description": "тест",
+        }))
+        assert applied is True, "24c2.1 обработчик не падает, когда видео-продукт целиком выключен"
+        text = message.reply_text.await_args_list[0].args[0]
+        assert text == S.video_unavailable_text(), f"24c2.2 честное «видео недоступно»: {text!r}"
+    finally:
+        S.VIDEO_CONSTRUCTOR_ENABLED = _orig_flag
+        S.SEEDANCE_ENABLED = _orig_seedance
 
 
 def test_block_24d_unknown_product_declines_gracefully():
@@ -328,6 +379,31 @@ def test_block_24h2_inline_video_entry_point_parity():
         S.PROMPT_WEBAPP_URL = _orig_url
 
 
+def test_block_24h3_persistent_menu_video_button_uses_snake_case_tab():
+    # get_video_constructor_webapp_url — персональный URL, зашитый в reply-кнопку
+    # «🎬 Видео для Reels» (persistent_menu_kb). Реальный constructor.js
+    # (репо вебаппа) сверяет query-параметр `tab` дословно со строкой
+    # "video_constructor" (snake_case) — "videoConstructor" (camelCase) там
+    # только внутреннее имя экрана для switchTab(), не значение параметра.
+    _orig_flag = S.VIDEO_CONSTRUCTOR_ENABLED
+    _orig_url = S.PROMPT_WEBAPP_URL
+    S.VIDEO_CONSTRUCTOR_ENABLED = True
+    S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
+    try:
+        kb = S.persistent_menu_kb(9714)
+        video_btn = [b for row in kb.keyboard for b in row if b.text == S.MENU_BTN_VIDEO][0]
+        assert video_btn.web_app is not None, "24h3.1 флаг включён — прямая web_app-кнопка"
+        assert "tab=video_constructor" in video_btn.web_app.url, (
+            f"24h3.2 snake_case tab, дословно как ждёт constructor.js: {video_btn.web_app.url}"
+        )
+        assert "tab=videoConstructor" not in video_btn.web_app.url, (
+            f"24h3.3 НЕ camelCase (то внутреннее имя экрана, не query-параметр): {video_btn.web_app.url}"
+        )
+    finally:
+        S.VIDEO_CONSTRUCTOR_ENABLED = _orig_flag
+        S.PROMPT_WEBAPP_URL = _orig_url
+
+
 def test_block_24i_cfg_appended_to_webapp_url_only_when_enabled():
     _orig_flag = S.VIDEO_CONSTRUCTOR_ENABLED
     _orig_url = S.PROMPT_WEBAPP_URL
@@ -343,6 +419,74 @@ def test_block_24i_cfg_appended_to_webapp_url_only_when_enabled():
     finally:
         S.VIDEO_CONSTRUCTOR_ENABLED = _orig_flag
         S.PROMPT_WEBAPP_URL = _orig_url
+
+
+def test_block_24i2_config_shape_matches_frontend_contract():
+    # Схема СВЕРЕНА с реальным constructor.js в репо вебаппа (parseCfgFromUrl/
+    # FALLBACK_CFG, vcModelFromCfgEntry) — `video_models` (не `models`), без
+    # обёртки `default_model` (дефолт = первая модель списка, всегда seedance2,
+    # т.к. он единственный без фичефлага), поля `code`/`aspects`/`modes`/
+    # `prices` (не `id`/`formats`/`quality`), prices вложены по РЕАЛЬНОМУ
+    # значению режима ("480p"/"720p"/"1080p"), а не по "pro"/"fast". Wan 2.7 —
+    # обычная дискретная таблица длительностей/цен, как у всех моделей (не
+    # {"custom":[min,max]}/{"per_second": N} — этот вариант ушёл из реального
+    # webapp контракта, hasQualityToggle там смотрит на наличие "480p" в modes).
+    _flags = {
+        "SEEDANCE_FAST_ENABLED": S.SEEDANCE_FAST_ENABLED,
+        "KLING3_ENABLED": S.KLING3_ENABLED,
+        "VEO31_ENABLED": S.VEO31_ENABLED,
+        "WAN27_ENABLED": S.WAN27_ENABLED,
+        "GEMINI_OMNI_ENABLED": S.GEMINI_OMNI_ENABLED,
+        "SEEDANCE25_ENABLED": S.SEEDANCE25_ENABLED,
+    }
+    try:
+        S.SEEDANCE_FAST_ENABLED = True
+        S.KLING3_ENABLED = True
+        S.VEO31_ENABLED = True
+        S.WAN27_ENABLED = True
+        S.GEMINI_OMNI_ENABLED = True
+        S.SEEDANCE25_ENABLED = True
+
+        cfg = S.get_video_constructor_config()
+        assert isinstance(cfg, dict) and list(cfg.keys()) == ["video_models"], (
+            f"24i2.1 корневой ключ — ровно video_models, без default_model: {cfg.keys()}"
+        )
+        models = cfg["video_models"]
+        assert isinstance(models, list) and models, "24i2.2 video_models — непустой список"
+        assert models[0]["code"] == "seedance2", "24i2.3 дефолт конструктора = первая модель списка = seedance2"
+        codes = [m["code"] for m in models]
+        assert set(codes) == {
+            "seedance2", "seedance2_fast", "kling3", "veo31", "wan27", "gemini_omni", "seedance25",
+        }, f"24i2.4 все включённые модели присутствуют: {codes}"
+
+        by_code = {m["code"]: m for m in models}
+
+        sd2 = by_code["seedance2"]
+        assert sd2["modes"] == ["480p", "720p", "1080p"], f"24i2.5 seedance2 — все три режима: {sd2['modes']}"
+        assert set(sd2["aspects"]) == {"16:9", "9:16", "1:1", "4:3"}, f"24i2.6 seedance2 форматы: {sd2['aspects']}"
+        assert sd2["face_grid"] is True, "24i2.7 seedance2 поддерживает детектор лиц"
+        assert set(sd2["prices"].keys()) == {"480p", "720p", "1080p"}, (
+            f"24i2.8 prices вложены по реальному режиму, не pro/fast: {sd2['prices'].keys()}"
+        )
+        assert "label" in sd2 and "blurb" in sd2 and "durations" in sd2, f"24i2.9 обязательные поля: {sd2}"
+
+        wan = by_code["wan27"]
+        assert isinstance(wan["durations"], list) and wan["durations"], (
+            f"24i2.10 wan27 — обычная дискретная таблица длительностей, не {{'custom':...}}: {wan['durations']}"
+        )
+        assert set(wan["prices"].keys()) == set(str(m) for m in (wan["modes"] or ["default"])), (
+            f"24i2.11 wan27 prices по режиму/duration, не per_second: {wan['prices']}"
+        )
+
+        veo = by_code["veo31"]
+        assert set(veo["aspects"]) == {"16:9", "9:16"}, f"24i2.12 veo31 без квадрата/4:3: {veo['aspects']}"
+    finally:
+        S.SEEDANCE_FAST_ENABLED = _flags["SEEDANCE_FAST_ENABLED"]
+        S.KLING3_ENABLED = _flags["KLING3_ENABLED"]
+        S.VEO31_ENABLED = _flags["VEO31_ENABLED"]
+        S.WAN27_ENABLED = _flags["WAN27_ENABLED"]
+        S.GEMINI_OMNI_ENABLED = _flags["GEMINI_OMNI_ENABLED"]
+        S.SEEDANCE25_ENABLED = _flags["SEEDANCE25_ENABLED"]
 
 
 def test_block_24j_midjourney_entry_routes_to_constructor_when_enabled():

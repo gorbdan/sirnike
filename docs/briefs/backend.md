@@ -32,6 +32,67 @@
       выкатился — иначе `tab=library` бессмысленный no-op (сегодняшний
       дефолт и так открывает библиотеку).
 
+- [x] P1 · Хаб генерации — Конструктор видео для Reels, бэкенд-часть (пункты
+      1-6 из [docs/specs/2026-08-13_webapp_generation_hub.md](../specs/2026-08-13_webapp_generation_hub.md),
+      «Что нужно от бэкенда»; продуктовая инициатива Ани — заменить
+      чат-цепочку «пикер модели → панель → фото по одному» одним экраном
+      вебаппа + одной карточкой подтверждения в чате; вебапп-часть
+      (`constructor.js`) сделана параллельной фронтенд-сессией, уже смёржена
+      в репо вебаппа — держал `cfg` максимально близко к предложенной там
+      схеме, см. BOT_CONTRACT.md):
+      · Новый парсер `apply_webapp_generation_payload` (action
+        `start_generation`/`sg`, диспетчер — в `apply_webapp_prompt_payload_v2`,
+        по образцу `board_refs`/`board_style_analyze`) — резолвит модель/
+        формат/качество/длительность/детектор лиц/описание/фото в
+        `UserState`, строит карточку подтверждения (Экран V2, текст
+        дословно по спеке) и клавиатуру с существующей кнопкой запуска
+        (`callback_data="video_start"` → `_cb_video_start`/`run_seedance`,
+        ноль нового кода в биллинге/очереди/доставке результата) +
+        «🔁 Начать заново» (открывает пустой Конструктор заново тем же
+        персональным URL, без сохранения черновика — MVP).
+      · Серверная валидация фичефлагов модели (п.2): выключенная модель
+        (устаревший кэш вебаппа) не роняет обработку — откат на `seedance2`
+        + понятное сообщение «модель сейчас недоступна», карточка
+        показывается с дефолтом.
+      · Проброс конфигурации бот → вебапп (п.3) — `get_video_constructor_config()`
+        + `get_prompt_webapp_url(user_id, include_video_cfg=True)` (пропускает
+        `h=`-историю, весь бюджет URL — под `cfg`), сериализуется тем же
+        base64url-JSON приёмом, что уже есть у `h=`. Схема `cfg`
+        задокументирована в `docs/BOT_CONTRACT.md` (новый раздел «Конструктор
+        видео (Хаб генерации)») синхронно с уже смёрженным
+        `parseConstructorConfig`/`FALLBACK_CONFIG` в `constructor.js`.
+      · `VIDEO_CONSTRUCTOR_ENABLED` (config.py, дефолт `False`, kill-switch
+        по аналогии с `MOTION_CONTROL_ENABLED`/`STUDIO_ENABLED`).
+      · Оба входа обновлены синхронно: `persistent_menu_kb`/`handle_menu_button`
+        (`MENU_BTN_VIDEO`, reply-кнопка становится `web_app`-кнопкой под
+        флагом — тот же приём, что уже у `MENU_BTN_LIBRARY`) и `_cb_video_open`
+        (`video_cb == "video"`, инлайн-путь через `video_menu_kb`) — при
+        `VIDEO_CONSTRUCTOR_ENABLED=False` поведение обоих не меняется вообще.
+      · Reply-запуск (`tg.sendData()` без `initData`) подтверждён
+        достаточным для MVP — не требует ничего похожего на HMAC-очередь
+        Студии (п.6 спеки, прецедент — Доски).
+      · Вне скоупа этой сессии (Full, пункты 7-8 спеки): префилл черновика
+        («✏️ Изменить»), Midjourney-/Аватар-конструкторы — `product` кроме
+        `"video"` сегодня отвечает честным «скоро появится», без побочных
+        эффектов.
+      Тесты: `tests/test_block_24_webapp_generation_hub.py` (12 тестов —
+      парсинг payload полными и короткими ключами, откат модели на дефолт с
+      предупреждением, карточка подтверждения — точный текст/цена
+      (`calc_seedance_cost`/`get_video_model_cost_per_second` на момент
+      показа, не из payload), Wan 2.7 (свободная длительность, без строки
+      «Качество»), потолок фото `MAX_SEEDANCE_IMAGE_REFERENCES`, `product`
+      вне MVP — честное сообщение, kill-switch на обоих входах, форма `cfg`
+      совпадает с контрактом вебаппа). 84/84 pytest (72 прежних + 12 новых),
+      `py_compile` OK.
+      **Уточнение 2026-08-14 при слиянии с параллельной веткой (Full,
+      см. запись в «Выполнено» ниже): `get_prompt_webapp_url(user_id,
+      include_video_cfg=True)` и форма `cfg` из этого пункта были ранним
+      черновиком — при сверке с реальным `constructor.js` в репо вебаппа
+      (уже смёрженным) схема оказалась другой (`video_models`, не `models`+
+      `default_model`). Итоговый источник истины — `get_video_constructor_config()`
+      в его текущем виде и `docs/BOT_CONTRACT.md`, а не эта историческая
+      запись.**
+
 - [x] P1 · «Видео 2.5» (Seedance 2.5 через EvoLink) — бриф от аналитика рынка
       (запрос партнёра-креатора, docs/ai-market/2026-08-08-creator-candidates.md;
       сам бриф зафастрял на ветке `claude/sirnika-ai-market-analysis-66sdgs` и
@@ -1203,3 +1264,32 @@
       расширенной спеки (в работе у ux-ui-designer). 27 новых тестов
       (`tests/test_block_24_webapp_generation_hub.py`), полный прогон
       `pytest tests/` — 88/88.
+
+- [x] P0 · Разрешён конфликт слияния PR #119 (эта ветка) с `main`: параллельная
+      сессия смёржила более узкий PR #120 (только `product=video`,
+      `apply_webapp_generation_payload`, `VIDEO_CONSTRUCTOR_ENABLED`,
+      `get_video_constructor_config()`) в main, пока эта ветка независимо
+      строилась поверх более старой версии main — обе стороны написали
+      пересекающийся код для видео-части. При сверке обеих реализаций с
+      уже смёрженным `constructor.js` в репо вебаппа (`/Users/…/projects/_webapp`)
+      выяснилось, что схема `cfg` из PR #120 (`{"models":[...],
+      "default_model":...}`, поля `id`/`formats`/`quality: ["pro","fast"]`,
+      `wan27` с `{"custom":[min,max]}`/`{"per_second": N}`) была ранним
+      черновиком спеки и НЕ совпадала с тем, что реально ожидает вебапп
+      (`parseCfgFromUrl`/`FALLBACK_CFG` в `constructor.js`: `{"video_models":
+      [...]}`, поля `code`/`aspects`/`modes`/`prices`, без обёртки
+      `default_model`, `wan27` — обычная дискретная таблица длительностей,
+      как у всех моделей). Итог слияния: дисптечер продуктов из этой ветки
+      (video/midjourney/avatar/photo) сохранён целиком, но резолв
+      video-настроек (формат/качество/длительность/детектор лиц/описание —
+      резолв библиотечных `cat_idx`/`item_idx`) взят из более аккуратной
+      реализации PR #120 (`get_video_aspect_options`/`resolve_webapp_video_
+      quality`/`VIDEO_QUALITY_TOGGLE_MODELS`), а `get_video_constructor_config()`
+      переписан на верную схему `video_models`. Заодно поймана и убрана
+      мёртвая ветка кода: обе стороны независимо добавили один и тот же
+      `if VIDEO_CONSTRUCTOR_ENABLED and PROMPT_WEBAPP_URL:` блок подряд в
+      двух местах (`handle_menu_button`/`_cb_video_open`) — второй блок был
+      недостижим (первый уже делал `return`), убран. `docs/BOT_CONTRACT.md`
+      обновлён на верную схему. Тесты объединены в один файл (video-only
+      сценарии PR #120 + video/mj/avatar/photo/prefill/features сценарии
+      этой ветки), проверка формы `cfg` переписана под `video_models`.

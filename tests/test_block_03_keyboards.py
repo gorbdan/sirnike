@@ -111,13 +111,25 @@ def test_block_03_keyboards():
     assert "animate_last" not in cbs8, "3.13 animate_last скрыт при выключенном видео"
     S.SEEDANCE_ENABLED = _se
 
+    # Радикальное упрощение (docs/specs/2026-08-14_menu_simplification_and_
+    # enhance_constructor.md) — главное меню сжато до 3 кнопок: Библиотека
+    # (единственный вход во весь вебапп-хаб) + Баг-баунти + Баланс. Продуктовые
+    # чат-флоу (Фото/Видео/Аватар/Midjourney/реферал/help/report) больше НЕ
+    # кнопки меню — но хендлеры остаются в коде (см. photo_menu_kb/video_menu_kb
+    # тесты 3.14a/3.14b ниже — сами функции не удалены).
     mkb = S.main_menu_kb()
     mcbs = [b.callback_data for row in mkb.inline_keyboard for b in row if b.callback_data]
-    assert ("menu_photo" in mcbs and "menu_video" in mcbs
-            and not any(c in mcbs for c in
-                        ("generate", "video", "avatar_actions", "enhance_photo", "image_model_menu"))), (
-        f"3.14 главное меню: только входы в разделы «Фото»/«Видео», без прямых продуктовых кнопок: {mcbs}"
+    assert "bug_bounty" in mcbs and "show_buy" in mcbs, (
+        f"3.14 главное меню: есть Баг-баунти и Баланс: {mcbs}"
     )
+    assert not any(c in mcbs for c in
+                   ("menu_photo", "menu_video", "open_ref", "show_help", "report_problem")), (
+        f"3.14b главное меню: НЕТ убранных кнопок (Фото/Видео/реферал/help/проблема): {mcbs}"
+    )
+    mflat = [b for row in mkb.inline_keyboard for b in row]
+    assert len(mflat) == 3, f"3.14c главное меню: ровно 3 кнопки: {[b.text for b in mflat]}"
+    lib_btn = [b for b in mflat if b.text == S.MENU_BTN_LIBRARY]
+    assert len(lib_btn) == 1, f"3.14d главное меню: есть кнопка библиотеки с текстом MENU_BTN_LIBRARY: {[b.text for b in mflat]}"
 
     pkb = S.photo_menu_kb()
     pcbs = [b.callback_data for row in pkb.inline_keyboard for b in row if b.callback_data]

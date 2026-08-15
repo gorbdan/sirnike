@@ -243,6 +243,10 @@ VIDEO_CONSTRUCTOR_ENABLED = os.getenv("VIDEO_CONSTRUCTOR_ENABLED", "0").strip().
 MIDJOURNEY_CONSTRUCTOR_ENABLED = os.getenv("MIDJOURNEY_CONSTRUCTOR_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 AVATAR_CONSTRUCTOR_ENABLED = os.getenv("AVATAR_CONSTRUCTOR_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 PHOTO_CONSTRUCTOR_ENABLED = os.getenv("PHOTO_CONSTRUCTOR_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+# «Улучшить фото» в вебапп-хабе (docs/specs/2026-08-14_menu_simplification_and_enhance_constructor.md) —
+# простейший из конструкторов: одно фото, без текстовых полей, фиксированный
+# промт/модель. Тот же kill-switch-принцип — выключено не крэшит, а честно отказывает.
+ENHANCE_CONSTRUCTOR_ENABLED = os.getenv("ENHANCE_CONSTRUCTOR_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 
 if AI_PROVIDER == "ZVENO" and not ZVENO_API_KEY:
     raise RuntimeError("Missing required environment variable for ZVENO: ZVENO_API_KEY")

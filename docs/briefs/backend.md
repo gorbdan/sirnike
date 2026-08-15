@@ -4,6 +4,40 @@
 
 ## Очередь
 
+- [x] P1 · Радикальное упрощение меню бота + «Улучшить фото» в вебапп
+      ([docs/specs/2026-08-14_menu_simplification_and_enhance_constructor.md](../specs/2026-08-14_menu_simplification_and_enhance_constructor.md),
+      продуктовое решение Ани): раз Хаб генерации в вебаппе закрывает ВСЕ
+      продукты одним экраном — держать те же продукты ещё раз отдельными
+      чат-флоу в меню бота избыточно.
+      - `product=enhance` — новая ветка `_apply_webapp_generation_enhance` в
+        диспетчере `apply_webapp_generation_payload`: ровно 1 фото из `refs`,
+        фиксированный промт (`ENHANCE_PHOTO_PROMPT`)/модель (`gemini`),
+        карточка подтверждения — ПРЯМОЙ вызов существующих
+        `photo_draft_text`/`photo_draft_kb` (не новый текст). Kill-switch
+        `ENHANCE_CONSTRUCTOR_ENABLED` (config.py, дефолт `False`) +
+        `"enhance"` в `_generation_hub_features_payload()`/`&features=`.
+      - `main_menu_kb`/`persistent_menu_kb` сжаты до 3 кнопок («📚 Библиотека
+        и генерация» + «🐞 Баг-баунти» + «💰 Баланс»). Хендлеры
+        Фото/Видео/Аватар/Midjourney/реферала/help/report НЕ удалены из
+        кода — только убраны как кнопки меню (см. спеку, «Что НЕ удаляется»).
+        `_prompt_library_button` (единственный теперь вход во весь хаб) —
+        убран форсированный `&tab=library`, юзер видит дефолт вебаппа
+        («Создать»); остальные 12 точек входа из PR #124 (tab=library
+        миграция, другая задача) продолжают форсировать `&tab=library` —
+        не тронуты. Кнопка переименована в единую константу
+        `MENU_BTN_LIBRARY` = «📚 Библиотека и генерация», синхронизирована
+        по всему файлу (было 3 расходящихся места с литералом «📚 Библиотека
+        стилей»).
+      - Новый раздел «Меню бота» в `docs/BOT_CONTRACT.md` — контракт для
+        вебаппа: единственная точка входа теперь библиотечная кнопка.
+      - Тесты: `tests/test_block_24_webapp_generation_hub.py`
+        (`test_block_24u/24v/24w_enhance_*`, `test_block_24x2_enhance_feature_flag_*`,
+        обновлены `24t2`/`24x`/`24h3` под новую композицию меню и 5 флагов),
+        `tests/test_block_12_bug_bounty.py` (`test_block_12b/12c_*`),
+        `tests/test_block_03_keyboards.py` (`3.14*` под новую композицию
+        `main_menu_kb`). `python3 -m py_compile SirNike.py config.py` +
+        весь `pytest tests/` зелёные (123 теста).
+
 - [ ] P2 · Проверить/расширить права `GITHUB_TOKEN` на репо `gorbdan/_webapp` —
       **не код, действие Ани в панели GitHub**. `_push_top_styles_to_webapp_repo()`
       (docs/specs/2026-07-16_top_styles_stats_feed.md, коммит `609825f`, на

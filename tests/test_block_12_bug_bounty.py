@@ -160,3 +160,43 @@ def test_block_12_bug_bounty():
         f"11.22 фото из этого же сообщения тоже переслано админу: {photo_calls}"
     )
     S.ADMIN_IDS[:] = _orig_admin_ids4
+
+
+def test_block_12b_menu_simplification_bug_bounty_entry_point():
+    # Радикальное упрощение меню (docs/specs/2026-08-14_menu_simplification_
+    # and_enhance_constructor.md) добавило «🐞 Баг-баунти» как постоянную
+    # кнопку меню (раньше — только инлайн-кнопка в main_menu_kb) —
+    # handle_menu_button должен уметь ловить её текстовый ярлык так же, как
+    # уже ловит MENU_BTN_PHOTO/MENU_BTN_VIDEO/MENU_BTN_HELP.
+    update, context, message = make_text_update(S.MENU_BTN_BUG_BOUNTY, user_id=9612)
+    update.message = message
+    applied = asyncio.run(S.handle_menu_button(update, context, S.MENU_BTN_BUG_BOUNTY))
+    assert applied is True, "12b.1 MENU_BTN_BUG_BOUNTY распознан как кнопка меню"
+    st12b = context.user_data.get("state")
+    assert isinstance(st12b, S.UserState) and st12b.waiting_for_bug_report is True, (
+        "12b.2 роутится ровно в bug_bounty_command (взводит waiting_for_bug_report)"
+    )
+
+
+def test_block_12c_main_and_persistent_menu_reduced_to_three_buttons():
+    # Критерий приёмки спеки: main_menu_kb/persistent_menu_kb — ровно 3
+    # кнопки, тексты буква в букву синхронны между обоими меню.
+    _orig_url = S.PROMPT_WEBAPP_URL
+    S.PROMPT_WEBAPP_URL = None  # инлайн-путь без web_app, чтобы не завязываться на URL
+    try:
+        mkb = S.main_menu_kb()
+        mtexts = {b.text for row in mkb.inline_keyboard for b in row}
+        assert mtexts == {S.MENU_BTN_LIBRARY, S.MENU_BTN_BUG_BOUNTY, S.MENU_BTN_BALANCE}, (
+            f"12c.1 main_menu_kb — ровно 3 текста, синхронных с persistent_menu_kb: {mtexts}"
+        )
+
+        pkb = S.persistent_menu_kb()
+        ptexts = {b.text for row in pkb.keyboard for b in row}
+        assert ptexts == mtexts, f"12c.2 persistent_menu_kb — те же 3 текста, что main_menu_kb: {ptexts}"
+
+        for removed in ("📸 Фото", "🎬 Видео", "🎁 Пригласить друга", "❓ Как пользоваться", "🚨 Проблема"):
+            assert removed not in mtexts and removed not in ptexts, (
+                f"12c.3 убранная кнопка «{removed}» отсутствует в обоих меню"
+            )
+    finally:
+        S.PROMPT_WEBAPP_URL = _orig_url

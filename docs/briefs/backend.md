@@ -21,16 +21,21 @@
       write-доступ и к этому репо тоже (GitHub PAT → Settings → тот же
       токен → добавить репозиторий в scope, или новый fine-grained токен на
       оба репо).
-- [ ] P2 · Явный `&tab=library` на всех сегодняшних вызовах `get_prompt_webapp_url(...)`
-      без `tab` — БЛОКИРУЕТСЯ фронтом (ждёт, пока вебапп реально сделает
-      «Создать» дефолтным экраном, см. [docs/specs/2026-08-13_webapp_generation_hub_navigation_full.md](../specs/2026-08-13_webapp_generation_hub_navigation_full.md),
-      раздел 1.4). Полный список мест — 12 вызовов, точные номера строк
-      в самой спеке (проверено `grep`, включая обе кнопки «📚 Открыть
-      библиотеку», `webapp_open_kb`). Причина: если дефолт вебаппа
-      молча сменится на «Создать», эти кнопки станут врать о своём эффекте.
-      НЕ делать раньше, чем фронт подтвердит, что новый дефолт реально
-      выкатился — иначе `tab=library` бессмысленный no-op (сегодняшний
-      дефолт и так открывает библиотеку).
+- [x] P2 · Явный `&tab=library` на всех сегодняшних вызовах `get_prompt_webapp_url(...)`
+      без `tab` (см. [docs/specs/2026-08-13_webapp_generation_hub_navigation_full.md](../specs/2026-08-13_webapp_generation_hub_navigation_full.md),
+      раздел 1.4). Ранее было отмечено «блокируется фронтом» — проверено
+      напрямую: вебапп (`_webapp/index.html`) уже отдаёт `pageCreate` без
+      `class="hidden"`, а `pageKatalog` скрыт, то есть дефолт реально
+      переключён на «Создать», блокер снят. Добавлен `&tab=library` в 13
+      мест (`photo_draft_kb`, `_prompt_library_button`, `persistent_menu_kb`,
+      `promo_try_kb`, `webapp_open_kb`, `webapp_inline_kb`,
+      `broadcast_library_kb`, `result_actions_kb`, `balance()`, привязка
+      доски к описанию, 2 фолбэка «стиль устарел» в showcase-коллбэках) —
+      все они реально должны открывать каталог, не «Создать». Не тронуты
+      `get_video_constructor_webapp_url`/`constructor_prefill_url` — уже
+      несут собственный явный `&tab=...`. Тест:
+      `test_block_24x_library_entry_points_get_explicit_tab_library`
+      (`tests/test_block_24_webapp_generation_hub.py`).
 
 - [x] P1 · Хаб генерации — Конструктор видео для Reels, бэкенд-часть (пункты
       1-6 из [docs/specs/2026-08-13_webapp_generation_hub.md](../specs/2026-08-13_webapp_generation_hub.md),

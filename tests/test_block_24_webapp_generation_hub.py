@@ -785,3 +785,61 @@ def test_block_24w_library_video_style_unchanged_when_flag_off():
         ), "24w.2 второе сообщение — обычная video_kb-панель"
     finally:
         S.VIDEO_CONSTRUCTOR_ENABLED = _orig_flag
+
+
+def test_block_24x_library_entry_points_get_explicit_tab_library():
+    # Миграция дефолта Mini App на «Создать» (docs/specs/2026-08-13_webapp_
+    # generation_hub_navigation_full.md, 1.4): get_prompt_webapp_url() без
+    # &tab= сегодня открывает каталог Библиотеки неявным дефолтом, но Full
+    # переключает дефолт на «Создать» — значит КАЖДЫЙ существующий вход
+    # «Открыть библиотеку»/«Библиотека стилей» обязан получить явный
+    # &tab=library, иначе кнопка перестанет открывать то, что называет.
+    _orig_url = S.PROMPT_WEBAPP_URL
+    S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
+    try:
+        uid = 9601
+
+        # webapp_open_kb / webapp_inline_kb — буквально названы в спеке
+        # («📚 Открыть библиотеку», reply и inline).
+        open_kb = S.webapp_open_kb(uid)
+        open_btn = open_kb.keyboard[0][0]
+        assert open_btn.web_app is not None and "&tab=library" in open_btn.web_app.url, (
+            f"24x.1 webapp_open_kb (reply) открывает каталог: {open_btn.web_app.url if open_btn.web_app else None}"
+        )
+
+        inline_kb = S.webapp_inline_kb(uid)
+        inline_btn = inline_kb.inline_keyboard[0][0]
+        assert inline_btn.web_app is not None and "&tab=library" in inline_btn.web_app.url, (
+            f"24x.2 webapp_inline_kb (inline) открывает каталог: {inline_btn.web_app.url if inline_btn.web_app else None}"
+        )
+
+        # persistent_menu_kb — постоянная reply-кнопка «📚 Библиотека стилей».
+        menu_kb = S.persistent_menu_kb(uid)
+        lib_btn = [b for row in menu_kb.keyboard for b in row if b.text == S.MENU_BTN_LIBRARY][0]
+        assert lib_btn.web_app is not None and "&tab=library" in lib_btn.web_app.url, (
+            f"24x.3 persistent_menu_kb библиотека: {lib_btn.web_app.url if lib_btn.web_app else None}"
+        )
+
+        # result_actions_kb — «📚 Библиотека стилей» под результатом генерации.
+        result_kb = S.result_actions_kb(uid)
+        result_btn = [b for row in result_kb.inline_keyboard for b in row if b.text == "📚 Библиотека стилей"][0]
+        assert result_btn.web_app is not None and "&tab=library" in result_btn.web_app.url, (
+            f"24x.4 result_actions_kb библиотека: {result_btn.web_app.url if result_btn.web_app else None}"
+        )
+
+        # broadcast_library_kb — рассылки.
+        broadcast_kb = S.broadcast_library_kb(uid)
+        broadcast_btn = broadcast_kb.inline_keyboard[0][0]
+        assert broadcast_btn.web_app is not None and "&tab=library" in broadcast_btn.web_app.url, (
+            f"24x.5 broadcast_library_kb: {broadcast_btn.web_app.url if broadcast_btn.web_app else None}"
+        )
+
+        # video_constructor_kb/get_video_constructor_webapp_url и
+        # constructor_prefill_url НЕ трогаются — они уже несут собственный
+        # явный &tab=video_constructor/&tab={tab}, миграция их не касается.
+        video_url = S.get_video_constructor_webapp_url(uid)
+        assert "&tab=video_constructor" in video_url and "&tab=library" not in video_url, (
+            f"24x.6 конструктор видео не получает library вместо своего таба: {video_url}"
+        )
+    finally:
+        S.PROMPT_WEBAPP_URL = _orig_url

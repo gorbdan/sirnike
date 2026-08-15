@@ -920,7 +920,7 @@ def photo_draft_kb(state: "UserState", user_id: Optional[int] = None) -> InlineK
     if PROMPT_WEBAPP_URL and user_id is not None:
         library_button = InlineKeyboardButton(
             "📚 Выбрать другой стиль" if prompt else "📚 Выбрать стиль",
-            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)),
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=library"),
         )
     else:
         pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
@@ -1549,7 +1549,7 @@ def _prompt_library_button(user_id: Optional[int] = None) -> InlineKeyboardButto
     if PROMPT_WEBAPP_URL and user_id is not None:
         return InlineKeyboardButton(
             "📚 Библиотека стилей",
-            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)),
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=library"),
         )
     pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
     return InlineKeyboardButton("📚 Библиотека стилей", callback_data=pl_cb)
@@ -1660,7 +1660,7 @@ def persistent_menu_kb(user_id: Optional[int] = None) -> ReplyKeyboardMarkup:
     if PROMPT_WEBAPP_URL and user_id is not None:
         library_btn = KeyboardButton(
             MENU_BTN_LIBRARY,
-            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)),
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=library"),
         )
     else:
         library_btn = KeyboardButton(MENU_BTN_LIBRARY)
@@ -1723,7 +1723,7 @@ def promo_try_kb(promo_id: str, user_id: Optional[int] = None) -> InlineKeyboard
     if PROMPT_WEBAPP_URL and user_id is not None:
         rows.append([InlineKeyboardButton(
             "📚 Библиотека стилей",
-            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)),
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=library"),
         )])
     elif PROMPT_WEBAPP_URL:
         rows.append([InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open_webapp")])
@@ -1830,8 +1830,12 @@ def avatar_gen_kind_kb() -> InlineKeyboardMarkup:
 
 
 def webapp_open_kb(user_id: int = None) -> ReplyKeyboardMarkup:
+    # tab=library: миграция дефолта Mini App на «Создать» (Full-навигация,
+    # docs/specs/2026-08-13_webapp_generation_hub_navigation_full.md, 1.4) —
+    # без явного tab кнопка «📚 Открыть библиотеку» открыла бы «Создать»
+    # вместо каталога, соврав о своём эффекте.
     return ReplyKeyboardMarkup(
-        [[KeyboardButton("📚 Открыть библиотеку", web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)))]],
+        [[KeyboardButton("📚 Открыть библиотеку", web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=library"))]],
         resize_keyboard=True,
         one_time_keyboard=True,
         selective=True,
@@ -1840,7 +1844,7 @@ def webapp_open_kb(user_id: int = None) -> ReplyKeyboardMarkup:
 
 def webapp_inline_kb(user_id: int = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📚 Открыть библиотеку", web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)))]
+        [InlineKeyboardButton("📚 Открыть библиотеку", web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=library"))]
     ])
 
 
@@ -2304,7 +2308,7 @@ def broadcast_library_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
             [InlineKeyboardButton(
                 "📚 Библиотека стилей",
-                web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)),
+                web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=library"),
             )]
         ])
     if PROMPT_WEBAPP_URL:
@@ -2422,7 +2426,7 @@ def result_actions_kb(user_id: int = 0, bot_username: str = "") -> InlineKeyboar
     if PROMPT_WEBAPP_URL and user_id:
         switchers.append(InlineKeyboardButton(
             "📚 Библиотека стилей",
-            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)),
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=library"),
         ))
     else:
         pl_cb = "pl_open_webapp" if PROMPT_WEBAPP_URL else "pl_open"
@@ -2614,7 +2618,7 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if PROMPT_WEBAPP_URL:
         library_button = InlineKeyboardButton(
             "📚 Библиотека стилей",
-            web_app=WebAppInfo(url=get_prompt_webapp_url(user.id)),
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user.id) + "&tab=library"),
         )
     else:
         library_button = InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open")
@@ -4267,7 +4271,7 @@ async def apply_webapp_board_refs_payload(update: Update, context: ContextTypes.
     if update.effective_message and update.effective_user:
         library_btn = InlineKeyboardButton(
             MENU_BTN_LIBRARY,
-            web_app=WebAppInfo(url=get_prompt_webapp_url(update.effective_user.id)),
+            web_app=WebAppInfo(url=get_prompt_webapp_url(update.effective_user.id) + "&tab=library"),
         ) if PROMPT_WEBAPP_URL else InlineKeyboardButton(MENU_BTN_LIBRARY, callback_data="pl_open")
         await update.effective_message.reply_text(
             f"🖼️ Доска «{board_name}» подключена — фото из неё будут использоваться\n"
@@ -5035,7 +5039,7 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
             if PROMPT_WEBAPP_URL:
                 retry_btn = InlineKeyboardButton(
                     "📚 Библиотека стилей",
-                    web_app=WebAppInfo(url=get_prompt_webapp_url(update.effective_user.id)),
+                    web_app=WebAppInfo(url=get_prompt_webapp_url(update.effective_user.id) + "&tab=library"),
                 )
             else:
                 retry_btn = InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open")
@@ -7245,7 +7249,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if PROMPT_WEBAPP_URL:
                 retry_btn = InlineKeyboardButton(
                     "📚 Библиотека стилей",
-                    web_app=WebAppInfo(url=get_prompt_webapp_url(user.id)),
+                    web_app=WebAppInfo(url=get_prompt_webapp_url(user.id) + "&tab=library"),
                 )
             else:
                 retry_btn = InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open")
@@ -7535,7 +7539,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if PROMPT_WEBAPP_URL:
                 retry_btn = InlineKeyboardButton(
                     "📚 Библиотека стилей",
-                    web_app=WebAppInfo(url=get_prompt_webapp_url(user.id)),
+                    web_app=WebAppInfo(url=get_prompt_webapp_url(user.id) + "&tab=library"),
                 )
             else:
                 retry_btn = InlineKeyboardButton("📚 Библиотека стилей", callback_data="pl_open")

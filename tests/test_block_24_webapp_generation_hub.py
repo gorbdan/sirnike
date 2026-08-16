@@ -8,6 +8,8 @@ payload `start_generation`/`sg` с полем `product` — бот резолв�
 `avatar_gen_start`/`generate`). Сам запуск/списание/очередь/доставка результата НЕ
 меняются — это тот же биллинг-путь, что и всегда."""
 import asyncio
+import base64
+import json
 import types
 
 from test_helpers import S, make_webapp_update_context, make_update_context
@@ -955,3 +957,83 @@ def test_block_24x_library_entry_points_get_explicit_tab_library():
         assert lib_button.text == S.MENU_BTN_LIBRARY, f"24x.8 текст кнопки — MENU_BTN_LIBRARY: {lib_button.text}"
     finally:
         S.PROMPT_WEBAPP_URL = _orig_url
+
+
+def _patch_avatar_db(monkeypatch_dict):
+    orig = {name: getattr(S, name) for name in ("get_avatar_urls", "get_active_avatar_kind", "set_active_avatar_kind")}
+    S.get_avatar_urls = lambda uid: monkeypatch_dict.get("urls", {})
+    S.get_active_avatar_kind = lambda uid: monkeypatch_dict.get("active")
+    calls = []
+    S.set_active_avatar_kind = lambda uid, kind: calls.append((uid, kind))
+    return orig, calls
+
+
+def test_block_24y_avatar_list_payload_reflects_saved_avatars():
+    orig, _ = _patch_avatar_db({
+        "urls": {"female": "https://i.ibb.co/av/f.jpg", "male": "https://i.ibb.co/av/m.jpg"},
+        "active": "male",
+    })
+    try:
+        payload = S._avatar_list_payload(1)
+        assert payload == {"avatars": [
+            {"kind": "female", "label": "женский 👩", "url": "https://i.ibb.co/av/f.jpg", "active": False},
+            {"kind": "male", "label": "мужской 👨", "url": "https://i.ibb.co/av/m.jpg", "active": True},
+        ]}, f"24y.1 только реально существующие аватары, активный помечен: {payload}"
+    finally:
+        for name, fn in orig.items():
+            setattr(S, name, fn)
+
+
+def test_block_24z_avatars_url_param_only_when_avatar_constructor_enabled():
+    orig, _ = _patch_avatar_db({"urls": {"female": "https://i.ibb.co/av/f.jpg"}, "active": "female"})
+    _orig_flag = S.AVATAR_CONSTRUCTOR_ENABLED
+    _orig_url = S.PROMPT_WEBAPP_URL
+    S.PROMPT_WEBAPP_URL = "https://example.pages.dev/"
+    try:
+        S.AVATAR_CONSTRUCTOR_ENABLED = False
+        assert "&avatars=" not in S.get_prompt_webapp_url(1), "24z.1 флаг выключен -> список не пробрасывается"
+        S.AVATAR_CONSTRUCTOR_ENABLED = True
+        url = S.get_prompt_webapp_url(1)
+        assert "&avatars=" in url, "24z.2 флаг включён -> список в URL"
+        raw = url.split("&avatars=", 1)[1].split("&", 1)[0]
+        decoded = json.loads(base64.urlsafe_b64decode(raw.encode()).decode())
+        assert decoded["avatars"][0]["kind"] == "female", f"24z.3 декодируется обратно верно: {decoded}"
+    finally:
+        for name, fn in orig.items():
+            setattr(S, name, fn)
+        S.AVATAR_CONSTRUCTOR_ENABLED = _orig_flag
+        S.PROMPT_WEBAPP_URL = _orig_url
+
+
+def test_block_24aa_set_active_avatar_switches_and_confirms():
+    orig, calls = _patch_avatar_db({
+        "urls": {"female": "https://i.ibb.co/av/f.jpg", "male": "https://i.ibb.co/av/m.jpg"},
+        "active": "female",
+    })
+    try:
+        update, context, message = make_webapp_update_context()
+        applied = asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "set_active_avatar", "avatar_type": "male",
+        }))
+        assert applied is True, "24aa.1 payload распознан"
+        assert calls == [(9501, "male")], f"24aa.2 set_active_avatar_kind вызван с верными аргументами: {calls}"
+        text = message.reply_text.await_args_list[0].args[0]
+        assert "мужской" in text and "✅" in text, f"24aa.3 честное подтверждение: {text!r}"
+    finally:
+        for name, fn in orig.items():
+            setattr(S, name, fn)
+
+
+def test_block_24ab_set_active_avatar_rejects_nonexistent_kind():
+    orig, calls = _patch_avatar_db({"urls": {"female": "https://i.ibb.co/av/f.jpg"}, "active": "female"})
+    try:
+        update, context, message = make_webapp_update_context()
+        asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "saa", "at": "male",
+        }))
+        assert calls == [], "24ab.1 аватар мужской ещё не создан — переключение не вызывается"
+        text = message.reply_text.await_args_list[0].args[0]
+        assert "ещё не создан" in text, f"24ab.2 честный отказ: {text!r}"
+    finally:
+        for name, fn in orig.items():
+            setattr(S, name, fn)

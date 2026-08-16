@@ -1338,6 +1338,27 @@ def _generation_hub_features_payload() -> dict:
     }
 
 
+def _avatar_list_payload(user_id: int) -> dict:
+    """Список уже сохранённых аватаров юзера для экрана «Аватар» в вебаппе —
+    `{"avatars": [{"kind","label","url","active"}, ...]}`, только реально
+    существующие (не все 3 типа заглушками). Источник истины — та же БД,
+    что и у чат-флоу `avatar_actions_kb`/`_cb_avatar_gen_kind`, не дублирует
+    логику, просто читает `get_avatar_urls`/`get_active_avatar_kind`."""
+    urls = get_avatar_urls(user_id) or {}
+    active_kind = get_active_avatar_kind(user_id)
+    items = []
+    for kind in ("female", "male", "child"):
+        url = urls.get(kind)
+        if url:
+            items.append({
+                "kind": kind,
+                "label": avatar_kind_label(kind),
+                "url": url,
+                "active": kind == active_kind,
+            })
+    return {"avatars": items}
+
+
 def get_prompt_webapp_url(user_id: int = None) -> str:
     base = str(PROMPT_WEBAPP_URL or "").strip()
     if not base:
@@ -1358,6 +1379,16 @@ def get_prompt_webapp_url(user_id: int = None) -> str:
     if user_id is not None:
         bal = get_balance(user_id)
         url += f"&balance={bal}"
+        if AVATAR_CONSTRUCTOR_ENABLED:
+            # Экран «Аватар» в вебаппе изначально умел только создавать новый
+            # аватар — списка уже сохранённых/активных не было вообще (живой
+            # фидбек Ани 2026-08-16). Тот же приём, что &cfg=/&features= —
+            # бот передаёт готовые данные, у вебаппа нет своего доступа к БД.
+            try:
+                av_raw = json.dumps(_avatar_list_payload(user_id), ensure_ascii=False, separators=(",", ":"))
+                url += f"&avatars={base64.urlsafe_b64encode(av_raw.encode()).decode()}"
+            except Exception as e:
+                logger.warning("Failed to encode avatar list for webapp URL: %s", e)
         try:
             history = get_generation_history(user_id, limit=10)
             if history:
@@ -4792,6 +4823,31 @@ async def _apply_webapp_generation_midjourney(update: Update, context: ContextTy
     return True
 
 
+async def apply_webapp_set_active_avatar_payload(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
+    """Переключение активного аватара из списка на экране «Аватар» в
+    вебаппе (docs/briefs/frontend.md, живой фидбек Ани 2026-08-16 — раньше
+    список сохранённых аватаров там не показывался вообще). Бесплатное
+    мгновенное действие (никакой генерации/списания) — тот же
+    `set_active_avatar_kind`, что и кнопки-переключатели в чате
+    (`avatar_actions_kb`)."""
+    if not update.effective_message or not update.effective_user:
+        return True
+    user_id = update.effective_user.id
+    kind = str(payload.get("avatar_type") or payload.get("at") or "").strip().lower()
+    if kind not in ("female", "male", "child"):
+        await update.effective_message.reply_text("Не удалось определить, какой аватар включить — попробуй ещё раз.")
+        return True
+    urls = get_avatar_urls(user_id) or {}
+    if not urls.get(kind):
+        await update.effective_message.reply_text(
+            f"Аватар «{avatar_kind_label(kind)}» ещё не создан — сначала сгенерируй его."
+        )
+        return True
+    set_active_avatar_kind(user_id, kind)
+    await update.effective_message.reply_text(f"Готово ✅ Активный аватар: {avatar_kind_label(kind)}")
+    return True
+
+
 async def _apply_webapp_generation_avatar(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
     """product=avatar — вебапп собирает тип аватара + фото одним экраном,
     бот резолвит в те же поля, что заполняет сегодняшний мини-флоу
@@ -4978,6 +5034,8 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
         return await apply_webapp_board_style_analyze_payload(update, context, payload)
     if action in {"start_generation", "sg"}:
         return await apply_webapp_generation_payload(update, context, payload)
+    if action in {"set_active_avatar", "saa"}:
+        return await apply_webapp_set_active_avatar_payload(update, context, payload)
     if action == "topup":
         if update.effective_message:
             user_id_for_kb = update.effective_user.id if update.effective_user else None

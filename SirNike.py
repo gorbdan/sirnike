@@ -3669,13 +3669,38 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     create_user_if_not_exists(user.id, user.username, START_BONUS)
 
     # Telegram доставляет боту копию его же answerWebAppQuery-сообщения как
-    # обычный message-update в личном чате (via_bot = сам бот) — например,
-    # заглушку "📚 Стиль подобран — жми ниже 👇" из инлайн-1-тапа библиотеки
-    # (docs/specs/2026-07-17_via_bot_message_leak.md). Без этого фильтра
-    # текст заглушки доходил до state.prompt = text ниже и затирал реально
-    # выбранный стиль раньше, чем успевал сработать pl_use_ по кнопке под ней.
+    # обычный message-update в личном чате (via_bot = сам бот). Два разных
+    # источника такого сообщения:
+    # 1) заглушка "📚 Стиль подобран — жми ниже 👇" из инлайн-1-тапа
+    #    библиотеки (docs/specs/2026-07-17_via_bot_message_leak.md) —
+    #    payload лежит в callback_data кнопки под сообщением, сам текст
+    #    нужно молча игнорировать (не путать со state.prompt).
+    # 2) хаб генерации (2026-08-16, живой фидбек Ани): «✏️ Изменить» и вход
+    #    в конструкторы из инлайн-меню сами InlineKeyboardButton(web_app=...)
+    #    — по документации Telegram sendData() тут не работает вообще
+    #    (нужен answerWebAppQuery), а у «✏️ Изменить» нет и не может быть
+    #    reply-клавиатурной альтернативы (это контекст конкретного
+    #    сообщения) — единственный рабочий путь донести туда полный
+    #    payload — message_text ответа answerWebAppQuery
+    #    (answer-webapp-payload.js, репо вебаппа). Текст — валидный JSON с
+    #    полем action/a — прогоняем через ТОТ ЖЕ apply_webapp_prompt_payload_v2,
+    #    что и sendData-путь, ничего не дублируем; исходное JSON-сообщение
+    #    сразу удаляем — юзер не должен видеть сырой JSON в чате.
     _via_bot = getattr(update.message, "via_bot", None)
     if _via_bot and _via_bot.id == context.bot.id:
+        vb_text = (update.message.text or "").strip()
+        if vb_text.startswith("{") and vb_text.endswith("}"):
+            try:
+                vb_payload = json.loads(vb_text)
+            except json.JSONDecodeError:
+                vb_payload = None
+            if isinstance(vb_payload, dict) and (vb_payload.get("action") or vb_payload.get("a")):
+                handled = await apply_webapp_prompt_payload_v2(update, context, vb_payload)
+                if handled:
+                    try:
+                        await update.message.delete()
+                    except Exception:
+                        pass
         return
 
     text = update.message.text.strip()

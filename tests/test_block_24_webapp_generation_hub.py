@@ -11,8 +11,9 @@ import asyncio
 import base64
 import json
 import types
+from unittest.mock import AsyncMock
 
-from test_helpers import S, make_webapp_update_context, make_update_context
+from test_helpers import S, make_webapp_update_context, make_update_context, make_text_update
 
 
 def test_block_24_flag_off_declines_payload():
@@ -1037,3 +1038,44 @@ def test_block_24ab_set_active_avatar_rejects_nonexistent_kind():
     finally:
         for name, fn in orig.items():
             setattr(S, name, fn)
+
+
+def test_block_24ac_via_bot_json_payload_routes_to_v2_dispatcher_and_self_deletes():
+    # Инлайн-конструкторы (2026-08-16, живой фидбек Ани): tg.sendData() не
+    # работает с InlineKeyboardButton(web_app=...) — «✏️ Изменить» и вход из
+    # инлайн-меню вынуждены слать payload через answerWebAppQuery, который
+    # доставляет его боту как обычное текстовое сообщение с via_bot=сам бот.
+    _orig_flag = S.PHOTO_CONSTRUCTOR_ENABLED
+    S.PHOTO_CONSTRUCTOR_ENABLED = True
+    try:
+        update, context, message = make_text_update(
+            json.dumps({"action": "sg", "pr": "photo", "p": "via_bot тест"}), user_id=909,
+        )
+        context.bot.id = 999999
+        message.via_bot = types.SimpleNamespace(id=999999)
+        message.delete = AsyncMock()
+        asyncio.run(S.handle_text(update, context))
+        assert context.user_data["state"].prompt == "via_bot тест", (
+            f"24ac.1 payload распознан и прогнан через apply_webapp_prompt_payload_v2: "
+            f"{context.user_data.get('state')}"
+        )
+        assert message.reply_text.await_args_list, "24ac.2 карточка подтверждения отправлена как обычно"
+        message.delete.assert_awaited_once(), "24ac.3 сырое JSON-сообщение удалено — юзер его не видит"
+    finally:
+        S.PHOTO_CONSTRUCTOR_ENABLED = _orig_flag
+
+
+def test_block_24ad_via_bot_non_json_placeholder_still_ignored():
+    # Старый фикс (docs/specs/2026-07-17_via_bot_message_leak.md) не должен
+    # был сломаться — заглушка библиотеки по-прежнему молча игнорируется.
+    st_leak = S.UserState(prompt="реальный промт")
+    update, context, message = make_text_update(
+        "📚 Стиль подобран — жми ниже 👇", user_id=910, state=st_leak,
+    )
+    context.bot.id = 999999
+    message.via_bot = types.SimpleNamespace(id=999999)
+    message.delete = AsyncMock()
+    asyncio.run(S.handle_text(update, context))
+    assert context.user_data["state"].prompt == "реальный промт", "24ad.1 промт не затёрт"
+    assert message.reply_text.await_args_list == [], "24ad.2 ни одного ответа"
+    message.delete.assert_not_awaited(), "24ad.3 нераспознанный via_bot-текст не удаляется"

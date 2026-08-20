@@ -1699,15 +1699,22 @@ PERSISTENT_MENU_BUTTONS = {
 
 
 def persistent_menu_kb(user_id: Optional[int] = None) -> ReplyKeyboardMarkup:
-    # Если есть webapp-библиотека — делаем «Библиотека и генерация» web_app-
-    # кнопкой, чтобы открывалась сразу, без промежуточного тапа. &tab=library
-    # тут форсированно остаётся (PR #124, не в скоупе этой задачи) — это
-    # другая из 12 точек входа, не единственная (в отличие от
-    # _prompt_library_button, см. её комментарий).
+    # Единственная точка входа в вебапп в постоянной клавиатуре чата — её
+    # текст обещает «Библиотека И генерация», но раньше форсировала
+    # &tab=library, приземляя на каталог стилей: чтобы дойти до Фото/Видео/
+    # Аватар/MJ/Улучшить, юзеру нужно было ещё раз тапнуть «Создать» уже
+    # внутри вебаппа — живая жалоба Ани 2026-08-19 («функции доступны
+    # только по кнопке внизу»). Без &tab= вебапп открывается на дефолтном
+    # экране «Создать» (Full-навигация, docs/specs/
+    # 2026-08-13_webapp_generation_hub_navigation_full.md) — библиотека
+    # остаётся в одном тапе (вкладка «Стили» внутри вебаппа), просто больше
+    # не единственная стартовая точка. Остальные 12+ кнопок «Открыть
+    # библиотеку» (PR #124) не трогаем — их текст честно обещает только
+    # библиотеку, им &tab=library остаётся.
     if PROMPT_WEBAPP_URL and user_id is not None:
         library_btn = KeyboardButton(
             MENU_BTN_LIBRARY,
-            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id) + "&tab=library"),
+            web_app=WebAppInfo(url=get_prompt_webapp_url(user_id)),
         )
     else:
         library_btn = KeyboardButton(MENU_BTN_LIBRARY)

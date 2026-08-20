@@ -919,11 +919,14 @@ def test_block_24x_library_entry_points_get_explicit_tab_library():
             f"24x.2 webapp_inline_kb (inline) открывает каталог: {inline_btn.web_app.url if inline_btn.web_app else None}"
         )
 
-        # persistent_menu_kb — постоянная reply-кнопка «📚 Библиотека стилей».
+        # persistent_menu_kb — единственная точка входа в вебапп в постоянной
+        # клавиатуре чата, текст обещает «Библиотека и генерация» — 2026-08-19
+        # (живая жалоба Ани) больше НЕ форсирует &tab=library (иначе генерация
+        # была на 2 тапа дальше), открывает дефолтный экран «Создать».
         menu_kb = S.persistent_menu_kb(uid)
         lib_btn = [b for row in menu_kb.keyboard for b in row if b.text == S.MENU_BTN_LIBRARY][0]
-        assert lib_btn.web_app is not None and "&tab=library" in lib_btn.web_app.url, (
-            f"24x.3 persistent_menu_kb библиотека: {lib_btn.web_app.url if lib_btn.web_app else None}"
+        assert lib_btn.web_app is not None and "&tab=library" not in lib_btn.web_app.url, (
+            f"24x.3 persistent_menu_kb теперь открывает «Создать» по умолчанию: {lib_btn.web_app.url if lib_btn.web_app else None}"
         )
 
         # result_actions_kb — библиотечная кнопка (MENU_BTN_LIBRARY) под результатом генерации.

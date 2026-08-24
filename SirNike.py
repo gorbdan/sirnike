@@ -3906,7 +3906,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if state.waiting_for_video_prompt or state.video_session_active:
-        state.video_prompt = text
+        # Доски — Full: та же логика, что в хаб-конструкторе (см.
+        # _apply_webapp_generation_video) — активная доска подмешивается и
+        # в текст, набранный прямо в чате, не только в вебапп-пути.
+        state.video_prompt = apply_board_style_note(text, state.board_style_note) if state.board_style_note else text
         state.image_prompt = ""
         state.waiting_for_video_prompt = False
         state.video_session_active = True
@@ -3933,7 +3936,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     deactivate_video_session(state)
-    state.prompt = text
+    # Доски — Full: активная доска подмешивается и в описание, набранное
+    # прямо в чате (не только через хаб-конструктор в вебаппе, см.
+    # _apply_webapp_generation_photo) — это самый частый способ задать
+    # промт, живая жалоба Ани 2026-08-19 «доски не подмешиваются» ловилась
+    # именно тут.
+    state.prompt = apply_board_style_note(text, state.board_style_note) if state.board_style_note else text
     state.style_extract = False
     state.pending_report_kind = ""
 
@@ -4097,7 +4105,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             total_refs = add_video_image_url(state, direct_url)
             if caption:
-                state.video_prompt = caption
+                # Доски — Full: см. комментарий в handle_text.
+                state.video_prompt = apply_board_style_note(caption, state.board_style_note) if state.board_style_note else caption
             logger.info(
                 "handle_photo: added video image for user=%s, total=%s, animation_source_urls=%s",
                 user.id, total_refs, state.animation_source_urls,
@@ -4125,7 +4134,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # state.prompt — служебный фиксированный промт, caption его не трогает.
         if caption and state.prompt != ENHANCE_PHOTO_PROMPT:
             deactivate_video_session(state)
-            state.prompt = caption
+            # Доски — Full: см. комментарий в handle_text — то же самое для
+            # описания, присланного подписью к фото.
+            state.prompt = apply_board_style_note(caption, state.board_style_note) if state.board_style_note else caption
             state.style_extract = False
 
         chat_id = update.effective_chat.id
@@ -6576,7 +6587,9 @@ async def _cb_enhance_use_pending_text(update, context, query, user):
         await query.answer("Текст уже неактуален, напиши заново.", show_alert=True)
         return
     deactivate_video_session(state)
-    state.prompt = pending_text
+    # Доски — Full: см. комментарий в handle_text — тот же текст, просто
+    # применяется на шаг позже (юзер сначала попал в режим «Улучшить фото»).
+    state.prompt = apply_board_style_note(pending_text, state.board_style_note) if state.board_style_note else pending_text
     state.style_extract = False
     await query.message.reply_text(photo_draft_text(state, user.id), reply_markup=photo_draft_kb(state, user.id))
     return
@@ -7444,6 +7457,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _log_template_usage_safe(user.id, title, _shc_kind, cat_idx=cat_idx, item_idx=item_idx)
         state = get_or_init_state(context)
         state.image_prompt = str(item.get("image_prompt") or "").strip()
+        # Доски — Full: см. комментарий в handle_text.
+        if state.board_style_note:
+            prompt = apply_board_style_note(prompt, state.board_style_note)
         if _shc_kind == "video":
             state.video_prompt = prompt
             state.video_session_active = True
@@ -8129,7 +8145,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         state = get_or_init_state(context)
         deactivate_video_session(state)
-        state.prompt = promo["promo_prompt"]
+        # Доски — Full: см. комментарий в handle_text.
+        promo_prompt = promo["promo_prompt"]
+        state.prompt = apply_board_style_note(promo_prompt, state.board_style_note) if state.board_style_note else promo_prompt
         state.style_extract = False
 
         register_promo_click(promo_id, update.effective_user.id)

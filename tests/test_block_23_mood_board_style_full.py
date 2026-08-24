@@ -322,3 +322,42 @@ def test_block_23k_switching_to_another_board_resets_previous_style_note():
         )
     finally:
         S.extract_board_style_description = orig
+
+
+# Живая жалоба Ани 2026-08-19 «доски не подмешиваются, если стиль взят из
+# библиотеки» оказалась шире формулировки: реальный воспроизведённый кейс —
+# board_style_note НЕ подмешивался в промт, набранный ПРЯМО ТЕКСТОМ В ЧАТЕ
+# (handle_text, самый частый способ задать описание вообще, ещё до всякого
+# вебаппа/библиотеки) — этот путь никогда не проходил через
+# apply_webapp_prompt_payload_v2/pl_use_, поэтому не был затронут ни одним
+# из более ранних board-фиксов этого блока.
+def test_block_23l_note_applied_to_plain_text_prompt():
+    state = S.UserState(board_style_note="Дождливый неон, синие тени.")
+    update, context, message = make_text_update("кот в очках", user_id=9613, state=state)
+    asyncio.run(S.handle_text(update, context))
+    st_after = context.user_data["state"]
+    assert "кот в очках" in st_after.prompt, f"23l.1 исходный текст сохранён: {st_after.prompt!r}"
+    assert "Дождливый неон, синие тени." in st_after.prompt, (
+        f"23l.2 board_style_note подмешан в текст прямо из чата: {st_after.prompt!r}"
+    )
+
+
+def test_block_23m_note_applied_to_plain_text_video_prompt():
+    state = S.UserState(board_style_note="Пыльная плёнка, тёплый грейн.")
+    state.video_session_active = True
+    update, context, message = make_text_update("танец под дождём", user_id=9614, state=state)
+    asyncio.run(S.handle_text(update, context))
+    st_after = context.user_data["state"]
+    assert "танец под дождём" in st_after.video_prompt, f"23m.1 исходный текст сохранён: {st_after.video_prompt!r}"
+    assert "Пыльная плёнка, тёплый грейн." in st_after.video_prompt, (
+        f"23m.2 board_style_note подмешан в видео-текст прямо из чата: {st_after.video_prompt!r}"
+    )
+
+
+def test_block_23n_no_active_board_leaves_plain_text_untouched():
+    # Регресс: без активной доски поведение plain-text пути не меняется.
+    state = S.UserState()
+    update, context, message = make_text_update("кот в очках", user_id=9615, state=state)
+    asyncio.run(S.handle_text(update, context))
+    st_after = context.user_data["state"]
+    assert st_after.prompt == "кот в очках", f"23n.1 без доски текст не меняется: {st_after.prompt!r}"

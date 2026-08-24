@@ -4746,7 +4746,14 @@ async def _apply_webapp_generation_video(update: Update, context: ContextTypes.D
         state.video_face_grid = _webapp_bool(raw_face_grid, SEEDANCE_FACE_GRID)
 
     # ── Описание — резолв по индексам библиотеки, не доверяем присланному тексту. ──
-    state.video_prompt = _resolve_webapp_video_description(payload)
+    video_description = _resolve_webapp_video_description(payload)
+    # Доски — Full: подмешиваем активную доску и сюда (см. комментарий в
+    # _apply_webapp_generation_photo) — включая стили из библиотеки видео,
+    # которые вебапп подставляет в Конструктор (useVideoStyleInConstructor,
+    # app.js), а не только вручную набранный текст.
+    if video_description.strip() and state.board_style_note:
+        video_description = apply_board_style_note(video_description, state.board_style_note)
+    state.video_prompt = video_description
 
     # ── Фото — те же потолки, что у ручной загрузки (MAX_SEEDANCE_IMAGE_REFERENCES). ──
     refs_raw = payload.get("refs")
@@ -4819,7 +4826,6 @@ async def _apply_webapp_generation_midjourney(update: Update, context: ContextTy
     state.waiting_for_mj_image = False
 
     description = str(payload.get("description") or payload.get("p") or "").strip()
-    state.mj_prompt = description
 
     refs_raw = payload.get("refs")
     if refs_raw is None:
@@ -4831,10 +4837,16 @@ async def _apply_webapp_generation_midjourney(update: Update, context: ContextTy
     state.mj_reference = refs[0] if refs else None
 
     if not description:
+        state.mj_prompt = description
         await update.effective_message.reply_text(
             "Нужно описание — вернись в конструктор и напиши, что сгенерировать.",
         )
         return True
+
+    # Доски — Full: см. комментарий в _apply_webapp_generation_photo.
+    if state.board_style_note:
+        description = apply_board_style_note(description, state.board_style_note)
+    state.mj_prompt = description
 
     ref_line = "Фото-референс: приложен ✅\n" if state.mj_reference else ""
     confirmation_text = (
@@ -4963,7 +4975,6 @@ async def _apply_webapp_generation_photo(update: Update, context: ContextTypes.D
     state.style_extract = False
 
     description = str(payload.get("description") or payload.get("p") or "").strip()
-    state.prompt = description
     state.image_prompt = ""
 
     image_model = str(payload.get("image_model") or payload.get("im") or "").strip().lower()
@@ -4980,11 +4991,24 @@ async def _apply_webapp_generation_photo(update: Update, context: ContextTypes.D
     state.references_updated_at = time.time() if state.references else 0.0
 
     if not description:
+        state.prompt = description
         await update.effective_message.reply_text(
             "Нужно описание — вернись в конструктор и напиши, что сгенерировать.",
             reply_markup=photo_constructor_kb(user_id),
         )
         return True
+
+    # Доски — Full: та же логика, что в apply_webapp_prompt_payload_v2/
+    # library-callback (docs/specs/2026-08-09_mood_boards_full.md) — активная
+    # доска подмешивается в промт, независимо от того, откуда пришло
+    # описание (набрано вручную или подставлено из библиотеки в конструктор,
+    # см. useVideoStyleInConstructor в app.js для видео — тот же принцип
+    # применим и к фото/MJ). Раньше это было только в set_prompt-путях,
+    # хаб-конструктор (start_generation) их пропускал — живая жалоба Ани
+    # 2026-08-19: «доски не подмешиваются, если стиль взят из библиотеки».
+    if state.board_style_note:
+        description = apply_board_style_note(description, state.board_style_note)
+    state.prompt = description
 
     photo_line = f"Фото: {len(state.references)} шт." if state.references else "Фото: своё не добавлено (возьму аватар, если есть)"
     model_line = f"Модель: {get_image_model_label(state.image_model)}\n" if GPT5_IMAGE_ENABLED else ""

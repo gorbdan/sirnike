@@ -1082,3 +1082,84 @@ def test_block_24ad_via_bot_non_json_placeholder_still_ignored():
     assert context.user_data["state"].prompt == "реальный промт", "24ad.1 промт не затёрт"
     assert message.reply_text.await_args_list == [], "24ad.2 ни одного ответа"
     message.delete.assert_not_awaited(), "24ad.3 нераспознанный via_bot-текст не удаляется"
+
+
+# Живая жалоба Ани 2026-08-19: активная доска («✨ Понять мой стиль») не
+# подмешивалась, если промт пришёл через хаб-конструктор (start_generation/sg)
+# — а именно так вебапп подставляет стиль ИЗ БИБЛИОТЕКИ в видео-конструктор
+# (useVideoStyleInConstructor, app.js). Мешало только в apply_webapp_prompt_payload_v2
+# (set_prompt) и старом callback-пути библиотеки — сами product-функции
+# (_apply_webapp_generation_photo/video/midjourney) пропускали apply_board_style_note.
+def test_block_24ae_photo_hub_mixes_active_board_style():
+    _orig = S.PHOTO_CONSTRUCTOR_ENABLED
+    S.PHOTO_CONSTRUCTOR_ENABLED = True
+    try:
+        update, context, message = make_webapp_update_context()
+        context.user_data["state"] = S.UserState(board_style_note="тёплая палитра, плёночное зерно")
+        asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "sg", "pr": "photo", "p": "кот-космонавт",
+        }))
+        state = context.user_data["state"]
+        assert "кот-космонавт" in state.prompt, f"24ae.1 исходное описание сохранено: {state.prompt!r}"
+        assert "тёплая палитра, плёночное зерно" in state.prompt, (
+            f"24ae.2 стиль активной доски подмешан в промт хаба: {state.prompt!r}"
+        )
+    finally:
+        S.PHOTO_CONSTRUCTOR_ENABLED = _orig
+
+
+def test_block_24af_video_hub_mixes_active_board_style():
+    _orig = S.VIDEO_CONSTRUCTOR_ENABLED
+    _orig_seedance = S.SEEDANCE_ENABLED
+    S.VIDEO_CONSTRUCTOR_ENABLED = True
+    S.SEEDANCE_ENABLED = True
+    try:
+        update, context, message = make_webapp_update_context()
+        context.user_data["state"] = S.UserState(board_style_note="неоновый закат")
+        asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "sg", "pr": "video", "p": "танец на крыше",
+        }))
+        state = context.user_data["state"]
+        assert "танец на крыше" in state.video_prompt, f"24af.1 исходное описание сохранено: {state.video_prompt!r}"
+        assert "неоновый закат" in state.video_prompt, (
+            f"24af.2 стиль активной доски подмешан в видео-промт хаба: {state.video_prompt!r}"
+        )
+    finally:
+        S.VIDEO_CONSTRUCTOR_ENABLED = _orig
+        S.SEEDANCE_ENABLED = _orig_seedance
+
+
+def test_block_24ag_midjourney_hub_mixes_active_board_style():
+    _orig = S.MIDJOURNEY_CONSTRUCTOR_ENABLED
+    _orig_mj = S.MIDJOURNEY_ENABLED
+    S.MIDJOURNEY_CONSTRUCTOR_ENABLED = True
+    S.MIDJOURNEY_ENABLED = True
+    try:
+        update, context, message = make_webapp_update_context()
+        context.user_data["state"] = S.UserState(board_style_note="акварельный набросок")
+        asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "sg", "pr": "midjourney", "p": "портрет лисы",
+        }))
+        state = context.user_data["state"]
+        assert "портрет лисы" in state.mj_prompt, f"24ag.1 исходное описание сохранено: {state.mj_prompt!r}"
+        assert "акварельный набросок" in state.mj_prompt, (
+            f"24ag.2 стиль активной доски подмешан в MJ-промт хаба: {state.mj_prompt!r}"
+        )
+    finally:
+        S.MIDJOURNEY_CONSTRUCTOR_ENABLED = _orig
+        S.MIDJOURNEY_ENABLED = _orig_mj
+
+
+def test_block_24ah_photo_hub_no_board_note_leaves_prompt_untouched():
+    # Регресс: без активной доски поведение не меняется вообще.
+    _orig = S.PHOTO_CONSTRUCTOR_ENABLED
+    S.PHOTO_CONSTRUCTOR_ENABLED = True
+    try:
+        update, context, message = make_webapp_update_context()
+        asyncio.run(S.apply_webapp_prompt_payload_v2(update, context, {
+            "action": "sg", "pr": "photo", "p": "кот-космонавт",
+        }))
+        state = context.user_data["state"]
+        assert state.prompt == "кот-космонавт", f"24ah.1 без доски промт не меняется: {state.prompt!r}"
+    finally:
+        S.PHOTO_CONSTRUCTOR_ENABLED = _orig

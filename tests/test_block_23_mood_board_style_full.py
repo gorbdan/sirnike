@@ -11,7 +11,10 @@ vision-описание общего стиля ПОДБОРКИ фото (extra
 import asyncio
 from unittest.mock import AsyncMock
 
-from test_helpers import S, make_update_context, make_text_update, make_webapp_update_context
+from test_helpers import (
+    S, make_update_context, make_text_update, make_webapp_update_context,
+    make_run_generation_context, png_data_url,
+)
 
 
 def test_block_23a_analyze_success_sends_confirmation_with_buttons():
@@ -361,3 +364,112 @@ def test_block_23n_no_active_board_leaves_plain_text_untouched():
     asyncio.run(S.handle_text(update, context))
     st_after = context.user_data["state"]
     assert st_after.prompt == "кот в очках", f"23n.1 без доски текст не меняется: {st_after.prompt!r}"
+
+
+# Живая жалоба Ани 2026-08-19 (продолжение): текстовый промт без своего
+# фото раньше молча подтягивал И аватар, И доску одновременно — негде было
+# выключить именно для этой генерации, не отключая доску/аватар насовсем.
+# Явный переключатель на экране «Сгенерировать фото».
+def test_block_23o_strip_and_reapply_board_style_note_roundtrip():
+    note = "Тёплый золотой свет, уютный вечер."
+    mixed = S.apply_board_style_note("кот на подоконнике", note)
+    assert "кот на подоконнике" in mixed and note in mixed, f"23o.1 мешает: {mixed!r}"
+    stripped = S.strip_board_style_note(mixed, note)
+    assert stripped == "кот на подоконнике", f"23o.2 снимает ровно то, что наложил: {stripped!r}"
+    reapplied = S.apply_board_style_note(stripped, note)
+    assert reapplied == mixed, "23o.3 наложить после снятия — тот же результат"
+
+
+def test_block_23p_strip_is_noop_without_matching_prefix():
+    # Снятие слоя доски, которого нет (текст не начинается с шаблона), не
+    # должно портить промт — просто ничего не делает.
+    assert S.strip_board_style_note("кот в очках", "Любой стиль") == "кот в очках", (
+        "23p.1 нет слоя — текст не тронут"
+    )
+
+
+def test_block_23q_avatar_toggle_button_shown_only_when_relevant():
+    _orig = S.get_avatar_urls
+    S.get_avatar_urls = lambda uid: {"female": "https://i.ibb.co/avatar.jpg"}
+    try:
+        # Есть промт, нет своих фото, не style_extract, аватар есть -> кнопка есть.
+        st = S.UserState(prompt="кот в очках")
+        kb = S.photo_draft_kb(st, user_id=9616)
+        labels = [b.text for row in kb.inline_keyboard for b in row]
+        assert "👤 Без аватара" in labels, f"23q.1 кнопка тоггла аватара показана: {labels}"
+
+        # Есть своё фото -> аватар не подставится вообще, кнопка не нужна.
+        st_with_ref = S.UserState(prompt="кот в очках", references=["https://i.ibb.co/ref.jpg"])
+        kb2 = S.photo_draft_kb(st_with_ref, user_id=9616)
+        labels2 = [b.text for row in kb2.inline_keyboard for b in row]
+        assert "👤 Без аватара" not in labels2, f"23q.2 с своим фото кнопки нет: {labels2}"
+    finally:
+        S.get_avatar_urls = _orig
+
+
+def test_block_23r_toggle_avatar_skip_button_flips_state_and_label():
+    st = S.UserState(prompt="кот в очках")
+    update, context, query = make_update_context("toggle_avatar_skip", user_id=9617)
+    context.user_data["state"] = st
+    _orig = S.get_avatar_urls
+    S.get_avatar_urls = lambda uid: {"female": "https://i.ibb.co/avatar.jpg"}
+    try:
+        asyncio.run(S._cb_toggle_avatar_skip(update, context, query, update.effective_user))
+        assert context.user_data["state"].skip_avatar_for_generation is True, "23r.1 включился"
+        kb = query.message.edit_text.await_args_list[0].kwargs.get("reply_markup") \
+            or query.message.edit_text.await_args_list[0].args[1]
+        labels = [b.text for row in kb.inline_keyboard for b in row]
+        assert "👤 Вернуть аватар" in labels, f"23r.2 текст кнопки поменялся: {labels}"
+
+        asyncio.run(S._cb_toggle_avatar_skip(update, context, query, update.effective_user))
+        assert context.user_data["state"].skip_avatar_for_generation is False, "23r.3 выключился обратно"
+    finally:
+        S.get_avatar_urls = _orig
+
+
+def test_block_23s_toggle_board_mix_strips_and_reapplies():
+    note = "Мягкий пастельный свет."
+    st = S.UserState(board_style_note=note, prompt=S.apply_board_style_note("кот в очках", note))
+    update, context, query = make_update_context("toggle_board_mix", user_id=9618)
+    context.user_data["state"] = st
+
+    asyncio.run(S._cb_toggle_board_mix(update, context, query, update.effective_user))
+    assert context.user_data["state"].prompt == "кот в очках", (
+        f"23s.1 слой доски снят: {context.user_data['state'].prompt!r}"
+    )
+
+    asyncio.run(S._cb_toggle_board_mix(update, context, query, update.effective_user))
+    assert note in context.user_data["state"].prompt, (
+        f"23s.2 слой доски вернулся: {context.user_data['state'].prompt!r}"
+    )
+
+
+def test_block_23t_run_generation_respects_skip_avatar_toggle():
+    _orig = {
+        name: getattr(S, name)
+        for name in ("create_user_if_not_exists", "get_avatar_urls", "get_active_avatar_kind",
+                     "try_use_free_generation")
+    }
+    S.create_user_if_not_exists = lambda *a, **k: None
+    S.get_avatar_urls = lambda uid: {"female": png_data_url(color=(10, 10, 10, 255))}
+    S.get_active_avatar_kind = lambda uid: "female"
+    S.try_use_free_generation = lambda uid, max_per_day: True
+
+    st = S.UserState(prompt="кот в очках", skip_avatar_for_generation=True)
+    update, context, message = make_run_generation_context(st, user_id=9619)
+    while not S.generation_queue.empty():
+        S.generation_queue.get_nowait()
+
+    try:
+        asyncio.run(S.run_generation(update, context))
+    finally:
+        S.queued_user_ids.discard(9619)
+        for name, fn in _orig.items():
+            setattr(S, name, fn)
+
+    job = S.generation_queue.get_nowait() if not S.generation_queue.empty() else None
+    assert job is not None, "23t.1 генерация поставлена в очередь"
+    assert job.references == [], f"23t.2 аватар НЕ подставлен из-за тоггла: {job.references}"
+    assert context.user_data["state"].skip_avatar_for_generation is False, (
+        "23t.3 one-shot тоггл сброшен после использования"
+    )

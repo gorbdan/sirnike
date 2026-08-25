@@ -527,6 +527,12 @@ class UserState:
     board_style_pending_title: str = ""
     board_style_pending_short_id: str = ""
     waiting_for_board_style_correction: bool = False
+    # Явный переключатель «без аватара для этой генерации» (живая жалоба Ани
+    # 2026-08-19: текстовый промт без своего фото раньше молча подтягивал и
+    # аватар, и доску одновременно — юзеру негде было это выключить). One-shot
+    # по смыслу — привязан к ТЕКУЩЕМУ черновику, handle_text/etc. сбрасывают
+    # его на False при каждом новом тексте (тот же принцип, что style_extract).
+    skip_avatar_for_generation: bool = False
 
 @dataclass
 class GenerationJob:
@@ -877,6 +883,10 @@ def photo_draft_text(state: "UserState", user_id: Optional[int] = None) -> str:
             photo_line = "Фото: 2/2 ✅ своё + референс — можно запускать"
     elif refs:
         photo_line = f"Твоё фото: {refs} шт. ✅"
+    elif state.skip_avatar_for_generation:
+        # Переключатель «👤 Без аватара» — юзер явно попросил чистую
+        # генерацию по тексту, run_generation не подставит аватар.
+        photo_line = "Твоё фото: без фото и без аватара — чистая генерация по тексту"
     else:
         # Без своего фото генерация молча подставляет сохранённый аватар
         # (run_generation) — юзер должен знать об этом ДО запуска, не только
@@ -901,6 +911,9 @@ def photo_draft_text(state: "UserState", user_id: Optional[int] = None) -> str:
             preview = prompt if len(prompt) <= 50 else prompt[:47] + "…"
             lines.append(f"Описание: «{preview}» ✅")
         lines.append(photo_line)
+        if state.board_style_note:
+            board_mixed = prompt.startswith(_board_style_note_prefix(state.board_style_note))
+            lines.append("🖼️ Доска подмешана в промт" if board_mixed else "🖼️ Доска выключена для этой генерации")
         model = get_image_model(state)
         lines.append(f"Модель: {get_image_model_label(model)} · {calc_generation_cost(None, model)} 🍇")
     else:
@@ -933,6 +946,30 @@ def photo_draft_kb(state: "UserState", user_id: Optional[int] = None) -> InlineK
     ready = bool(prompt) and (not state.style_extract or len(state.references) == 2)
     if ready:
         rows.append([InlineKeyboardButton("🚀 Запустить генерацию", callback_data="generate")])
+    # Переключатели «без аватара»/«без доски» для этой генерации (живая
+    # жалоба Ани 2026-08-19) — только когда реально есть что выключать:
+    # аватар подставляется лишь без своего фото и вне style_extract (см.
+    # run_generation/photo_draft_text), доска — только если реально активна.
+    toggle_row = []
+    if prompt and not state.style_extract and not state.references and user_id is not None:
+        try:
+            avatars = get_avatar_urls(user_id)
+            has_avatar = any(avatars.get(k) for k in ("female", "male", "child"))
+        except Exception:
+            has_avatar = False
+        if has_avatar:
+            toggle_row.append(InlineKeyboardButton(
+                "👤 Вернуть аватар" if state.skip_avatar_for_generation else "👤 Без аватара",
+                callback_data="toggle_avatar_skip",
+            ))
+    if prompt and state.board_style_note:
+        board_mixed = prompt.startswith(_board_style_note_prefix(state.board_style_note))
+        toggle_row.append(InlineKeyboardButton(
+            "🖼️ Без доски" if board_mixed else "🖼️ Вернуть доску",
+            callback_data="toggle_board_mix",
+        ))
+    if toggle_row:
+        rows.append(toggle_row)
     rows.append([library_button])
     rows.append([InlineKeyboardButton("◀️ В меню", callback_data="reset")])
     return InlineKeyboardMarkup(rows)
@@ -3944,6 +3981,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state.prompt = apply_board_style_note(text, state.board_style_note) if state.board_style_note else text
     state.style_extract = False
     state.pending_report_kind = ""
+    # Новый черновик — переключатель «без аватара» персонажу предыдущего
+    # черновика тут не место (тот же принцип, что style_extract выше).
+    state.skip_avatar_for_generation = False
 
     # Единый экран фото: статусы черновика + только осмысленные кнопки.
     await update.message.reply_text(photo_draft_text(state, user.id), reply_markup=photo_draft_kb(state, user.id))
@@ -4279,6 +4319,14 @@ def _board_short_id(board_id: str) -> str:
     return (board_id or "")[:16]
 
 
+def _board_style_note_prefix(board_style_note: str) -> str:
+    return (
+        f"Overall visual style/mood baseline from the user's mood board "
+        f"(apply as a background aesthetic layer under everything else — "
+        f"palette, atmosphere, composition): {board_style_note}\n\n"
+    )
+
+
 def apply_board_style_note(prompt: str, board_style_note: str) -> str:
     """Накладывает подтверждённое AI-описание стиля активной доски (Доски —
     Full, docs/specs/2026-08-09_mood_boards_full.md) как БАЗОВЫЙ слой ПЕРЕД
@@ -4290,12 +4338,20 @@ def apply_board_style_note(prompt: str, board_style_note: str) -> str:
     """
     if not board_style_note:
         return prompt
-    return (
-        f"Overall visual style/mood baseline from the user's mood board "
-        f"(apply as a background aesthetic layer under everything else — "
-        f"palette, atmosphere, composition): {board_style_note}\n\n"
-        f"{prompt}"
-    )
+    return _board_style_note_prefix(board_style_note) + prompt
+
+
+def strip_board_style_note(prompt: str, board_style_note: str) -> str:
+    """Обратная операция к apply_board_style_note — снимает уже наложенный
+    слой доски с промта, если он там есть (юзер жмёт «🖼️ Без доски» на
+    экране «Сгенерировать фото», живая жалоба Ани 2026-08-19: текстовый
+    промт без своего фото раньше подтягивал доску без возможности выключить
+    именно для этой генерации, не отключая доску целиком). Ничего не делает,
+    если слоя нет — безопасно вызывать «на всякий случай»."""
+    if not board_style_note:
+        return prompt
+    prefix = _board_style_note_prefix(board_style_note)
+    return prompt[len(prefix):] if prompt.startswith(prefix) else prompt
 
 
 async def apply_webapp_board_refs_payload(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
@@ -6189,7 +6245,14 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         (_all_avatars.get(k) for k in _avatar_order if _all_avatars.get(k)),
         None,
     )
-    if avatar_url and not references:
+    # «👤 Без аватара» (photo_draft_kb, живая жалоба Ани 2026-08-19) — юзер
+    # явно попросил чистую генерацию по тексту для ЭТОГО запуска; one-shot,
+    # сбрасываем сразу, чтобы следующий текстовый черновик снова был с
+    # аватаром по умолчанию (handle_text и т.п. и так сбрасывают его при
+    # новом тексте — тут просто на случай прямого запуска без нового текста).
+    skip_avatar = state.skip_avatar_for_generation
+    state.skip_avatar_for_generation = False
+    if avatar_url and not references and not skip_avatar:
         references = [avatar_url]
     if AI_PROVIDER == "ZVENO" and references:
         original_refs_count = len(references)
@@ -6632,6 +6695,47 @@ async def _cb_image_model_set(update, context, query, user):
         await query.message.edit_text(
             image_model_menu_text(state),
             reply_markup=image_model_menu_kb(state),
+        )
+    except BadRequest:
+        pass
+    return
+
+
+async def _cb_toggle_avatar_skip(update, context, query, user):
+    # Живая жалоба Ани 2026-08-19: текстовый промт без своего фото молча
+    # подтягивал аватар без возможности выключить именно для этой генерации —
+    # переключатель на экране «Сгенерировать фото», рядом с описанием.
+    state = get_or_init_state(context)
+    state.skip_avatar_for_generation = not state.skip_avatar_for_generation
+    await query.answer("Без аватара ✅" if state.skip_avatar_for_generation else "Аватар вернулся ✅")
+    try:
+        await query.message.edit_text(
+            photo_draft_text(state, user.id), reply_markup=photo_draft_kb(state, user.id),
+        )
+    except BadRequest:
+        pass
+    return
+
+
+async def _cb_toggle_board_mix(update, context, query, user):
+    # Тот же переключатель, только для доски — снимает/возвращает уже
+    # наложенный слой доски в state.prompt (strip_board_style_note —
+    # обратная операция apply_board_style_note), не отключая доску целиком
+    # (для этого есть отдельная кнопка «Отключить стиль доски»).
+    state = get_or_init_state(context)
+    if not state.board_style_note:
+        await query.answer()
+        return
+    prefix = _board_style_note_prefix(state.board_style_note)
+    if state.prompt.startswith(prefix):
+        state.prompt = strip_board_style_note(state.prompt, state.board_style_note)
+        await query.answer("Без доски ✅")
+    else:
+        state.prompt = apply_board_style_note(state.prompt, state.board_style_note)
+        await query.answer("Доска вернулась ✅")
+    try:
+        await query.message.edit_text(
+            photo_draft_text(state, user.id), reply_markup=photo_draft_kb(state, user.id),
         )
     except BadRequest:
         pass
@@ -7386,6 +7490,8 @@ QDATA_EXACT_HANDLERS = {
     "mj_pick_3": _cb_mj_pick,
     "mj_pick_resend": _cb_mj_pick_resend,
     "mj_grid_resend": _cb_mj_grid_resend,
+    "toggle_avatar_skip": _cb_toggle_avatar_skip,
+    "toggle_board_mix": _cb_toggle_board_mix,
 }
 
 VIDEO_EXACT_HANDLERS = {

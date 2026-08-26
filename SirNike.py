@@ -57,6 +57,7 @@ from config import (
     ZVENO_CHAT_MODEL,
     EVOLINK_API_BASE,
     EVOLINK_API_KEY,
+    PHOTO_PROVIDER,
     SEEDANCE_PROVIDER,
     SEEDANCE_FACE_GRID,
     MOTION_CONTROL_PROVIDER,
@@ -213,6 +214,7 @@ from video_providers import (
 import photo_providers
 from photo_providers import (
     generate_image_zveno,
+    generate_image_evolink,
     generate_image_mashagpt,
 )
 
@@ -10993,13 +10995,29 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
     last_error_text = "Неизвестная ошибка"
 
     if AI_PROVIDER == "ZVENO":
+        # Гибридная миграция 2026-08-25 (решение Ани): обычная модель
+        # (gemini/Nano Banana 2) может идти через EvoLink (PHOTO_PROVIDER=
+        # evolink, выключено по умолчанию до её живого теста) — GPT-5 Image
+        # ЦЕЛЕНАПРАВЛЕННО остаётся на Zveno всегда (у EvoLink нет этой
+        # модели, см. комментарий PHOTO_PROVIDER в config.py). Дальше по
+        # функции (доставка/лог/история/канал) без разницы, откуда взялся
+        # image_url — трогать не нужно.
+        _job_image_model = getattr(job, "image_model", "gemini")
+        _used_evolink = PHOTO_PROVIDER == "evolink" and _job_image_model == "gemini"
         try:
-            image_url = await generate_image_zveno(
-                prompt=prompt,
-                references=references,
-                user_id=user_id,
-                image_model=getattr(job, "image_model", "gemini"),
-            )
+            if _used_evolink:
+                image_url = await generate_image_evolink(
+                    prompt=prompt,
+                    references=references,
+                    user_id=user_id,
+                )
+            else:
+                image_url = await generate_image_zveno(
+                    prompt=prompt,
+                    references=references,
+                    user_id=user_id,
+                    image_model=_job_image_model,
+                )
             _bounded_set(last_generated_prompt, user_id, prompt)
             _hist_url = image_url
             if _is_img_ref(_hist_url):
@@ -11025,7 +11043,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                 user_id=user_id,
                 kind="image",
                 status="success",
-                provider="ZVENO",
+                provider="EVOLINK" if _used_evolink else "ZVENO",
                 cost=getattr(job, "cost", 0),
                 was_free=getattr(job, "was_free", False),
                 references_count=len(references or []),
@@ -11076,10 +11094,10 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                     app.create_task(_send_img_to_channel())
             return
         except Exception as e:
-            logger.exception("Zveno generation failed")
+            logger.exception("EvoLink generation failed" if _used_evolink else "Zveno generation failed")
             refunded = await _handle_generation_failure(
                 app, chat_id=chat_id, user_id=user_id, job=job, error=e,
-                provider_label="ZVENO", references=references, refunded=refunded,
+                provider_label="EVOLINK" if _used_evolink else "ZVENO", references=references, refunded=refunded,
                 generation_succeeded=generation_succeeded, use_moderation_message=True,
             )
             return

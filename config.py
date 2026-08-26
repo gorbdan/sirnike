@@ -268,6 +268,26 @@ GPT5_IMAGE_ENABLED = os.getenv("GPT5_IMAGE_ENABLED", "1").strip().lower() in ("1
 ZVENO_GPT5_IMAGE_MODEL = os.getenv("ZVENO_GPT5_IMAGE_MODEL", "openai/gpt-5-image")
 GPT5_IMAGE_COST = int(os.getenv("GPT5_IMAGE_COST", "25"))
 
+# Nano Banana 2 (обычная фото-модель) через EvoLink — гибридная миграция
+# 2026-08-25, решение Ани: перенести на EvoLink только эту модель, GPT-5
+# Image ЦЕЛЕНАПРАВЛЕННО остаётся на Zveno (у EvoLink другая модель под этой
+# нишей — gpt-image-2/gpt-image-1.5, не gpt-5-image — требует отдельного
+# живого теста качества/биллинга, см. брифы). model id на EvoLink совпадает
+# с ZVENO_IMAGE_MODEL (та же апстрим-модель), но закупка ТАРИФИЦИРУЕТСЯ
+# ИНАЧЕ: у Zveno — по токенам (копейки/картинку), у EvoLink — фиксированно
+# за картинку по quality-тиру (~4.5₽/1K, ~6.9₽/2K, ~10.3₽/4K по курсу
+# ~85 ₽/$, EvoLink-прайсинг 2026-08-25) — это НА ПОРЯДОК дороже нынешней
+# закупки Zveno. Дефолт BASE_GENERATION_COST=5 изюминок НЕ пересчитан под
+# эту закупку — Аня должна поднять его отдельно (тот же env-параметр, без
+# редеплоя) ДО включения флага в проде, иначе маржа на 1K-тире просядет
+# ниже целевой x3.3. Выключено по умолчанию до ручного теста — тот же
+# порядок раскатки, что у Midjourney/Kling/Seedance-EvoLink.
+PHOTO_PROVIDER = os.getenv("PHOTO_PROVIDER", "zveno").strip().lower()
+EVOLINK_IMAGE_MODEL = os.getenv("EVOLINK_IMAGE_MODEL", "gemini-3.1-flash-image-preview")
+EVOLINK_IMAGE_QUALITY = os.getenv("EVOLINK_IMAGE_QUALITY", "1K")
+EVOLINK_IMAGE_MAX_POLL_ATTEMPTS = int(os.getenv("EVOLINK_IMAGE_MAX_POLL_ATTEMPTS", "60"))
+EVOLINK_IMAGE_POLL_INTERVAL = int(os.getenv("EVOLINK_IMAGE_POLL_INTERVAL", "3"))
+
 # Midjourney через EvoLink (у Zveno этой модели нет — проверено по
 # https://zveno.ai/models). Отдельный мини-флоу (не третий пункт обычного
 # image_model-пикера): сетка 2×2 → юзер выбирает вариант → апскейл отдельным

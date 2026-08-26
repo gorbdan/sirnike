@@ -53,8 +53,18 @@ from config import (
     MASHAGPT_IMAGE_MODEL,
     MAX_POLL_ATTEMPTS,
     POLL_INTERVAL,
+    EVOLINK_IMAGE_MODEL,
+    EVOLINK_IMAGE_QUALITY,
+    EVOLINK_IMAGE_MAX_POLL_ATTEMPTS,
+    EVOLINK_IMAGE_POLL_INTERVAL,
 )
-from video_providers import build_zveno_url, build_mashagpt_url
+from video_providers import (
+    build_zveno_url,
+    build_mashagpt_url,
+    _evolink_create_task,
+    poll_evolink_task,
+    _resolve_evolink_image_urls,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -515,6 +525,44 @@ async def generate_image_zveno(
         raise Exception(extract_zveno_error_text(response_data))
 
     logger.info("Zveno image success: user=%s image_ref=%s", user_id, str(image_url)[:60])
+    return image_url
+
+
+# ----------------------------------------------------------------------------
+# EvoLink — Nano Banana 2 (гибридная миграция 2026-08-25, см. комментарий
+# PHOTO_PROVIDER в config.py). GPT-5 Image остаётся на Zveno — эта функция
+# только для обычной модели.
+# ----------------------------------------------------------------------------
+
+async def generate_image_evolink(
+    prompt: str,
+    references: Optional[List[str]],
+    user_id: int,
+) -> str:
+    """Nano Banana 2 через EvoLink — снаружи тот же контракт, что у
+    generate_image_zveno (await -> готовый image_url либо Exception), но
+    сам EvoLink асинхронный (create задачи -> поллинг), в отличие от
+    синхронного chat/completions у Zveno — create+poll сведены в один вызов,
+    вызывающему коду (generate_image_by_job) без разницы, какой провайдер.
+    Референсы — тот же резолвер __img__ -> data: URL, что уже используют
+    Seedance/Gemini Omni (video_providers._resolve_evolink_image_urls)."""
+    prompt_clean = (prompt or "").strip()
+    if not prompt_clean:
+        raise Exception("EvoLink Nano Banana 2: пустой промт")
+    image_urls = _resolve_evolink_image_urls(None, references, 8)
+    payload = {
+        "model": EVOLINK_IMAGE_MODEL,
+        "prompt": prompt_clean[:8192],
+        "quality": EVOLINK_IMAGE_QUALITY,
+    }
+    if image_urls:
+        payload["image_urls"] = image_urls
+    raw_task_id = await _evolink_create_task(
+        payload, "EvoLink Nano Banana 2", user_id, endpoint_path="/v1/images/generations",
+    )
+    task_id = raw_task_id.split(":", 1)[1] if raw_task_id.startswith("__EVOLINK__:") else raw_task_id
+    image_url = await poll_evolink_task(task_id, EVOLINK_IMAGE_MAX_POLL_ATTEMPTS, EVOLINK_IMAGE_POLL_INTERVAL)
+    logger.info("EvoLink Nano Banana 2 image success: user=%s image_url=%s", user_id, str(image_url)[:80])
     return image_url
 
 

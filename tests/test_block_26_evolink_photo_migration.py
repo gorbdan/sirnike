@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Блок 26: гибридная миграция фото-генерации на EvoLink (решение Ани
-2026-08-25) — только обычная модель (Nano Banana 2/gemini) может идти через
-EvoLink (PHOTO_PROVIDER=evolink, выключено по умолчанию), GPT-5 Image
-ЦЕЛЕНАПРАВЛЕННО всегда остаётся на Zveno (у EvoLink другой модели под этой
-нишей — gpt-image-2/gpt-image-1.5, требует отдельного живого теста)."""
+"""Блок 26: полный отказ от Zveno-закупки для фото (решение Ани
+2026-08-25/26, «Zveno больше не хочу оплачивать») — обе модели (Nano Banana 2/
+gemini и GPT Image 2/gpt5) идут через EvoLink при PHOTO_PROVIDER=evolink
+(выключено по умолчанию до живого теста). У EvoLink нет модели gpt-5-image —
+премиум-tier там называется gpt-image-2, это замена модели, не только
+провайдера."""
 import asyncio
 import types
 from unittest.mock import AsyncMock
@@ -39,6 +40,37 @@ def test_block_26a_generate_image_evolink_builds_payload_and_polls():
             f"26a.5 референс передан в image_urls: {captured['payload']}"
         )
         assert captured["task_id"] == "task123", f"26a.6 префикс __EVOLINK__: снят перед поллингом: {captured['task_id']!r}"
+    finally:
+        S.photo_providers._evolink_create_task = _orig_create
+        S.photo_providers.poll_evolink_task = _orig_poll
+
+
+def test_block_26a2_generate_image_evolink_gpt5_uses_gpt_image_model():
+    _orig_create = S.photo_providers._evolink_create_task
+    _orig_poll = S.photo_providers.poll_evolink_task
+    captured = {}
+
+    async def fake_create(payload, log_label, user_id, endpoint_path="/v1/videos/generations"):
+        captured["payload"] = payload
+        captured["log_label"] = log_label
+        return "task789"
+
+    async def fake_poll(task_id, max_attempts, poll_interval, status_callback=None, return_all=False):
+        return "https://cdn.evolink.ai/premium.jpg"
+
+    S.photo_providers._evolink_create_task = fake_create
+    S.photo_providers.poll_evolink_task = fake_poll
+    try:
+        asyncio.run(S.photo_providers.generate_image_evolink(
+            prompt="премиум-портрет", references=None, user_id=777, image_model="gpt5",
+        ))
+        assert captured["payload"]["model"] == S.photo_providers.EVOLINK_GPT_IMAGE_MODEL, (
+            f"26a2.1 gpt5 -> gpt-image-2, не Nano Banana: {captured['payload']}"
+        )
+        assert captured["payload"]["quality"] == S.photo_providers.EVOLINK_GPT_IMAGE_QUALITY, (
+            f"26a2.2 премиум-качество: {captured['payload']}"
+        )
+        assert "GPT Image" in captured["log_label"], f"26a2.3 лог помечен как GPT Image: {captured['log_label']!r}"
     finally:
         S.photo_providers._evolink_create_task = _orig_create
         S.photo_providers.poll_evolink_task = _orig_poll
@@ -105,8 +137,9 @@ def test_block_26d_photo_provider_evolink_routes_gemini_to_evolink():
     S.PHOTO_PROVIDER = "evolink"
     calls = {"evolink": 0, "zveno": 0}
 
-    async def fake_evolink(prompt, references, user_id):
+    async def fake_evolink(prompt, references, user_id, image_model="gemini"):
         calls["evolink"] += 1
+        assert image_model == "gemini", f"26d.1 модель прокинута верно: {image_model!r}"
         return "https://cdn.evolink.ai/photo.jpg"
 
     async def fake_zveno(prompt, references, user_id, image_model="gemini"):
@@ -120,8 +153,8 @@ def test_block_26d_photo_provider_evolink_routes_gemini_to_evolink():
         app = types.SimpleNamespace(bot=AsyncMock(), create_task=lambda c: None)
         job = S.GenerationJob(chat_id=1, user_id=1, prompt="тест", references=[], cost=5, image_model="gemini")
         asyncio.run(S.generate_image_by_job(app, job))
-        assert calls == {"evolink": 1, "zveno": 0}, f"26d.1 gemini + PHOTO_PROVIDER=evolink -> EvoLink: {calls}"
-        assert S.send_generation_result_by_url.await_count == 1, "26d.2 результат доставлен"
+        assert calls == {"evolink": 1, "zveno": 0}, f"26d.2 gemini + PHOTO_PROVIDER=evolink -> EvoLink: {calls}"
+        assert S.send_generation_result_by_url.await_count == 1, "26d.3 результат доставлен"
     finally:
         S.PHOTO_PROVIDER = _orig_photo_provider
         S.generate_image_evolink = _orig_evolink_fn
@@ -129,22 +162,23 @@ def test_block_26d_photo_provider_evolink_routes_gemini_to_evolink():
         _teardown_generate_image_by_job_mocks(mocks, channel)
 
 
-def test_block_26e_gpt5_image_always_stays_on_zveno_even_with_evolink_flag():
-    # Ключевая гарантия гибридной схемы: PHOTO_PROVIDER=evolink НЕ трогает
-    # премиум-модель — у EvoLink нет gpt-5-image, только другие модели.
+def test_block_26e_gpt5_image_also_routes_to_evolink_when_flag_on():
+    # Решение Ани 2026-08-26 («Zveno больше не хочу оплачивать») — обе модели
+    # уходят на EvoLink при включённом флаге, включая премиум-tier (там это
+    # gpt-image-2, не gpt-5-image — другая модель, см. комментарий в config.py).
     _orig_photo_provider = S.PHOTO_PROVIDER
     _orig_evolink_fn = S.generate_image_evolink
     _orig_zveno_fn = S.generate_image_zveno
     S.PHOTO_PROVIDER = "evolink"
     calls = {"evolink": 0, "zveno": 0}
 
-    async def fake_evolink(prompt, references, user_id):
+    async def fake_evolink(prompt, references, user_id, image_model="gemini"):
         calls["evolink"] += 1
+        assert image_model == "gpt5", f"26e.1 модель прокинута верно: {image_model!r}"
         return "https://cdn.evolink.ai/photo.jpg"
 
     async def fake_zveno(prompt, references, user_id, image_model="gemini"):
         calls["zveno"] += 1
-        assert image_model == "gpt5", f"26e.1 модель прокинута верно: {image_model!r}"
         return "https://cdn.zveno.ai/photo.jpg"
 
     S.generate_image_evolink = fake_evolink
@@ -154,7 +188,7 @@ def test_block_26e_gpt5_image_always_stays_on_zveno_even_with_evolink_flag():
         app = types.SimpleNamespace(bot=AsyncMock(), create_task=lambda c: None)
         job = S.GenerationJob(chat_id=1, user_id=1, prompt="тест", references=[], cost=25, image_model="gpt5")
         asyncio.run(S.generate_image_by_job(app, job))
-        assert calls == {"evolink": 0, "zveno": 1}, f"26e.2 gpt5 остаётся на Zveno даже при флаге evolink: {calls}"
+        assert calls == {"evolink": 1, "zveno": 0}, f"26e.2 gpt5 тоже на EvoLink при включённом флаге: {calls}"
     finally:
         S.PHOTO_PROVIDER = _orig_photo_provider
         S.generate_image_evolink = _orig_evolink_fn

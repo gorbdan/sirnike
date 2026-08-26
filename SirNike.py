@@ -10995,21 +10995,23 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
     last_error_text = "Неизвестная ошибка"
 
     if AI_PROVIDER == "ZVENO":
-        # Гибридная миграция 2026-08-25 (решение Ани): обычная модель
-        # (gemini/Nano Banana 2) может идти через EvoLink (PHOTO_PROVIDER=
-        # evolink, выключено по умолчанию до её живого теста) — GPT-5 Image
-        # ЦЕЛЕНАПРАВЛЕННО остаётся на Zveno всегда (у EvoLink нет этой
-        # модели, см. комментарий PHOTO_PROVIDER в config.py). Дальше по
-        # функции (доставка/лог/история/канал) без разницы, откуда взялся
-        # image_url — трогать не нужно.
+        # Полный отказ от Zveno-закупки для фото (решение Ани 2026-08-25/26,
+        # «Zveno больше не хочу оплачивать») — обе модели (gemini/Nano Banana 2
+        # и gpt5/GPT Image 2) идут через EvoLink, когда PHOTO_PROVIDER=evolink
+        # (выключено по умолчанию до живого теста, см. комментарий в
+        # config.py — особенно для gpt5-ветки, это ЗАМЕНА модели, не только
+        # провайдера, у EvoLink нет gpt-5-image). Дальше по функции
+        # (доставка/лог/история/канал) без разницы, откуда взялся image_url —
+        # трогать не нужно.
         _job_image_model = getattr(job, "image_model", "gemini")
-        _used_evolink = PHOTO_PROVIDER == "evolink" and _job_image_model == "gemini"
+        _used_evolink = PHOTO_PROVIDER == "evolink"
         try:
             if _used_evolink:
                 image_url = await generate_image_evolink(
                     prompt=prompt,
                     references=references,
                     user_id=user_id,
+                    image_model=_job_image_model,
                 )
             else:
                 image_url = await generate_image_zveno(

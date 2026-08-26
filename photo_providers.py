@@ -55,6 +55,8 @@ from config import (
     POLL_INTERVAL,
     EVOLINK_IMAGE_MODEL,
     EVOLINK_IMAGE_QUALITY,
+    EVOLINK_GPT_IMAGE_MODEL,
+    EVOLINK_GPT_IMAGE_QUALITY,
     EVOLINK_IMAGE_MAX_POLL_ATTEMPTS,
     EVOLINK_IMAGE_POLL_INTERVAL,
 )
@@ -538,31 +540,40 @@ async def generate_image_evolink(
     prompt: str,
     references: Optional[List[str]],
     user_id: int,
+    image_model: str = "gemini",
 ) -> str:
-    """Nano Banana 2 через EvoLink — снаружи тот же контракт, что у
-    generate_image_zveno (await -> готовый image_url либо Exception), но
-    сам EvoLink асинхронный (create задачи -> поллинг), в отличие от
-    синхронного chat/completions у Zveno — create+poll сведены в один вызов,
-    вызывающему коду (generate_image_by_job) без разницы, какой провайдер.
-    Референсы — тот же резолвер __img__ -> data: URL, что уже используют
-    Seedance/Gemini Omni (video_providers._resolve_evolink_image_urls)."""
+    """Nano Banana 2 (gemini) ИЛИ GPT Image 2 (gpt5) через EvoLink — снаружи
+    тот же контракт, что у generate_image_zveno (await -> готовый image_url
+    либо Exception, тот же параметр image_model выбирает модель), но сам
+    EvoLink асинхронный (create задачи -> поллинг), в отличие от синхронного
+    chat/completions у Zveno — create+poll сведены в один вызов, вызывающему
+    коду (generate_image_by_job) без разницы, какой провайдер. Референсы —
+    тот же резолвер __img__ -> data: URL, что уже используют Seedance/Gemini
+    Omni (video_providers._resolve_evolink_image_urls). GPT-ветка — это
+    `gpt-image-2` EvoLink, НЕ `gpt-5-image`: у EvoLink такой модели нет
+    вообще, это замена модели, не только провайдера — качество/биллинг не
+    live-протестированы на промтах Сырника до первого реального лога."""
     prompt_clean = (prompt or "").strip()
+    is_gpt = image_model == "gpt5"
+    model = EVOLINK_GPT_IMAGE_MODEL if is_gpt else EVOLINK_IMAGE_MODEL
+    quality = EVOLINK_GPT_IMAGE_QUALITY if is_gpt else EVOLINK_IMAGE_QUALITY
+    log_label = f"EvoLink {'GPT Image 2' if is_gpt else 'Nano Banana 2'}"
     if not prompt_clean:
-        raise Exception("EvoLink Nano Banana 2: пустой промт")
+        raise Exception(f"{log_label}: пустой промт")
     image_urls = _resolve_evolink_image_urls(None, references, 8)
     payload = {
-        "model": EVOLINK_IMAGE_MODEL,
+        "model": model,
         "prompt": prompt_clean[:8192],
-        "quality": EVOLINK_IMAGE_QUALITY,
+        "quality": quality,
     }
     if image_urls:
         payload["image_urls"] = image_urls
     raw_task_id = await _evolink_create_task(
-        payload, "EvoLink Nano Banana 2", user_id, endpoint_path="/v1/images/generations",
+        payload, log_label, user_id, endpoint_path="/v1/images/generations",
     )
     task_id = raw_task_id.split(":", 1)[1] if raw_task_id.startswith("__EVOLINK__:") else raw_task_id
     image_url = await poll_evolink_task(task_id, EVOLINK_IMAGE_MAX_POLL_ATTEMPTS, EVOLINK_IMAGE_POLL_INTERVAL)
-    logger.info("EvoLink Nano Banana 2 image success: user=%s image_url=%s", user_id, str(image_url)[:80])
+    logger.info("%s image success: user=%s image_url=%s", log_label, user_id, str(image_url)[:80])
     return image_url
 
 

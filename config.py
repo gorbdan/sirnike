@@ -221,7 +221,13 @@ WAN27_DURATION_OPTIONS = os.getenv("WAN27_DURATION_OPTIONS", "5,10")
 # (+160%) — оба качества доступны юзеру, не одно на выбор. TODO: сверить
 # по первому реальному счёту EvoLink (±20%) перед включением флага.
 SEEDANCE25_ENABLED = os.getenv("SEEDANCE25_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
-SEEDANCE25_MODEL = os.getenv("SEEDANCE25_MODEL", "bytedance/seedance-2.5-reference-to-video")
+# Живой прод-баг 2026-08-30: дефолт был "bytedance/seedance-2.5-reference-to-video"
+# (Zveno-стиль слага с префиксом провайдера) — но эта модель ВСЕГДА идёт
+# через EvoLink (start_seedance25_task_evolink), а EvoLink отвечал 404
+# model_not_found на каждый вызов ("did_you_mean: seedance-2.5-reference-to-video"),
+# 100% отказ для всех юзеров этой функции. У EvoLink слаги без префикса
+# провайдера — тот же принцип, что EVOLINK_SEEDANCE_MODEL_MAP для 2.0.
+SEEDANCE25_MODEL = os.getenv("SEEDANCE25_MODEL", "seedance-2.5-reference-to-video")
 SEEDANCE25_MODE = os.getenv("SEEDANCE25_MODE", "480p")
 SEEDANCE25_DURATION = int(os.getenv("SEEDANCE25_DURATION", "5"))
 # Нативно до 30 сек ОДНИМ вызовом (у 2.0 через Zveno потолок 15с у любого

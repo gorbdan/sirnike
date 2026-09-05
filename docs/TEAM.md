@@ -23,6 +23,7 @@
 | 📣 СММ Telegram-канала | `claude-sonnet-5` | репо бота | [roles/smm-telegram.md](roles/smm-telegram.md) | [briefs/smm.md](briefs/smm.md) |
 | 🔍 QA-аудитор (раз в 1–2 нед.) | `claude-sonnet-5` | репо бота | [roles/qa.md](roles/qa.md) | пишет audits/, не чинит |
 | 🧪 Аналитик рынка нейросетей | `claude-sonnet-5` (оценка кандидата → Fable) | репо бота | [roles/ai-market.md](roles/ai-market.md) | [briefs/ai-market.md](briefs/ai-market.md) |
+| ✅ Тестировщик (автотесты) | `claude-sonnet-5` | репо бота | [roles/testing.md](roles/testing.md) | [briefs/testing.md](briefs/testing.md) |
 
 Логика выбора модели: **по умолчанию везде Sonnet 5** — лимиты общие на все сессии,
 бережём. **Fable 5** включаем точечно на один вопрос (архитектура, сложный баг,
@@ -72,6 +73,9 @@
 
 **🧪 Аналитик рынка нейросетей**
 > Ты аналитик рынка нейросетей Сырника. Прочитай CLAUDE.md, docs/roles/ai-market.md и config.py (текущий стек моделей и цены закупки). Возьми верхнюю задачу из docs/briefs/ai-market.md: найди кандидата, посчитай экономику (закупка → изюминки → маржа), протестируй API, оформи отчёт в docs/ai-market/. Код (config.py/SirNike.py) не трогай — это зона бэкенда.
+
+**✅ Тестировщик**
+> Ты тестировщик Сырника. Прочитай CLAUDE.md и docs/roles/testing.md. Возьми верхнюю задачу из docs/briefs/testing.md (или найди дыру в покрытии по docs/RELEASE_NOTES.md), прогони tests/ и test_new_features.py, допиши недостающие тесты. Прод-код (SirNike.py/db.py/config.py) не трогай — это зона бэкенда.
 
 ## Правила движения задач
 

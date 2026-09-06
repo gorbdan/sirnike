@@ -473,3 +473,75 @@ def test_block_23t_run_generation_respects_skip_avatar_toggle():
     assert context.user_data["state"].skip_avatar_for_generation is False, (
         "23t.3 one-shot тоггл сброшен после использования"
     )
+
+
+# Живая находка audits/2026-09-05_full_naive_az_test.txt (находка №2, усиливает
+# P0 из audits/2026-09-05_naive_user_bot_test.txt): карточки подтверждения и
+# превью показывали СЫРОЙ промт (уже смешанный с английским анализом доски)
+# юзеру — его собственные слова хоронились под 5+ строками английского
+# текста. Все места, где текст промта показывается юзеру, обязаны показывать
+# ТОЛЬКО чистый ввод + отдельную короткую строку «доска подмешана».
+def test_block_23u_photo_draft_text_preview_shows_clean_text_not_board_english():
+    note = "The shared visual style features a warm, earthy color palette."
+    state = S.UserState(board_style_note=note, prompt=S.apply_board_style_note("кот на пляже", note))
+    text = S.photo_draft_text(state, user_id=9620)
+    assert "кот на пляже" in text, f"23u.1 реальные слова юзера видны в превью: {text!r}"
+    assert "warm, earthy" not in text, f"23u.2 английский анализ доски НЕ в превью: {text!r}"
+    assert "Доска подмешана в промт" in text, f"23u.3 факт подмешивания — отдельной строкой: {text!r}"
+
+
+def test_block_23v_photo_hub_confirmation_shows_clean_description():
+    _orig = S.PHOTO_CONSTRUCTOR_ENABLED
+    S.PHOTO_CONSTRUCTOR_ENABLED = True
+    note = "The shared visual style features a warm, earthy color palette."
+    try:
+        update, context, message = make_webapp_update_context()
+        context.user_data["state"] = S.UserState(board_style_note=note)
+        asyncio.run(S._apply_webapp_generation_photo(update, context, {"description": "кот на пляже"}))
+        text = message.reply_text.await_args_list[0].args[0]
+        assert "кот на пляже" in text, f"23v.1 карточка показывает чистый ввод: {text!r}"
+        assert "warm, earthy" not in text, f"23v.2 английский анализ доски НЕ в карточке: {text!r}"
+        assert "Доска подмешана в промт" in text, f"23v.3 короткая строка про доску есть: {text!r}"
+        assert "кот на пляже" in context.user_data["state"].prompt, "23v.4 state.prompt сохраняет исходный текст"
+        assert note in context.user_data["state"].prompt, "23v.5 state.prompt по-прежнему смешан для генерации"
+    finally:
+        S.PHOTO_CONSTRUCTOR_ENABLED = _orig
+
+
+def test_block_23w_midjourney_confirmation_shows_clean_description():
+    _orig_c = S.MIDJOURNEY_CONSTRUCTOR_ENABLED
+    _orig_e = S.MIDJOURNEY_ENABLED
+    S.MIDJOURNEY_CONSTRUCTOR_ENABLED = True
+    S.MIDJOURNEY_ENABLED = True
+    note = "The shared visual style features a warm, earthy color palette."
+    try:
+        update, context, message = make_webapp_update_context()
+        context.user_data["state"] = S.UserState(board_style_note=note)
+        asyncio.run(S._apply_webapp_generation_midjourney(update, context, {"description": "портрет лисы"}))
+        text = message.reply_text.await_args_list[0].args[0]
+        assert "портрет лисы" in text, f"23w.1 карточка показывает чистый ввод: {text!r}"
+        assert "warm, earthy" not in text, f"23w.2 английский анализ доски НЕ в карточке: {text!r}"
+        assert "Доска подмешана в промт" in text, f"23w.3 короткая строка про доску есть: {text!r}"
+    finally:
+        S.MIDJOURNEY_CONSTRUCTOR_ENABLED = _orig_c
+        S.MIDJOURNEY_ENABLED = _orig_e
+
+
+def test_block_23x_build_generation_prefill_strips_board_note_for_edit_screen():
+    # «✏️ Изменить» должен открывать конструктор с чистым текстом юзера,
+    # не с английским анализом доски (та же болезнь, что в карточках выше).
+    note = "The shared visual style features a warm, earthy color palette."
+    state = S.UserState(
+        board_style_note=note,
+        prompt=S.apply_board_style_note("кот на пляже", note),
+        video_prompt=S.apply_board_style_note("танец под дождём", note),
+        mj_prompt=S.apply_board_style_note("портрет лисы", note),
+    )
+    photo_prefill = S.build_generation_prefill("photo", state)
+    assert photo_prefill["description"] == "кот на пляже", f"23x.1 photo prefill чистый: {photo_prefill}"
+
+    video_prefill = S.build_generation_prefill("video", state)
+    assert video_prefill["description"] == "танец под дождём", f"23x.2 video prefill чистый: {video_prefill}"
+
+    mj_prefill = S.build_generation_prefill("midjourney", state)
+    assert mj_prefill["description"] == "портрет лисы", f"23x.3 midjourney prefill чистый: {mj_prefill}"

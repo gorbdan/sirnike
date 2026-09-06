@@ -906,15 +906,24 @@ def photo_draft_text(state: "UserState", user_id: Optional[int] = None) -> str:
         photo_line = avatar_line or "Твоё фото: пока нет (не обязательно)"
     lines = ["✨ Сгенерировать фото", ""]
     if prompt:
-        style_label = _resolve_prompt_style_label(prompt)
+        # P0 (docs/briefs/backend.md, находка audits/2026-09-05_naive_user_bot_test.txt):
+        # превью раньше резалось из СЫРОГО state.prompt, уже обёрнутого
+        # apply_board_style_note — английский префикс доски длиннее 50
+        # символов почти всегда, поэтому реальные слова юзера никогда не
+        # попадали в превью. Снимаем слой доски ДО построения превью —
+        # юзер должен видеть свой текст, а не текст анализа доски.
+        board_mixed = bool(state.board_style_note) and prompt.startswith(
+            _board_style_note_prefix(state.board_style_note)
+        )
+        display_prompt = strip_board_style_note(prompt, state.board_style_note) if board_mixed else prompt
+        style_label = _resolve_prompt_style_label(display_prompt)
         if style_label:
             lines.append(f"Стиль: {style_label} ✅")
         else:
-            preview = prompt if len(prompt) <= 50 else prompt[:47] + "…"
+            preview = display_prompt if len(display_prompt) <= 50 else display_prompt[:47] + "…"
             lines.append(f"Описание: «{preview}» ✅")
         lines.append(photo_line)
         if state.board_style_note:
-            board_mixed = prompt.startswith(_board_style_note_prefix(state.board_style_note))
             lines.append("🖼️ Доска подмешана в промт" if board_mixed else "🖼️ Доска выключена для этой генерации")
         model = get_image_model(state)
         lines.append(f"Модель: {get_image_model_label(model)} · {calc_generation_cost(None, model)} 🍇")
@@ -2759,6 +2768,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🪄 Аватар — создай аватар по своим фото, и бот поставит тебя в любой образ\n"
         "🖼️ Улучшить фото — качество как у профессионального фотографа, лицо не меняется\n"
         "🎬 Видео для Reels — оживи фото или сгенерируй ролик по описанию (4 модели на выбор)\n"
+        "🎨 Midjourney — стильные картинки от Midjourney, сеткой из 4 вариантов на выбор\n"
+        "🎬 Студия мультиков — склей несколько сцен в один мультик\n"
+        "🖼️ Доски — собери подборку референсов, и её стиль будет подмешиваться в "
+        "каждую генерацию, пока доска подключена (посмотреть/отключить — в разделе "
+        "«Доски» вебаппа)\n"
         f"💰 Твой баланс: {bal} изюминок (1 фото = {BASE_GENERATION_COST} изюминок)\n\n"
         "Изюминки — внутренняя валюта бота. Их можно купить или получить "
         "за приглашённых друзей.\n\n"
@@ -4529,6 +4543,11 @@ def build_generation_prefill(product: str, state: "UserState") -> dict:
     ТУ ЖЕ форму полей, что вебапп сам присылает в start_generation/sg —
     симметрично, чтобы конструктор мог просто заполнить свои инпуты этими
     значениями, без отдельного формата "только для чтения"."""
+    # Доски — Full: state.prompt/video_prompt/mj_prompt хранят промт УЖЕ
+    # смешанным с апply_board_style_note (см. _apply_webapp_generation_*) —
+    # префилл для «✏️ Изменить» обязан вернуть в конструктор чистый ввод
+    # юзера, а не английский анализ доски (та же болезнь, что чинили в
+    # photo_draft_text/confirmation_text, находка audits/2026-09-05_full_naive_az_test.txt).
     if product == "video":
         model = get_video_model(state)
         return {
@@ -4538,13 +4557,13 @@ def build_generation_prefill(product: str, state: "UserState") -> dict:
             "quality": _video_quality_label_from_mode(get_selected_seedance_mode(state)),
             "duration": get_selected_seedance_duration(state),
             "face_grid": get_face_grid(state) if video_model_uses_face_grid(model) else False,
-            "description": (state.video_prompt or "").strip(),
+            "description": strip_board_style_note((state.video_prompt or "").strip(), state.board_style_note),
             "refs": get_video_image_urls(state),
         }
     if product == "midjourney":
         return {
             "product": "midjourney",
-            "description": (state.mj_prompt or "").strip(),
+            "description": strip_board_style_note((state.mj_prompt or "").strip(), state.board_style_note),
             "refs": [state.mj_reference] if state.mj_reference else [],
         }
     if product == "avatar":
@@ -4556,7 +4575,7 @@ def build_generation_prefill(product: str, state: "UserState") -> dict:
     if product == "photo":
         return {
             "product": "photo",
-            "description": (state.prompt or "").strip(),
+            "description": strip_board_style_note((state.prompt or "").strip(), state.board_style_note),
             "refs": list(state.references),
             "image_model": state.image_model,
         }
@@ -4930,16 +4949,18 @@ async def _apply_webapp_generation_midjourney(update: Update, context: ContextTy
         )
         return True
 
-    # Доски — Full: см. комментарий в _apply_webapp_generation_photo.
-    if state.board_style_note:
-        description = apply_board_style_note(description, state.board_style_note)
-    state.mj_prompt = description
+    # Доски — Full: см. комментарий в _apply_webapp_generation_photo. Карточка
+    # показывает чистый ввод юзера (description), не смешанный с доской текст.
+    board_mixed = bool(state.board_style_note)
+    state.mj_prompt = apply_board_style_note(description, state.board_style_note) if board_mixed else description
 
     ref_line = "Фото-референс: приложен ✅\n" if state.mj_reference else ""
+    board_line = "🖼️ Доска подмешана в промт\n" if board_mixed else ""
     confirmation_text = (
         "🎨 Готово к запуску\n\n"
         f"Описание: {description}\n"
         f"{ref_line}"
+        f"{board_line}"
         f"Стоимость: {MIDJOURNEY_GRID_COST} изюминок за сетку из 4 вариантов\n"
         f"(увеличение понравившегося — отдельно, {MIDJOURNEY_UPSCALE_COST} изюминок)"
     )
@@ -5093,15 +5114,21 @@ async def _apply_webapp_generation_photo(update: Update, context: ContextTypes.D
     # применим и к фото/MJ). Раньше это было только в set_prompt-путях,
     # хаб-конструктор (start_generation) их пропускал — живая жалоба Ани
     # 2026-08-19: «доски не подмешиваются, если стиль взят из библиотеки».
-    if state.board_style_note:
-        description = apply_board_style_note(description, state.board_style_note)
-    state.prompt = description
+    board_mixed = bool(state.board_style_note)
+    state.prompt = apply_board_style_note(description, state.board_style_note) if board_mixed else description
 
+    # Находка №2, audits/2026-09-05_full_naive_az_test.txt: карточка ниже
+    # раньше показывала СЫРОЙ (уже смешанный с доской) текст — 5+ строк
+    # английского анализа доски перед словами юзера. В карточке — только
+    # чистый ввод юзера (`description`, не state.prompt), факт подмешивания
+    # доски — отдельной короткой строкой (тот же приём, что в photo_draft_text).
     photo_line = f"Фото: {len(state.references)} шт." if state.references else "Фото: своё не добавлено (возьму аватар, если есть)"
     model_line = f"Модель: {get_image_model_label(state.image_model)}\n" if GPT5_IMAGE_ENABLED else ""
+    board_line = "🖼️ Доска подмешана в промт\n" if board_mixed else ""
     confirmation_text = (
         "✨ Готово к запуску\n\n"
         f"Описание: {description}\n"
+        f"{board_line}"
         f"{model_line}"
         f"{photo_line}"
     )

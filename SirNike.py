@@ -3747,6 +3747,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await update.message.delete()
                     except Exception:
                         pass
+                else:
+                    # Живой баг 2026-09-04: юзер выбирает фото в вебапп-конструкторе,
+                    # жмёт «✅ Готово» — action не распознан (устаревший/переименованный,
+                    # или JSON обрезан лимитом answerWebAppQuery) и бот молчит, юзеру
+                    # кажется, что «ничего не происходит». Раньше молчали и тут, и на
+                    # невалидном JSON ниже — теперь честно говорим, что не получилось.
+                    logger.warning(
+                        "apply_webapp_prompt_payload_v2 returned False for via_bot payload: %s",
+                        vb_text[:500],
+                    )
+                    await update.message.reply_text(
+                        "Не получилось применить выбор — попробуй ещё раз через «📚 Библиотека и генерация»."
+                    )
+            else:
+                logger.warning("via_bot payload looked like JSON but had no action/a field or failed to parse: %s", vb_text[:500])
+                await update.message.reply_text(
+                    "Не получилось применить выбор — попробуй ещё раз через «📚 Библиотека и генерация»."
+                )
         return
 
     text = update.message.text.strip()

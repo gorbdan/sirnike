@@ -201,11 +201,42 @@ VEO31_DURATION_OPTIONS = os.getenv("VEO31_DURATION_OPTIONS", "4,6,8")
 
 # Wan 2.7 (Alibaba) через Zveno Videos API — text-to-video и image/reference-to-video,
 # 2-10 секунд, 480p/720p, 16:9 или 9:16 (проверено GET /v1/videos/models, 2026-07-08).
-# Закупка Zveno: 16.21 руб/сек — тариф 10.0 изюм/сек, маржа ~x3.3 как у Kling/Veo.
+# Закупка Zveno: 16.21 руб/сек — тариф 10.0 изюм/сек, маржа ~x3.3 как у Kling/Веo.
 WAN27_ENABLED = os.getenv("WAN27_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
 WAN27_MODEL = os.getenv("WAN27_MODEL", "alibaba/wan-2.7")
 WAN27_COST_PER_SECOND = float(os.getenv("WAN27_COST_PER_SECOND", "10.0"))
 WAN27_DURATION_OPTIONS = os.getenv("WAN27_DURATION_OPTIONS", "5,10")
+
+# Kling 3.0 / Veo 3.1 / Wan 2.7 на EvoLink — полный отказ от Zveno (решение
+# Ани 2026-09-11, «мы отказались от Zveno»). Проверено через ai-market-analyst
+# (доки evolink.ai, 2026-09-11, БЕЗ живого вызова API — ключа в этой сессии
+# нет): все три модели у EvoLink ЕСТЬ под своими id (без provider-префикса,
+# как у Zveno) на том же generic /v1/videos/generations, что уже используют
+# Seedance/Gemini Omni. Закупка дешевле Zveno по всем трём (~35-54% на
+# 720p без доплаты за 4K) — ДАЖЕ со звуком у Kling3/Veo31 (Zveno давал звук
+# бесплатно, EvoLink берёт отдельно — чтобы не откатывать уже включённую
+# фичу молча, платим за звук и всё равно выходим дешевле Zveno).
+#
+# Контракт EvoLink ОТЛИЧАЕТСЯ от общего /v1/videos/generations, которым уже
+# пользуются Seedance/Gemini Omni (там просто image_urls-массив):
+#  - Kling3/Wan27: референс — именованные image_start(+image_end), НЕ
+#    произвольный массив. Kling3 — максимум 2 кадра (first+last, как и на
+#    Zveno сейчас); Wan27 — при >1 фото собираем reference sheet тем же
+#    хуком, что Zveno-путь для Wan (_build_reference_sheet_url_hook).
+#  - Veo31: обязательный `generation_type` (TEXT без фото / REFERENCE с
+#    1+ фото, до 3 референсов массивом `image_urls`).
+# НЕ проверено живым вызовом: реальные допустимые `duration` у Veo31 fast
+# (доки явно дают только пример "8с", у нас в UI 4/6/8), доступность quality
+# кроме 720p. Выключено флагом до ручного теста Ани — тот же порядок
+# раскатки, что у Seedance-EvoLink/Midjourney/фото.
+KLING3_PROVIDER = os.getenv("KLING3_PROVIDER", "zveno").strip().lower()
+VEO31_PROVIDER = os.getenv("VEO31_PROVIDER", "zveno").strip().lower()
+WAN27_PROVIDER = os.getenv("WAN27_PROVIDER", "zveno").strip().lower()
+EVOLINK_KLING3_TEXT_MODEL = os.getenv("EVOLINK_KLING3_TEXT_MODEL", "kling-v3-text-to-video")
+EVOLINK_KLING3_IMAGE_MODEL = os.getenv("EVOLINK_KLING3_IMAGE_MODEL", "kling-v3-image-to-video")
+EVOLINK_VEO31_MODEL = os.getenv("EVOLINK_VEO31_MODEL", "veo3.1-fast-beta")
+EVOLINK_WAN27_TEXT_MODEL = os.getenv("EVOLINK_WAN27_TEXT_MODEL", "wan2.7-text-to-video")
+EVOLINK_WAN27_IMAGE_MODEL = os.getenv("EVOLINK_WAN27_IMAGE_MODEL", "wan2.7-image-to-video")
 
 # Seedance 2.5 (ByteDance) через EvoLink — ВСЕГДА EvoLink, у Zveno этой модели
 # нет (в отличие от seedance2/2_fast, у тех есть Zveno↔EvoLink переключатель

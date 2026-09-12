@@ -61,6 +61,9 @@ from config import (
     SEEDANCE_PROVIDER,
     SEEDANCE_FACE_GRID,
     MOTION_CONTROL_PROVIDER,
+    KLING3_PROVIDER,
+    VEO31_PROVIDER,
+    WAN27_PROVIDER,
     GEMINI_OMNI_ENABLED,
     GEMINI_OMNI_MODEL,
     GEMINI_OMNI_DURATION,
@@ -196,6 +199,9 @@ from video_providers import (
     start_seedance_task_evolink,
     start_gemini_omni_task_evolink,
     start_seedance25_task_evolink,
+    start_kling3_task_evolink,
+    start_veo31_task_evolink,
+    start_wan27_task_evolink,
     start_kling_motion_control_evolink,
     start_seedance_task,
     poll_seedance_task,
@@ -10387,18 +10393,24 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             selected_model_slug = SEEDANCE_MODEL
 
-        # Провайдер-флаг (docs/specs/2026-07-31_evolink_video_provider.md): только
-        # Seedance 2.0/2.0-fast умеют переключаться на EvoLink, остальные модели
-        # (Kling 3.0/Веo 3.1/Wan 2.7) всегда идут через Zveno — SEEDANCE_PROVIDER
-        # их не касается. Дефолт "zveno" не меняет НИЧЕГО в поведении. Gemini
-        # Omni — новый продукт, которого у Zveno нет вообще, поэтому всегда
-        # через EvoLink независимо от SEEDANCE_PROVIDER.
+        # Провайдер-флаг (docs/specs/2026-07-31_evolink_video_provider.md):
+        # Seedance 2.0/2.0-fast — SEEDANCE_PROVIDER, Kling 3.0/Veo 3.1/Wan 2.7 —
+        # свои независимые флаги (KLING3_PROVIDER/VEO31_PROVIDER/WAN27_PROVIDER,
+        # решение Ани 2026-09-11 «отказались от Zveno»). Дефолт "zveno" у всех
+        # не меняет НИЧЕГО в поведении. Gemini Omni/Seedance 2.5 — новые
+        # продукты, которых у Zveno нет вообще, поэтому всегда через EvoLink.
         is_gemini_omni = selected_model == "gemini_omni"
         # Seedance 2.5 — ВСЕГДА EvoLink (у Zveno этой модели нет вообще, не
         # подключена к переключателю SEEDANCE_PROVIDER, как и Gemini Omni).
         is_seedance25 = selected_model == "seedance25"
         use_evolink = seedance_uses_evolink(selected_model)
-        selected_provider_label = "EVOLINK" if (use_evolink or is_gemini_omni or is_seedance25) else "ZVENO"
+        use_evolink_kling3 = selected_model == "kling3" and KLING3_PROVIDER == "evolink"
+        use_evolink_veo31 = selected_model == "veo31" and VEO31_PROVIDER == "evolink"
+        use_evolink_wan27 = selected_model == "wan27" and WAN27_PROVIDER == "evolink"
+        selected_provider_label = "EVOLINK" if (
+            use_evolink or is_gemini_omni or is_seedance25
+            or use_evolink_kling3 or use_evolink_veo31 or use_evolink_wan27
+        ) else "ZVENO"
 
         # Seedance, Seedance 2.5 и Gemini Omni работают только от фото
         # (image-to-video); Kling 3.0, Veo 3.1 и Wan 2.7 умеют text-to-video.
@@ -10566,6 +10578,12 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     _start_task_fn = start_seedance25_task_evolink
                 elif use_evolink:
                     _start_task_fn = start_seedance_task_evolink
+                elif use_evolink_kling3:
+                    _start_task_fn = start_kling3_task_evolink
+                elif use_evolink_veo31:
+                    _start_task_fn = start_veo31_task_evolink
+                elif use_evolink_wan27:
+                    _start_task_fn = start_wan27_task_evolink
                 else:
                     _start_task_fn = start_seedance_task
                 task_id = await _start_task_fn(

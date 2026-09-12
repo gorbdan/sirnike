@@ -40,6 +40,14 @@ from config import (
     GEMINI_OMNI_MODEL,
     KLING3_DURATION_OPTIONS,
     KLING3_MODEL,
+    KLING3_PROVIDER,
+    EVOLINK_KLING3_TEXT_MODEL,
+    EVOLINK_KLING3_IMAGE_MODEL,
+    VEO31_PROVIDER,
+    EVOLINK_VEO31_MODEL,
+    WAN27_PROVIDER,
+    EVOLINK_WAN27_TEXT_MODEL,
+    EVOLINK_WAN27_IMAGE_MODEL,
     KLING_MOTION_DURATION,
     KLING_MOTION_ENDPOINT,
     KLING_MOTION_MODE,
@@ -1046,6 +1054,119 @@ async def start_seedance25_task_evolink(
         "generate_audio": True,
     }
     return await _evolink_create_task(payload, "EvoLink Seedance 2.5", user_id)
+
+
+# ----------------------------------------------------------------------------
+# Kling 3.0 / Veo 3.1 / Wan 2.7 (EvoLink) — полный отказ от Zveno (решение
+# Ани 2026-09-11). См. комментарий KLING3_PROVIDER в config.py: контракт
+# EvoLink для этих трёх моделей ОТЛИЧАЕТСЯ от общего /v1/videos/generations
+# (image_start/image_end вместо произвольного image_urls-массива у Kling3/
+# Wan27; обязательный generation_type у Veo31) — НЕ drop-in копия
+# start_seedance_task_evolink, хоть и тот же эндпоинт/поллинг. Переключаются
+# независимыми флагами KLING3_PROVIDER/VEO31_PROVIDER/WAN27_PROVIDER,
+# дефолт "zveno" не меняет ничего в поведении.
+# ----------------------------------------------------------------------------
+
+async def start_kling3_task_evolink(
+    prompt: str,
+    image_url: Optional[str],
+    user_id: int,
+    duration: Optional[int] = None,
+    endpoint: Optional[str] = None,
+    mode: Optional[str] = None,
+    model_slug: Optional[str] = None,
+    image_urls: Optional[List[str]] = None,
+    model_code: Optional[str] = None,
+    aspect_ratio: str = "16:9",
+) -> str:
+    """Kling 3.0 (EvoLink) — та же first/last-frame модель, что и на Zveno
+    (максимум 2 фото: первый+последний кадр, не reference-to-video). Звук
+    ("sound") у EvoLink платный отдельно (Zveno давал бесплатно) — включаем
+    всё равно, чтобы не откатывать юзерам уже рабочую фичу молча; закупка
+    даже со звуком дешевле нынешней Zveno (см. config.py)."""
+    combined_image_urls = _resolve_evolink_image_urls(image_url, image_urls, 2)
+    is_image = bool(combined_image_urls)
+    payload: dict = {
+        "model": EVOLINK_KLING3_IMAGE_MODEL if is_image else EVOLINK_KLING3_TEXT_MODEL,
+        "prompt": (prompt or "").strip()[:2500],
+        "duration": int(duration) if duration is not None else 5,
+        "quality": "720p",
+        "sound": "on",
+    }
+    if is_image:
+        payload["image_start"] = combined_image_urls[0]
+        if len(combined_image_urls) > 1:
+            payload["image_end"] = combined_image_urls[1]
+    else:
+        payload["aspect_ratio"] = aspect_ratio
+    return await _evolink_create_task(payload, "EvoLink Kling 3.0", user_id)
+
+
+async def start_veo31_task_evolink(
+    prompt: str,
+    image_url: Optional[str],
+    user_id: int,
+    duration: Optional[int] = None,
+    endpoint: Optional[str] = None,
+    mode: Optional[str] = None,
+    model_slug: Optional[str] = None,
+    image_urls: Optional[List[str]] = None,
+    model_code: Optional[str] = None,
+    aspect_ratio: str = "16:9",
+) -> str:
+    """Veo 3.1 Fast (EvoLink) — generation_type обязателен (TEXT без фото,
+    REFERENCE с 1+ фото, до 3 референсов массивом). НЕ live-протестировано:
+    реальные допустимые duration (доки дают только пример "8с", у нас в UI
+    4/6/8) и доступность quality кроме 720p — сверить перед включением
+    флага в проде."""
+    combined_image_urls = _resolve_evolink_image_urls(image_url, image_urls, 3)
+    has_images = bool(combined_image_urls)
+    payload: dict = {
+        "model": EVOLINK_VEO31_MODEL,
+        "prompt": (prompt or "").strip()[:2000],
+        "generation_type": "REFERENCE" if has_images else "TEXT",
+        "duration": int(duration) if duration is not None else 8,
+        "sound": "on",
+    }
+    if has_images:
+        payload["image_urls"] = combined_image_urls
+    else:
+        payload["aspect_ratio"] = aspect_ratio
+    return await _evolink_create_task(payload, "EvoLink Veo 3.1", user_id)
+
+
+async def start_wan27_task_evolink(
+    prompt: str,
+    image_url: Optional[str],
+    user_id: int,
+    duration: Optional[int] = None,
+    endpoint: Optional[str] = None,
+    mode: Optional[str] = None,
+    model_slug: Optional[str] = None,
+    image_urls: Optional[List[str]] = None,
+    model_code: Optional[str] = None,
+    aspect_ratio: str = "16:9",
+) -> str:
+    """Wan 2.7 (EvoLink) — image_start/image_end, не произвольный массив.
+    При >1 референс-фото (мультиперсонажный промт) собираем reference sheet
+    тем же хуком, что уже использует Zveno-путь для Wan (_build_reference_sheet_url_hook)
+    — иначе EvoLink увидел бы только первое фото, второе персонажа потерялось бы."""
+    combined_image_urls = _resolve_evolink_image_urls(image_url, image_urls, MAX_SEEDANCE_IMAGE_REFERENCES)
+    is_image = bool(combined_image_urls)
+    payload: dict = {
+        "model": EVOLINK_WAN27_IMAGE_MODEL if is_image else EVOLINK_WAN27_TEXT_MODEL,
+        "prompt": (prompt or "").strip()[:2500],
+        "duration": int(duration) if duration is not None else 5,
+        "quality": "720p",
+        "aspect_ratio": aspect_ratio,
+    }
+    if is_image:
+        primary_url = combined_image_urls[0]
+        if len(combined_image_urls) > 1:
+            sheet_url = await _build_reference_sheet_url_hook(combined_image_urls)
+            primary_url = sheet_url or primary_url
+        payload["image_start"] = primary_url
+    return await _evolink_create_task(payload, "EvoLink Wan 2.7", user_id)
 
 
 async def start_kling_motion_control_evolink(

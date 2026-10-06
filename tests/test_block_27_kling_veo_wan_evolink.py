@@ -42,6 +42,27 @@ def test_block_27b_kling3_text_to_video_payload():
         assert "image_start" not in payload, f"27b.3 без фото — нет image_start: {payload}"
         assert payload["aspect_ratio"] == "9:16", f"27b.4 aspect_ratio передан для t2v: {payload}"
         assert payload["sound"] == "on", f"27b.5 звук включён (паритет с Zveno): {payload}"
+        assert payload["quality"] == "720p", f"27b.6 без mode -> дефолт 720p: {payload}"
+    finally:
+        S.video_providers._evolink_create_task = _orig
+
+
+def test_block_27b2_kling3_honors_mode_1080p():
+    # Живой баг 2026-10-06: quality был захардкожен в "720p" независимо от
+    # mode — тумблер «🔥 Pro» в конструкторе вебаппа показывал выбор 1080p
+    # (после фикса modes.length>1 на фронте), но реальная генерация молча
+    # всегда уходила на 720p. Проверяем, что mode="1080p" теперь реально
+    # попадает в payload.
+    captured = {}
+    _orig = S.video_providers._evolink_create_task
+    S.video_providers._evolink_create_task = _patch_evolink_create(captured)
+    try:
+        asyncio.run(S.start_kling3_task_evolink(
+            prompt="кот-космонавт", image_url=None, user_id=1, duration=5, mode="1080p",
+        ))
+        assert captured["payload"]["quality"] == "1080p", (
+            f"27b2.1 mode=1080p реально доходит до payload: {captured['payload']}"
+        )
     finally:
         S.video_providers._evolink_create_task = _orig
 

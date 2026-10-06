@@ -1083,14 +1083,22 @@ async def start_kling3_task_evolink(
     (максимум 2 фото: первый+последний кадр, не reference-to-video). Звук
     ("sound") у EvoLink платный отдельно (Zveno давал бесплатно) — включаем
     всё равно, чтобы не откатывать юзерам уже рабочую фичу молча; закупка
-    даже со звуком дешевле нынешней Zveno (см. config.py)."""
+    даже со звуком дешевле нынешней Zveno (см. config.py).
+
+    Живой баг 2026-10-06: quality был захардкожен в "720p", игнорируя
+    параметр mode — тумблер «Качество»/«🔥 Pro» в конструкторе вебаппа
+    показывал выбор 1080p (см. get_seedance_mode_options("kling3") =
+    ["720p","1080p"]), но реальная генерация ВСЕГДА уходила на 720p
+    независимо от выбора юзера. normalize_seedance_mode(mode) — тот же
+    резолвер, что у start_seedance_task_evolink, падает на "720p" по
+    умолчанию, если mode пуст/не распознан."""
     combined_image_urls = _resolve_evolink_image_urls(image_url, image_urls, 2)
     is_image = bool(combined_image_urls)
     payload: dict = {
         "model": EVOLINK_KLING3_IMAGE_MODEL if is_image else EVOLINK_KLING3_TEXT_MODEL,
         "prompt": (prompt or "").strip()[:2500],
         "duration": int(duration) if duration is not None else 5,
-        "quality": "720p",
+        "quality": normalize_seedance_mode(mode),
         "sound": "on",
     }
     if is_image:

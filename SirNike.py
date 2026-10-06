@@ -564,6 +564,15 @@ processing_user_ids = set()
 # of processing_user_ids. Guarantees only one run_seedance runs per user even if
 # a future caller forgets the pre-create_task guard (prevents double charge).
 _seedance_executing = set()
+# «❌ Остановить» на статусе видео-генерации (живой запрос Ани 2026-10-06):
+# run_seedance всегда запускается ЛИЧНЫМ asyncio.Task на юзера (через
+# app.create_task), в отличие от фото (общий последовательный queue_worker —
+# там отмену одного юзера пришлось бы делать через kill всей очереди, НЕ
+# безопасно, поэтому кнопки «Остановить» у фото пока нет и не будет без
+# отдельного рефакторинга очереди). task.cancel() бросает CancelledError
+# внутрь run_seedance — там уже есть `except BaseException`, рефанд и явный
+# `raise` для CancelledError (корректная кооперативная отмена).
+active_video_tasks: Dict[int, "asyncio.Task"] = {}
 queue_worker_task = None
 
 DEFAULT_PROMPT_LIBRARY = [
@@ -4697,15 +4706,20 @@ async def gen_progress_complete(progress_id: str, status: str, stage: str) -> No
     await _gen_progress_api("progress.complete", {"id": progress_id, "status": status, "stage": stage})
 
 
-def gen_progress_kb(user_id: int, progress_id: str, product: str) -> InlineKeyboardMarkup:
+def gen_progress_kb(
+    user_id: int, progress_id: str, product: str, extra_rows: Optional[list] = None,
+) -> InlineKeyboardMarkup:
     """Обязательно инлайн (не reply) — initData нужен progress.get для
     проверки, что юзер смотрит свой, а не чужой прогресс (спека,
     «Архитектурное решение №2», по образцу фикса находки №1 прод-аудита
-    Студии)."""
+    Студии). extra_rows — доп. ряды кнопок ПОД ссылкой на прогресс (сейчас
+    только «❌ Остановить» у видео, run_seedance — см. docs/RELEASE_NOTES.md
+    2026-10-06)."""
     url = get_prompt_webapp_url(user_id) + f"&tab=progress&job_id={progress_id}&product={product}"
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("👀 Смотреть прогресс", web_app=WebAppInfo(url=url)),
-    ]])
+    rows = [[InlineKeyboardButton("👀 Смотреть прогресс", web_app=WebAppInfo(url=url))]]
+    if extra_rows:
+        rows.extend(extra_rows)
+    return InlineKeyboardMarkup(rows)
 
 
 async def apply_webapp_generation_payload(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
@@ -7314,6 +7328,23 @@ async def _cb_video_change_model(update, context, query, user):
     return
 
 
+async def _cb_video_cancel_gen(update, context, query, user):
+    """«❌ Остановить» на статусе видео-генерации (живой запрос Ани
+    2026-10-06). run_seedance всегда исполняется личной asyncio.Task на
+    юзера (active_video_tasks) — task.cancel() бросает CancelledError внутрь
+    неё, где уже есть корректный рефанд + явное сообщение (run_seedance,
+    ветка isinstance(e, asyncio.CancelledError)). Кнопки нет у фото —
+    queue_worker последовательный и общий на всех юзеров, отменить одного
+    юзера без риска уронить чужую генерацию нельзя без отдельного
+    рефакторинга очереди."""
+    task = active_video_tasks.get(user.id)
+    if task is None or task.done():
+        await query.answer("Генерация уже завершилась — нечего останавливать.", show_alert=True)
+        return
+    task.cancel()
+    await query.answer("Останавливаю… ⏹")
+
+
 async def _cb_video_start(update, context, query, user):
     user_vs = update.effective_user
     if user_vs.id in queued_user_ids or user_vs.id in processing_user_ids:
@@ -7557,6 +7588,7 @@ VIDEO_EXACT_HANDLERS = {
     "video_set_duration": _cb_video_set_duration,
     "video_change_model": _cb_video_change_model,
     "video_start": _cb_video_start,
+    "video_cancel_gen": _cb_video_cancel_gen,
 }
 
 
@@ -10325,6 +10357,9 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user = None  # prevent finally from clearing the running instance's markers
             return
         _seedance_executing.add(user.id)
+        _current_task = asyncio.current_task()
+        if _current_task is not None:
+            active_video_tasks[user.id] = _current_task
         create_user_if_not_exists(user.id, user.username, START_BONUS)
         reply_target = update.callback_query.message if update.callback_query else update.message
         state = get_or_init_state(context)
@@ -10546,8 +10581,16 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Живой прогресс в вебаппе (docs/specs/2026-08-13_webapp_generation_hub_full.md) —
             # тонкое зеркало, не блокирует и не может провалить саму генерацию
             # (gen_progress_create просто вернёт False, если Cloudflare недоступен).
+            #
+            # «❌ Остановить» (живой запрос Ани 2026-10-06) — показываем ВСЕГДА,
+            # не только при включённом GEN_PROGRESS_ENABLED: run_seedance это
+            # отдельная asyncio.Task на юзера (active_video_tasks), task.cancel()
+            # корректно долетает до except BaseException ниже (рефанд + явный
+            # reraise CancelledError уже на месте).
+            _cancel_row = [InlineKeyboardButton("❌ Остановить", callback_data="video_cancel_gen")]
             _progress_id = str(uuid.uuid4())
-            _progress_kb = None
+            _progress_kb = InlineKeyboardMarkup([_cancel_row])
+            _progress_created = False
             if GEN_PROGRESS_ENABLED:
                 _progress_created = await gen_progress_create(_progress_id, user.id, "video", {
                     "model_label": selected_model_label,
@@ -10555,18 +10598,18 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "duration": selected_duration,
                 })
                 if _progress_created:
-                    _progress_kb = gen_progress_kb(user.id, _progress_id, "video")
-                    try:
-                        await status_msg.edit_text("⏳ Генерирую видео…", reply_markup=_progress_kb)
-                    except Exception:
-                        pass
+                    _progress_kb = gen_progress_kb(user.id, _progress_id, "video", extra_rows=[_cancel_row])
+            try:
+                await status_msg.edit_text("⏳ Генерирую видео…", reply_markup=_progress_kb)
+            except Exception:
+                pass
 
             async def _edit_status(text: str) -> None:
                 try:
                     await status_msg.edit_text(text, reply_markup=_progress_kb)
                 except Exception:
                     pass
-                if GEN_PROGRESS_ENABLED and _progress_kb is not None:
+                if _progress_created:
                     await gen_progress_update(_progress_id, "processing", "Генерируем…")
 
             video_url = None
@@ -10665,7 +10708,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=video_caption,
                 reply_markup=upsell_markup,
             )
-            if GEN_PROGRESS_ENABLED and _progress_kb is not None:
+            if _progress_created:
                 await gen_progress_complete(_progress_id, "done", "Готово!")
             log_generation_event(
                 user_id=user.id,
@@ -10702,7 +10745,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except BaseException as e:
             logger.exception("Video generation failed")
             add_izyminki(user.id, selected_cost)
-            if GEN_PROGRESS_ENABLED and _progress_kb is not None:
+            if _progress_created:
                 await gen_progress_complete(_progress_id, "error", "Не получилось")
             # Restore state so "Повторить" can reuse the same images/prompt
             state.animation_source_urls = _saved_animation_source_urls
@@ -10725,6 +10768,16 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 error_message=str(e),
                 is_admin_test=1 if user.id in ADMIN_IDS else 0,
             )
+            if isinstance(e, asyncio.CancelledError):
+                # «❌ Остановить» (живой запрос Ани 2026-10-06) — явная отмена
+                # юзером, не технический сбой. Рефанд уже сделан выше
+                # (add_izyminki), log_generation_event тоже уже записан —
+                # отдельное сообщение вместо пугающего «технический сбой».
+                await reply_target.reply_text(
+                    f"⏹ Генерация {selected_model_label} остановлена.\n\n"
+                    "Списанные изюминки возвращены на баланс."
+                )
+                raise  # корректная кооперативная отмена — задача обязана пробросить CancelledError
             error_text = str(e).lower()
             if is_seedance_privacy_moderation_error(error_text):
                 await reply_target.reply_text(
@@ -10770,13 +10823,13 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "Списанные изюминки возвращены на баланс."
                 )
                 return
+            # CancelledError обработан отдельной веткой выше (raise) — сюда
+            # долетают только реальные сбои провайдера/сети.
             await reply_target.reply_text(
                 f"Не удалось выполнить {selected_model_label}.\n"
                 "Временный технический сбой. Попробуй еще раз через минуту.\n\n"
                 "Списанные изюминки возвращены на баланс."
             )
-            if isinstance(e, asyncio.CancelledError):
-                raise  # must re-raise so the task actually cancels
             await reply_target.reply_text(
                 "Попробовать еще раз?",
                 reply_markup=seedance_retry_kb(),
@@ -10785,6 +10838,11 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user is not None:
             processing_user_ids.discard(user.id)
             _seedance_executing.discard(user.id)
+            # Снимаем свою же задачу, только если она всё ещё там (никто не
+            # перезаписал раньше — по _seedance_executing-гварду выше это
+            # физически гарантировано на один user_id не более 1 запущенного
+            # run_seedance одновременно, но pop(..., None) безопасен в любом случае).
+            active_video_tasks.pop(user.id, None)
 
 async def _persist_image_ref(ref: str) -> str:
     """Upload __img__ cache ref to permanent hosting. Returns persistent URL or empty string on failure."""

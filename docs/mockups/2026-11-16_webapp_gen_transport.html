@@ -1,0 +1,180 @@
+<title>Сырник — создать без выхода из вебаппа</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f7f3ee; --surface: #fffaf4; --surface-2: #ffffff; --text: #1d1b20; --muted: #6d6472;
+  --line: #e7dccc; --brand: #b21f4a; --ok: #0f766e; --accent: #d9902f; --warn-bg: #fdebee;
+  --chat: #e8efe6; --bubble: #ffffff; --shadow: 0 16px 45px rgba(55,39,22,.1);
+  --font: -apple-system, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  color-scheme: dark; --bg:#0c0e18; --surface:#171b2b; --surface-2:#202538; --text:#f5f1ea; --muted:#b5abb9;
+  --line:#33394f; --brand:#ff7197; --ok:#58d6c8; --accent:#f1bd64; --warn-bg:#3a1f2b; --chat:#141a22; --bubble:#202a36; --shadow:0 18px 55px rgba(0,0,0,.28);
+} }
+:root[data-theme="dark"] {
+  color-scheme: dark; --bg:#0c0e18; --surface:#171b2b; --surface-2:#202538; --text:#f5f1ea; --muted:#b5abb9;
+  --line:#33394f; --brand:#ff7197; --ok:#58d6c8; --accent:#f1bd64; --warn-bg:#3a1f2b; --chat:#141a22; --bubble:#202a36; --shadow:0 18px 55px rgba(0,0,0,.28);
+}
+body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 15px; line-height: 1.45;
+  padding-block: 24px 56px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.wrap { max-width: 1040px; margin: 0 auto; display: flex; flex-direction: column; gap: 36px; }
+h1 { font-size: 24px; margin: 0 0 6px; text-wrap: balance; }
+h2 { font-size: 17px; margin: 0; }
+.lead { color: var(--muted); margin: 0; max-width: 62ch; }
+.row { display: grid; grid-template-columns: 1fr; gap: 16px; }
+.lane { display: flex; flex-direction: column; gap: 14px; }
+.lane-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.tag { font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; }
+.tag.was { background: var(--line); color: var(--muted); }
+.tag.now { background: var(--brand); color: #fff; }
+.steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+.step { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.cap { font-size: 12.5px; color: var(--muted); margin: 0; }
+.cap b { color: var(--text); }
+.phone { background: var(--bg); border: 1px solid var(--line); border-radius: 22px; padding: 14px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 10px; min-height: 250px; }
+.phone.chat { background: var(--chat); }
+.bar { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); font-weight: 700; }
+.bar .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.field { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 13px; color: var(--muted); }
+.field b { color: var(--text); font-weight: 600; }
+.primary { border: 0; background: var(--brand); color: #fff; min-height: 44px; border-radius: 10px; padding: 0 14px; font: 800 14.5px var(--font); width: 100%; font-variant-numeric: tabular-nums; }
+.primary.busy { opacity: .72; }
+.primary.ok { background: var(--ok); }
+.spin { display: inline-block; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+.err { background: var(--warn-bg); border: 1px solid var(--brand); color: var(--text); border-radius: 10px; padding: 8px 10px; font-size: 12.5px; font-weight: 600; }
+.err small { display: block; color: var(--muted); font-weight: 500; margin-top: 2px; }
+.bubble { background: var(--bubble); border-radius: 14px 14px 14px 4px; padding: 10px 12px; font-size: 13px; max-width: 92%; box-shadow: 0 1px 0 var(--line); }
+.bubble.me { align-self: flex-end; background: var(--brand); color: #fff; border-radius: 14px 14px 4px 14px; }
+.kb { display: flex; gap: 6px; }
+.kb span { flex: 1; text-align: center; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px 4px; font-size: 12px; font-weight: 700; }
+.kb span.hot { background: var(--brand); color: #fff; border-color: var(--brand); }
+.prog { height: 8px; border-radius: 99px; background: var(--line); overflow: hidden; }
+.prog i { display: block; height: 100%; width: 38%; background: var(--brand); border-radius: 99px; }
+.big { font-size: 28px; line-height: 1; }
+.arrow { color: var(--muted); font-size: 12px; text-align: center; }
+.note { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; }
+.note ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.states { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.state { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.state .label { font-size: 12px; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>«Создать» без выхода из вебаппа</h1>
+    <p class="lead">Этап 1: видео. Сейчас кнопка закрывает вебапп и кидает в чат с карточкой «🚀 Запустить». Станет: тап → бот сразу принимает заказ → прогресс виден прямо в вебаппе, ничего не закрывается.</p>
+  </header>
+
+  <section class="lane">
+    <div class="lane-head"><span class="tag was">Было</span><h2>Четыре экрана и выход в чат</h2></div>
+    <div class="steps">
+      <div class="step">
+        <div class="phone">
+          <div class="bar"><span class="dot"></span>Вебапп · Видео</div>
+          <div class="card"><div class="field"><b>Промт:</b> девушка идёт по рынку…</div><div class="field"><b>Seedance</b> · 5 с · 720p</div></div>
+          <button class="primary" type="button">🚀 Продолжить в чат</button>
+        </div>
+        <p class="cap"><b>1.</b> Название не говорит, что дальше потребуется ещё один тап.</p>
+      </div>
+      <div class="step">
+        <div class="phone chat">
+          <div class="bar"><span class="dot"></span>Вебапп закрылся</div>
+          <div class="bubble">Видео · Seedance · 5 с<br>Цена: 34 🍇</div>
+          <div class="kb"><span class="hot">🚀 Запустить</span><span>✏️ Изменить</span></div>
+        </div>
+        <p class="cap"><b>2.</b> Карточка в чате. Ещё один тап, чтобы запустить.</p>
+      </div>
+      <div class="step">
+        <div class="phone chat">
+          <div class="bar"><span class="dot"></span>Чат</div>
+          <div class="bubble">⏳ Видео запущено…</div>
+          <div class="arrow">Чтобы изменить промт, снова открыть вебапп</div>
+        </div>
+        <p class="cap"><b>3.</b> Прогресс только в чате.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="lane">
+    <div class="lane-head"><span class="tag now">Стало</span><h2>Один тап, прогресс на том же экране</h2></div>
+    <div class="steps">
+      <div class="step">
+        <div class="phone">
+          <div class="bar"><span class="dot"></span>Вебапп · Видео</div>
+          <div class="card"><div class="field"><b>Промт:</b> девушка идёт по рынку…</div><div class="field"><b>Seedance</b> · 5 с · 720p</div></div>
+          <button class="primary" type="button">🚀 Создать · ≈34 🍇</button>
+        </div>
+        <p class="cap"><b>1.</b> Цена прямо в кнопке: тап = подтверждение траты.</p>
+      </div>
+      <div class="step">
+        <div class="phone">
+          <div class="bar"><span class="dot"></span>Вебапп · Видео</div>
+          <div class="card"><div class="field"><b>Промт:</b> девушка идёт по рынку…</div><div class="field"><b>Seedance</b> · 5 с · 720p</div></div>
+          <button class="primary busy" type="button" disabled><span class="spin">⏳</span> Отправляем…</button>
+        </div>
+        <p class="cap"><b>2.</b> Обычно 1–3 секунды. Поля заблокированы от двойного тапа.</p>
+      </div>
+      <div class="step">
+        <div class="phone">
+          <div class="bar"><span class="dot"></span>Вебапп · Прогресс</div>
+          <div class="card">
+            <b>🎬 Видео создаётся</b>
+            <div class="prog"><i></i></div>
+            <div class="field">Seedance · 5 с · осталось ≈ 2 мин</div>
+          </div>
+          <div class="cap">Можно закрыть: бот пришлёт видео в чат.</div>
+        </div>
+        <p class="cap"><b>3.</b> Тот же экран прогресса, что уже есть. Вебапп не закрывается.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="lane">
+    <div class="lane-head"><h2>Если что-то пошло не так</h2></div>
+    <div class="states">
+      <div class="state">
+        <div class="label">Мало изюминок</div>
+        <div class="phone" style="min-height:0">
+          <button class="primary" type="button">🚀 Создать · ≈34 🍇</button>
+          <div class="err">Не хватает изюминок: нужно 34, у тебя 12.<small>Поля сохранены. Пополни баланс и нажми ещё раз.</small></div>
+        </div>
+      </div>
+      <div class="state">
+        <div class="label">Бот занят</div>
+        <div class="phone" style="min-height:0">
+          <button class="primary" type="button">🚀 Создать · ≈34 🍇</button>
+          <div class="err">Бот занят, попробуй через минуту.<small>Через 20 секунд ответа нет. Изюминки не списаны.</small></div>
+        </div>
+      </div>
+      <div class="state">
+        <div class="label">Слишком часто</div>
+        <div class="phone" style="min-height:0">
+          <button class="primary" type="button">🚀 Создать · ≈34 🍇</button>
+          <div class="err">Уже идёт 5 генераций.<small>Дождись, пока одна закончится.</small></div>
+        </div>
+      </div>
+      <div class="state">
+        <div class="label">Новая схема недоступна</div>
+        <div class="phone" style="min-height:0">
+          <button class="primary" type="button">🚀 Продолжить в чат</button>
+          <div class="cap">Если сервер не отвечает (404/5xx), кнопка работает по-старому: карточка в чате. Юзер ничего не замечает.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="note">
+    <h2>Что меняется для юзера и для тебя</h2>
+    <ul>
+      <li>Название кнопки: «🚀 Продолжить в чат» → «🚀 Создать · ≈N 🍇». Исчезает шаг с карточкой «Запустить» в чате.</li>
+      <li>Ошибки показываются под кнопкой, введённый промт и фото остаются.</li>
+      <li>Остальные продукты (фото, аватар, Midjourney, «Улучшить фото», доски) пока работают по-старому. Переносим по одному после видео.</li>
+      <li>Включается в два шага: я выкатываю вебапп, ты применяешь таблицу <code>gen_jobs</code> в D1 и включаешь <code>WEBAPP_GEN_ENABLED</code>. Пока флаг выключен, ничего не меняется.</li>
+    </ul>
+  </section>
+</div>

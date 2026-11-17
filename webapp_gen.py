@@ -32,7 +32,17 @@ _job_id: contextvars.ContextVar[str] = contextvars.ContextVar("webapp_gen_job_id
 _launched: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar("webapp_gen_launched", default=None)
 _replies: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar("webapp_gen_replies", default=None)
 
+_quiet: contextvars.ContextVar[bool] = contextvars.ContextVar("webapp_gen_quiet", default=False)
+
+_rejected: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar("webapp_gen_rejected", default=None)
+
 _active_job_ids: set = set()
+
+# Мгновенные действия (не генерация): успех = accepted, а не «запущено».
+# Тихие — не пишут в чат вообще, ответ идёт вебаппу в result.messages
+# (иначе юзер видит «Готово ✅» в чате, хотя остался в вебаппе).
+_QUIET_ACTIONS = {"board_refs", "connect_board", "br", "set_active_avatar", "saa"}
+_GENERATION_ACTIONS = {"start_generation", "sg"}
 
 _apply_payload_hook: Optional[Callable[..., Awaitable[bool]]] = None
 _ensure_user_hook: Callable[[int, str], None] = lambda user_id, username: None
@@ -62,6 +72,13 @@ def mark_launched() -> None:
         flag.append(True)
 
 
+def mark_rejected() -> None:
+    """Мгновенное действие отклонено (нет аватара, плохой тип…) — вебаппу error, не done."""
+    flag = _rejected.get()
+    if flag is not None:
+        flag.append(True)
+
+
 def add_reply(text: str) -> None:
     """Причина отказа из callback-обработчика (query.answer) — вебаппу."""
     sink = _replies.get()
@@ -77,6 +94,8 @@ class _SinkMessage(Message):
         sink = _replies.get()
         if sink is not None:
             sink.append(str(text))
+        if _quiet.get():
+            return self
         return await super().reply_text(text, *args, **kwargs)
 
 
@@ -153,17 +172,26 @@ async def _handle_job(app: Application, job: dict) -> None:
     _job_id.set(job_id)
     _replies.set(replies)
     _launched.set(launched)
+    action = str(payload.get("action") or payload.get("a") or "").strip().lower()
+    instant = action not in _GENERATION_ACTIONS
+    _quiet.set(action in _QUIET_ACTIONS)
+    rejected: list = []
+    _rejected.set(rejected)
     status, error, ok = "error", "internal", False
     try:
         _ensure_user_hook(user_id, username)
         update, context = _build_update(app, user_id, username)
         ok = bool(await _apply_payload_hook(update, context, payload))
-        status, error = ("done", "") if launched else ("error", "not_started")
+        if instant:
+            status, error = ("done", "") if ok and not rejected else ("error", "not_accepted")
+        else:
+            status, error = ("done", "") if launched else ("error", "not_started")
     except Exception:
         logger.exception("webapp_gen job %s crashed", job_id)
     result = {
         "accepted": ok,
         "launched": bool(launched),
+        "instant": instant,
         "product": str(payload.get("product") or ""),
         "progress_id": job_id if launched else "",
         "messages": replies[:3],

@@ -5027,10 +5027,12 @@ async def apply_webapp_set_active_avatar_payload(update: Update, context: Contex
     user_id = update.effective_user.id
     kind = str(payload.get("avatar_type") or payload.get("at") or "").strip().lower()
     if kind not in ("female", "male", "child"):
+        webapp_gen.mark_rejected()
         await update.effective_message.reply_text("Не удалось определить, какой аватар включить — попробуй ещё раз.")
         return True
     urls = get_avatar_urls(user_id) or {}
     if not urls.get(kind):
+        webapp_gen.mark_rejected()
         await update.effective_message.reply_text(
             f"Аватар «{avatar_kind_label(kind)}» ещё не создан — сначала сгенерируй его."
         )

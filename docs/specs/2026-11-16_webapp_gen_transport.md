@@ -81,3 +81,18 @@ created_at, taken_at, done_at`. Индекс по `(status, created_at)` и `(us
 - Двойной клик → одно задание.
 - С `WEBAPP_GEN_ENABLED=0` фронт не должен падать: если `submit` отвечает 404/5xx —
   откат на прежний `sendData` (так безопасно катить до включения флага).
+
+## Мгновенные действия (этап 4)
+
+Через ту же очередь (`/api/gen/submit`) идут и НЕ-генерации: `set_active_avatar`
+(`saa`), `board_refs` (`br`), `board_style_analyze` (`bsa`), `topup`. Отличия от
+генерации:
+
+- `result.instant = true`, `launched = false`, `progress_id = ""` — вкладку прогресса
+  НЕ открывать.
+- `status=done` — действие применено; `status=error, error="not_accepted"` —
+  отклонено (нет такого аватара, неверный тип), причина в `result.messages[0]`.
+- `set_active_avatar` и `board_refs` **тихие** — бот ничего не пишет в чат, вебапп сам
+  показывает «Готово»/ошибку (текст в `messages`). `board_style_analyze` и `topup`
+  по-прежнему отвечают в чате (анализ с результатом; инвойс оплаты).
+- `set_prompt` остаётся на `sendData`: он ведёт юзера в чат загрузить фото.

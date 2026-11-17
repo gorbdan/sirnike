@@ -357,3 +357,45 @@ def test_block_29q_progress_attached_only_for_webapp_jobs():
         assert job.progress_id == "jobX" and created == [("jobX", "avatar")], f"29q.2 {job.progress_id} {created}"
     finally:
         S.gen_progress_create, S.GEN_PROGRESS_ENABLED = orig, orig_flag
+
+
+def test_block_29r_instant_action_done_without_launch():
+    async def hook(update, context, payload):
+        W.add_reply("Готово ✅")
+        return True
+
+    completes, _ = _run({"id": "i1", "user_id": 5, "payload": {"action": "board_refs", "title": "x"}}, hook)
+    assert completes[0]["status"] == "done", f"29r.1 {completes}"
+    res = completes[0]["result"]
+    assert res["instant"] is True and res["launched"] is False and res["progress_id"] == "", f"29r.2 {res}"
+
+
+def test_block_29s_instant_action_rejected_is_error():
+    async def hook(update, context, payload):
+        W.mark_rejected()
+        W.add_reply("Аватар ещё не создан")
+        return True
+
+    completes, _ = _run({"id": "i2", "user_id": 5, "payload": {"action": "saa", "at": "male"}}, hook)
+    assert completes[0]["status"] == "error" and completes[0]["error"] == "not_accepted", f"29s.1 {completes}"
+    assert completes[0]["result"]["messages"] == ["Аватар ещё не создан"], f"29s.2 {completes}"
+
+
+def test_block_29t_generation_action_still_requires_launch():
+    async def hook(update, context, payload):
+        return True
+
+    completes, _ = _run({"id": "i3", "user_id": 5, "payload": {"action": "sg", "product": "photo"}}, hook)
+    assert completes[0]["error"] == "not_started" and completes[0]["result"]["instant"] is False, f"29t {completes}"
+
+
+def test_block_29u_quiet_actions_do_not_write_to_chat():
+    async def _go():
+        W._quiet.set(True)
+        W._replies.set([])
+        msg = W._SinkMessage.__new__(W._SinkMessage)
+        out = await W._SinkMessage.reply_text(msg, "тихо")
+        return out, W._replies.get()
+
+    out, sink = asyncio.run(_go())
+    assert out is not None and sink == ["тихо"], f"29u {out} {sink}"

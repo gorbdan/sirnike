@@ -399,3 +399,57 @@ def test_block_29u_quiet_actions_do_not_write_to_chat():
 
     out, sink = asyncio.run(_go())
     assert out is not None and sink == ["тихо"], f"29u {out} {sink}"
+
+
+def test_block_29v_cancel_generation_cancels_video_task():
+    uid = 999999911
+
+    class _Msg:
+        def __init__(self):
+            self.texts = []
+
+        async def reply_text(self, text, *a, **k):
+            self.texts.append(text)
+
+    class _U:
+        def __init__(self):
+            self.effective_message = _Msg()
+            self.effective_user = type("X", (), {"id": uid})()
+
+    async def _run():
+        task = asyncio.get_event_loop().create_task(asyncio.sleep(3600))
+        S.active_video_tasks[uid] = task
+        try:
+            u = _U()
+            assert await S.apply_webapp_prompt_payload_v2(u, None, {"action": "cg", "product": "video"}) is True
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            assert task.cancelled(), "29v.1 задача отменена"
+            assert "Останавливаю" in u.effective_message.texts[0], "29v.2"
+            # повторно — уже нечего останавливать → rejected
+            rej = []
+            W._rejected.set(rej)
+            u2 = _U()
+            await S.apply_webapp_prompt_payload_v2(u2, None, {"action": "cg", "product": "video"})
+            assert rej and "завершилась" in u2.effective_message.texts[0], f"29v.3 {rej}"
+        finally:
+            S.active_video_tasks.pop(uid, None)
+
+    asyncio.run(_run())
+
+
+def test_block_29w_progress_complete_passes_https_result_url_only():
+    sent = []
+
+    async def fake(path, payload, timeout=15):
+        sent.append(payload)
+        return {"ok": True}
+
+    with patch.object(S, "_gen_progress_api", fake):
+        asyncio.run(S.gen_progress_complete("p", "done", "ok", result_url="https://x/y.mp4"))
+        asyncio.run(S.gen_progress_complete("p", "done", "ok", result_url="http://x/y.mp4"))
+        asyncio.run(S.gen_progress_complete("p", "done", "ok"))
+    assert sent[0]["result_url"] == "https://x/y.mp4", f"29w.1 {sent[0]}"
+    assert "result_url" not in sent[1] and "result_url" not in sent[2], f"29w.2 {sent}"

@@ -4706,8 +4706,13 @@ async def gen_progress_update(progress_id: str, status: str, stage: str) -> None
     await _gen_progress_api("progress.update", {"id": progress_id, "status": status, "stage": stage, "progress_pct": 0})
 
 
-async def gen_progress_complete(progress_id: str, status: str, stage: str) -> None:
-    await _gen_progress_api("progress.complete", {"id": progress_id, "status": status, "stage": stage})
+async def gen_progress_complete(progress_id: str, status: str, stage: str, result_url: str = "") -> None:
+    """result_url — необязательное превью результата для вебаппа (сейчас только видео:
+    ссылка провайдера, живёт ограниченное время; у фото не передаём — файл не хостим)."""
+    payload = {"id": progress_id, "status": status, "stage": stage}
+    if str(result_url or "").startswith("https://"):
+        payload["result_url"] = str(result_url)
+    await _gen_progress_api("progress.complete", payload)
 
 
 def gen_progress_kb(
@@ -5248,6 +5253,26 @@ async def _apply_webapp_generation_enhance(update: Update, context: ContextTypes
     return True
 
 
+async def apply_webapp_cancel_generation_payload(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
+    """«Остановить» из экрана прогресса вебаппа — тот же механизм, что кнопка в чате
+    (_cb_video_cancel_gen): task.cancel() → рефанд внутри run_seedance. Фото стоит
+    в общей очереди — остановить нельзя (см. active_video_tasks)."""
+    if not update.effective_message or not update.effective_user:
+        return True
+    product = str(payload.get("product") or payload.get("pr") or "video").strip().lower()
+    task = active_video_tasks.get(update.effective_user.id) if product == "video" else None
+    if task is None or task.done():
+        webapp_gen.mark_rejected()
+        await update.effective_message.reply_text(
+            "Генерация уже завершилась — нечего останавливать."
+            if product == "video" else "Фото и аватар остановить нельзя — они уже в общей очереди."
+        )
+        return True
+    task.cancel()
+    await update.effective_message.reply_text("Останавливаю… ⏹ Изюминки вернутся.")
+    return True
+
+
 async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.DEFAULT_TYPE, payload: dict) -> bool:
     if not isinstance(payload, dict):
         return False
@@ -5264,6 +5289,8 @@ async def apply_webapp_prompt_payload_v2(update: Update, context: ContextTypes.D
         return await apply_webapp_generation_payload(update, context, payload)
     if action in {"set_active_avatar", "saa"}:
         return await apply_webapp_set_active_avatar_payload(update, context, payload)
+    if action in {"cancel_generation", "cg"}:
+        return await apply_webapp_cancel_generation_payload(update, context, payload)
     if action == "topup":
         if update.effective_message:
             user_id_for_kb = update.effective_user.id if update.effective_user else None
@@ -10820,7 +10847,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=upsell_markup,
             )
             if _progress_created:
-                await gen_progress_complete(_progress_id, "done", "Готово!")
+                await gen_progress_complete(_progress_id, "done", "Готово!", result_url=video_url)
             log_generation_event(
                 user_id=user.id,
                 kind="video",

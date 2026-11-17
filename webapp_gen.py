@@ -41,7 +41,7 @@ _active_job_ids: set = set()
 # Мгновенные действия (не генерация): успех = accepted, а не «запущено».
 # Тихие — не пишут в чат вообще, ответ идёт вебаппу в result.messages
 # (иначе юзер видит «Готово ✅» в чате, хотя остался в вебаппе).
-_QUIET_ACTIONS = {"board_refs", "connect_board", "br", "set_active_avatar", "saa"}
+_QUIET_ACTIONS = {"board_refs", "connect_board", "br", "set_active_avatar", "saa", "cancel_generation", "cg"}
 _GENERATION_ACTIONS = {"start_generation", "sg"}
 
 _apply_payload_hook: Optional[Callable[..., Awaitable[bool]]] = None

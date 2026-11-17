@@ -558,6 +558,8 @@ class GenerationJob:
     username: Optional[str] = None
     aspect_ratio: str = "16:9"
     image_model: str = "gemini"  # gemini | gpt5
+    progress_id: str = ""  # задание из очереди вебаппа: id записи живого прогресса (== job_id вебаппа)
+    succeeded: bool = False  # ставит generate_image_by_job после фактической доставки результата
 
 generation_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
 queued_user_ids = set()
@@ -5153,6 +5155,16 @@ async def _apply_webapp_generation_photo(update: Update, context: ContextTypes.D
     # английского анализа доски перед словами юзера. В карточке — только
     # чистый ввод юзера (`description`, не state.prompt), факт подмешивания
     # доски — отдельной короткой строкой (тот же приём, что в photo_draft_text).
+    if webapp_gen.is_autostart():
+        # Кнопка «Создать» в вебаппе (цена уже показана) = подтверждение трат.
+        busy_before = user_id in queued_user_ids or user_id in processing_user_ids
+        await run_generation(update, context)
+        # Отказ run_generation (нет изюминок, гейт стиля и т.п.) снимает резерв слота;
+        # если слот остался за нами — задание реально встало в очередь.
+        if not busy_before and user_id in queued_user_ids:
+            webapp_gen.mark_launched()
+        return True
+
     photo_line = f"Фото: {len(state.references)} шт." if state.references else "Фото: своё не добавлено (возьму аватар, если есть)"
     model_line = f"Модель: {get_image_model_label(state.image_model)}\n" if GPT5_IMAGE_ENABLED else ""
     board_line = "🖼️ Доска подмешана в промт\n" if board_mixed else ""
@@ -6467,6 +6479,12 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             username=user.username,
             image_model=selected_image_model,
         )
+        # Задание из очереди вебаппа: зеркалим прогресс (id записи == job_id вебаппа,
+        # вебапп знает его заранее и открывает экран прогресса без чата).
+        _web_job_id = webapp_gen.current_job_id()
+        if _web_job_id and GEN_PROGRESS_ENABLED:
+            if await gen_progress_create(_web_job_id, user.id, "photo", {"cost": cost if paid else 0}):
+                job.progress_id = _web_job_id
         try:
             generation_queue.put_nowait(job)
             # Алерт если очередь заполнена >80%
@@ -9671,10 +9689,23 @@ async def queue_worker(app: Application):
             processing_user_ids.add(job.user_id)
             _worker_current_job = job  # track for crash recovery in supervisor
 
+            if job.progress_id:
+                await gen_progress_update(job.progress_id, "processing", "Генерируем…")
             try:
                 await generate_image_by_job(app, job)
+                if job.progress_id:
+                    await gen_progress_complete(
+                        job.progress_id,
+                        "done" if job.succeeded else "error",
+                        "Готово!" if job.succeeded else "Не получилось",
+                    )
 
             except BaseException as _job_exc:
+                if job.progress_id:
+                    try:
+                        await gen_progress_complete(job.progress_id, "error", "Не получилось")
+                    except Exception:
+                        pass
 
                 is_cancelled = isinstance(_job_exc, asyncio.CancelledError)
                 if not is_cancelled:
@@ -11187,6 +11218,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
             # отправиться в Telegram), а флаг блокирует рефанд в
             # _handle_generation_failure.
             generation_succeeded = True
+            job.succeeded = True
             if getattr(job, "save_as_avatar", False):
                 persistent_avatar_url = await _persist_image_ref(image_url)
                 if persistent_avatar_url:
@@ -11275,6 +11307,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
             await send_generation_result_by_url(app, chat_id, user_id, image_url, job=job)
             # Как в ZVENO-ветке: флаг только после фактической доставки.
             generation_succeeded = True
+            job.succeeded = True
             if getattr(job, "save_as_avatar", False):
                 persistent_avatar_url = await _persist_image_ref(image_url)
                 if persistent_avatar_url:
@@ -11440,6 +11473,7 @@ async def generate_image_by_job(app: Application, job: GenerationJob) -> None:
                                 # при неудаче ретрая — ещё и рефанд за уже
                                 # доставленный результат.
                                 generation_succeeded = True
+                                job.succeeded = True
 
                                 await app.bot.send_document(
                                     chat_id=chat_id,

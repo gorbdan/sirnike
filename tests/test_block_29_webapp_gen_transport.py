@@ -188,3 +188,72 @@ def test_block_29i_video_without_autostart_still_shows_card():
     kb = reply.await_args.kwargs.get("reply_markup")
     datas = [b.callback_data for row in kb.inline_keyboard for b in row]
     assert "video_start" in datas, f"29i.1 sendData-путь без изменений, карточка с кнопкой: {datas}"
+
+
+def _photo_ctx(uid):
+    import types
+    reply = AsyncMock()
+    update = types.SimpleNamespace(
+        effective_user=types.SimpleNamespace(id=uid, username="t"),
+        effective_message=types.SimpleNamespace(reply_text=reply),
+        effective_chat=types.SimpleNamespace(id=uid),
+    )
+    context = types.SimpleNamespace(user_data={}, application=None, bot=AsyncMock())
+    return update, context, reply
+
+
+def _run_photo_autostart(uid, fake_run_generation, preload=None):
+    update, context, reply = _photo_ctx(uid)
+    orig = S.run_generation
+    S.run_generation = fake_run_generation
+    _flag = S.PHOTO_CONSTRUCTOR_ENABLED
+    S.PHOTO_CONSTRUCTOR_ENABLED = True
+    if preload:
+        S.queued_user_ids.add(uid)
+
+    async def _go():
+        W._autostart.set(True)
+        flag = []
+        W._launched.set(flag)
+        ok = await S._apply_webapp_generation_photo(update, context, {"action": "sg", "product": "photo", "description": "кот"})
+        return ok, flag
+
+    try:
+        ok, flag = asyncio.run(_go())
+    finally:
+        S.run_generation = orig
+        S.PHOTO_CONSTRUCTOR_ENABLED = _flag
+        S.queued_user_ids.discard(uid)
+    return ok, flag, reply
+
+
+def test_block_29j_photo_autostart_marks_launched_when_enqueued():
+    uid = 31010
+
+    async def fake_run_generation(update, context):
+        S.queued_user_ids.add(update.effective_user.id)  # как настоящий run_generation при успешной постановке
+
+    ok, flag, reply = _run_photo_autostart(uid, fake_run_generation)
+    assert ok is True and flag == [True], f"29j.1 {ok} {flag}"
+    reply.assert_not_awaited()  # 29j.2 карточка «Запустить генерацию» не показывается
+
+
+def test_block_29k_photo_autostart_refusal_not_marked_launched():
+    async def refusing(update, context):
+        await update.effective_message.reply_text("Не хватает изюминок")  # слот не резервируется
+
+    ok, flag, _ = _run_photo_autostart(31011, refusing)
+    assert ok is True and flag == [], f"29k.1 отказ run_generation = не запущено: {flag}"
+
+
+def test_block_29l_photo_autostart_busy_user_not_marked_launched():
+    async def noop_busy(update, context):
+        return None  # слот уже был занят прежним заданием — новое не встало
+
+    ok, flag, _ = _run_photo_autostart(31012, noop_busy, preload=True)
+    assert flag == [], f"29l.1 занятый юзер: чужой слот не считается запуском: {flag}"
+
+
+def test_block_29m_generation_job_progress_defaults():
+    job = S.GenerationJob(chat_id=1, user_id=1, prompt="p", references=[])
+    assert job.progress_id == "" and job.succeeded is False, "29m.1 по умолчанию зеркала прогресса нет"

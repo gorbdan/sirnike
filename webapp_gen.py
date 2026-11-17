@@ -79,6 +79,7 @@ def _build_update(app: Application, user_id: int, username: str):
     msg = _SinkMessage(message_id=0, date=datetime.datetime.now(datetime.timezone.utc), chat=chat, from_user=user)
     msg.set_bot(app.bot)
     update = Update(update_id=0, message=msg)
+    update.set_bot(app.bot)
     return update, CallbackContext.from_update(update, app)
 
 

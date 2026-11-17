@@ -161,6 +161,7 @@ from config import (
     MIDJOURNEY_MAX_POLL_ATTEMPTS,
     MIDJOURNEY_POLL_INTERVAL,
     STUDIO_ENABLED,
+    WEBAPP_GEN_ENABLED,
     STUDIO_API_BASE,
     STUDIO_POLL_SECRET,
     STUDIO_MAX_SCENES,
@@ -231,6 +232,7 @@ from photo_providers import (
 # зависимости прокидываются через studio_worker.configure(...) ниже, сразу
 # после того как нужные хелперы здесь определены.
 import studio_worker
+import webapp_gen
 from studio_worker import (
     STUDIO_STITCH_RESOLUTION,
     _studio_video_models,
@@ -4913,6 +4915,15 @@ async def _apply_webapp_generation_video(update: Update, context: ContextTypes.D
     # build_video_generation_confirm_text — та же карточка «Экран V2», что
     # уже используют reply-кнопки/callback-путь конструктора (общий текст
     # с webapp_video_quality_label вместо самодельного числового режима).
+    if webapp_gen.is_autostart():
+        # Кнопка «Создать» в вебаппе (цена уже показана) = подтверждение трат.
+        refusal = await _launch_video_generation(update, context)
+        if refusal:
+            await update.effective_message.reply_text(refusal)
+        else:
+            webapp_gen.mark_launched()
+        return True
+
     confirmation_text = model_fallback_note + build_video_generation_confirm_text(state)
 
     kb = InlineKeyboardMarkup([
@@ -7345,6 +7356,22 @@ async def _cb_video_cancel_gen(update, context, query, user):
     await query.answer("Останавливаю… ⏹")
 
 
+async def _launch_video_generation(update, context) -> Optional[str]:
+    """Запуск run_seedance без callback-запроса (путь вебапп-очереди).
+    None = запущено, иначе текст отказа для юзера."""
+    uid = update.effective_user.id
+    if uid in queued_user_ids or uid in processing_user_ids:
+        return "Уже выполняется другая задача. Подожди."
+    processing_user_ids.add(uid)
+    try:
+        context.application.create_task(run_seedance(update, context))
+    except Exception:
+        processing_user_ids.discard(uid)
+        logger.exception("create_task(run_seedance) failed for user=%s", uid)
+        return "Не удалось запустить генерацию. Попробуй ещё раз."
+    return None
+
+
 async def _cb_video_start(update, context, query, user):
     user_vs = update.effective_user
     if user_vs.id in queued_user_ids or user_vs.id in processing_user_ids:
@@ -9613,6 +9640,14 @@ async def post_init(app: Application):
         asyncio.create_task(_studio_poll_loop(app))
     else:
         logger.info("studio disabled (STUDIO_POLL_SECRET/STUDIO_API_BASE not set)")
+    if WEBAPP_GEN_ENABLED:
+        webapp_gen.configure(
+            apply_payload=apply_webapp_prompt_payload_v2,
+            ensure_user=lambda uid, uname: create_user_if_not_exists(uid, uname or None, START_BONUS),
+        )
+        asyncio.create_task(webapp_gen.poll_loop(app))
+    else:
+        logger.info("webapp_gen disabled (WEBAPP_GEN_ENABLED=0 or studio secrets not set)")
 
 
 async def post_shutdown(app: Application):
@@ -10588,7 +10623,7 @@ async def run_seedance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # корректно долетает до except BaseException ниже (рефанд + явный
             # reraise CancelledError уже на месте).
             _cancel_row = [InlineKeyboardButton("❌ Остановить", callback_data="video_cancel_gen")]
-            _progress_id = str(uuid.uuid4())
+            _progress_id = webapp_gen.current_job_id() or str(uuid.uuid4())
             _progress_kb = InlineKeyboardMarkup([_cancel_row])
             _progress_created = False
             if GEN_PROGRESS_ENABLED:

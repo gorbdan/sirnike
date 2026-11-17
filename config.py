@@ -388,6 +388,16 @@ STUDIO_MAX_SCENES = int(os.getenv("STUDIO_MAX_SCENES", "5"))
 STUDIO_POLL_INTERVAL = int(os.getenv("STUDIO_POLL_INTERVAL", "4"))
 STUDIO_CONCURRENCY = int(os.getenv("STUDIO_CONCURRENCY", "3"))
 
+# ── Генерация из вебаппа по HTTP вместо tg.sendData (docs/specs/2026-11-16_webapp_gen_transport.md) ──
+# sendData закрывает Mini App; вместо него вебапп кладёт payload в очередь D1
+# (/api/gen/*), бот поллит её тем же секретом, что и Студия. Выключено по
+# умолчанию: поллер не стартует, пока фронтенд не выкатил /api/gen и владелец
+# не поставила WEBAPP_GEN_ENABLED=1 (нужен рабочий STUDIO_POLL_SECRET).
+WEBAPP_GEN_ENABLED = os.getenv("WEBAPP_GEN_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on") and STUDIO_ENABLED
+_default_gen_api = (PROMPT_WEBAPP_URL.rstrip("/") + "/api/gen") if PROMPT_WEBAPP_URL else ""
+WEBAPP_GEN_API_BASE = os.getenv("WEBAPP_GEN_API_BASE", _default_gen_api).strip().rstrip("/")
+WEBAPP_GEN_POLL_INTERVAL = float(os.getenv("WEBAPP_GEN_POLL_INTERVAL", "2"))
+
 # ── Живой прогресс генерации в вебаппе (docs/specs/2026-08-13_webapp_generation_hub_full.md) ──
 # НЕ очередь (в отличие от Студии выше) — тонкое write-only зеркало статуса:
 # бот сам инициирует и выполняет генерацию как сегодня (без D1 вообще), и

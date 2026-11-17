@@ -4987,6 +4987,13 @@ async def _apply_webapp_generation_midjourney(update: Update, context: ContextTy
     board_mixed = bool(state.board_style_note)
     state.mj_prompt = apply_board_style_note(description, state.board_style_note) if board_mixed else description
 
+    if webapp_gen.is_autostart():
+        busy_before = user_id in queued_user_ids or user_id in processing_user_ids
+        await _cb_mj_generate(update, context, _WebappGenQuery(update), update.effective_user)
+        if not busy_before and user_id in processing_user_ids:
+            webapp_gen.mark_launched()
+        return True
+
     ref_line = "Фото-референс: приложен ✅\n" if state.mj_reference else ""
     board_line = "🖼️ Доска подмешана в промт\n" if board_mixed else ""
     confirmation_text = (
@@ -5073,6 +5080,13 @@ async def _apply_webapp_generation_avatar(update: Update, context: ContextTypes.
         )
         return True
 
+    if webapp_gen.is_autostart():
+        busy_before = user_id in queued_user_ids or user_id in processing_user_ids
+        await _cb_avatar_gen_start(update, context, _WebappGenQuery(update), update.effective_user)
+        if not busy_before and user_id in queued_user_ids:
+            webapp_gen.mark_launched()
+        return True
+
     confirmation_text = (
         "🪄 Готово к запуску\n\n"
         f"Тип: {avatar_kind_label(avatar_kind)}\n"
@@ -5157,12 +5171,7 @@ async def _apply_webapp_generation_photo(update: Update, context: ContextTypes.D
     # доски — отдельной короткой строкой (тот же приём, что в photo_draft_text).
     if webapp_gen.is_autostart():
         # Кнопка «Создать» в вебаппе (цена уже показана) = подтверждение трат.
-        busy_before = user_id in queued_user_ids or user_id in processing_user_ids
-        await run_generation(update, context)
-        # Отказ run_generation (нет изюминок, гейт стиля и т.п.) снимает резерв слота;
-        # если слот остался за нами — задание реально встало в очередь.
-        if not busy_before and user_id in queued_user_ids:
-            webapp_gen.mark_launched()
+        await _webapp_autostart_photo_pipeline(update, context, user_id)
         return True
 
     photo_line = f"Фото: {len(state.references)} шт." if state.references else "Фото: своё не добавлено (возьму аватар, если есть)"
@@ -5226,6 +5235,10 @@ async def _apply_webapp_generation_enhance(update: Update, context: ContextTypes
     state.references = refs[:1]
     state.references_updated_at = time.time()
     state.image_model = "gemini"  # nano banana, фикс по требованию функции
+
+    if webapp_gen.is_autostart():
+        await _webapp_autostart_photo_pipeline(update, context, user_id)
+        return True
 
     await update.effective_message.reply_text(
         photo_draft_text(state, user_id), reply_markup=photo_draft_kb(state, user_id)
@@ -6481,10 +6494,7 @@ async def run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         # Задание из очереди вебаппа: зеркалим прогресс (id записи == job_id вебаппа,
         # вебапп знает его заранее и открывает экран прогресса без чата).
-        _web_job_id = webapp_gen.current_job_id()
-        if _web_job_id and GEN_PROGRESS_ENABLED:
-            if await gen_progress_create(_web_job_id, user.id, "photo", {"cost": cost if paid else 0}):
-                job.progress_id = _web_job_id
+        await _attach_webapp_progress(job, user.id, "photo")
         try:
             generation_queue.put_nowait(job)
             # Алерт если очередь заполнена >80%
@@ -7081,6 +7091,7 @@ async def _cb_avatar_gen_start(update, context, query, user):
         save_as_avatar=True,
         avatar_kind=getattr(state, "pending_avatar_kind", "female") or "female",
     )
+    await _attach_webapp_progress(job, user.id, "avatar")
     queued_user_ids.add(user.id)
     try:
         generation_queue.put_nowait(job)
@@ -7372,6 +7383,38 @@ async def _cb_video_cancel_gen(update, context, query, user):
         return
     task.cancel()
     await query.answer("Останавливаю… ⏹")
+
+
+async def _attach_webapp_progress(job: "GenerationJob", user_id: int, product: str) -> None:
+    """Задание из очереди вебаппа: зеркалим прогресс (id записи == job_id вебаппа —
+    вебапп знает его заранее и открывает экран прогресса без чата)."""
+    web_job_id = webapp_gen.current_job_id()
+    if web_job_id and GEN_PROGRESS_ENABLED:
+        if await gen_progress_create(web_job_id, user_id, product, {"cost": job.cost}):
+            job.progress_id = web_job_id
+
+
+class _WebappGenQuery:
+    """Подмена CallbackQuery для запуска callback-обработчиков (аватар, MJ) из
+    очереди вебаппа: answer() складывает текст отказа в ответ вебаппу."""
+
+    data = ""
+
+    def __init__(self, update):
+        self.message = update.effective_message
+
+    async def answer(self, text=None, *args, **kwargs):
+        if text:
+            webapp_gen.add_reply(str(text))
+
+
+async def _webapp_autostart_photo_pipeline(update, context, user_id: int) -> None:
+    """Запуск run_generation из очереди вебаппа + пометка launched, если задание
+    реально встало в очередь (отказ снимает резерв слота, занятый юзер — не запуск)."""
+    busy_before = user_id in queued_user_ids or user_id in processing_user_ids
+    await run_generation(update, context)
+    if not busy_before and user_id in queued_user_ids:
+        webapp_gen.mark_launched()
 
 
 async def _launch_video_generation(update, context) -> Optional[str]:
@@ -10065,7 +10108,7 @@ async def run_midjourney_grid(update: Update, context: ContextTypes.DEFAULT_TYPE
         status_msg = await reply_target.reply_text("⏳ Генерирую сетку вариантов…")
 
         if GEN_PROGRESS_ENABLED:
-            _progress_id = str(uuid.uuid4())
+            _progress_id = webapp_gen.current_job_id() or str(uuid.uuid4())
             if await gen_progress_create(_progress_id, user.id, "midjourney", {"cost": cost}):
                 _progress_kb = gen_progress_kb(user.id, _progress_id, "midjourney")
                 try:

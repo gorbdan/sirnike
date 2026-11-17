@@ -14,12 +14,13 @@
 
 Флаг на стороне бота: `WEBAPP_GEN_ENABLED=1` (по умолчанию выключен, поллер не
 стартует). Включит Аня, когда фронт выкачен. До этого `sendData`-путь работает как раньше.
-Автозапуск реализован для `product:"video"` и `product:"photo"`; аватар/MJ/улучшить
-фото/доски — следующие этапы (бэкенд скажет, когда готово), до тех пор для них оставлять `sendData`.
+Автозапуск реализован для `product`: `video`, `photo`, `avatar`, `midjourney`, `enhance`.
+Остаются на `sendData` (они не про трату, а про выбор): доски (`board_refs`/`board_style_analyze`),
+`set_active_avatar`, `set_prompt` (подстановка стиля), `topup`. Их бэкенд переведёт следующим этапом.
 
-**Прогресс фото.** Для `photo` бот тоже зеркалит прогресс (`gen_progress_create` с `product:"photo"`,
+**Прогресс фото.** Для `photo` бот тоже зеркалит прогресс (`gen_progress_create` с `product` из `photo`/`avatar`/`midjourney`/`video`,
 `progress_id == job_id`, закрывается в `done`/`error` по факту доставки результата в чат). Нужно:
-1) в `functions/api/progress` разрешить `product:"photo"` (если там enum); 2) на проде должен быть
+1) в `functions/api/progress` разрешить `product` `photo` и `avatar` (если там enum; `video` и `midjourney` уже есть). `enhance` идёт как `photo`; 2) на проде должен быть
 `GEN_PROGRESS_ENABLED=1` — иначе `result.progress_id` будет пустым-не-пустым: бот вернёт id, а записи
 прогресса не будет. Сам снимок результата (картинка) в вебапп пока НЕ передаётся — готовое фото
 приходит в чат; превью в вебаппе — отдельный этап.

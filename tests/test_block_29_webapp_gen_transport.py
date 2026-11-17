@@ -257,3 +257,103 @@ def test_block_29l_photo_autostart_busy_user_not_marked_launched():
 def test_block_29m_generation_job_progress_defaults():
     job = S.GenerationJob(chat_id=1, user_id=1, prompt="p", references=[])
     assert job.progress_id == "" and job.succeeded is False, "29m.1 по умолчанию зеркала прогресса нет"
+
+
+def _autostart_call(handler_name, payload, patch_name, patched, flag_names, uid):
+    update, context, reply = _photo_ctx(uid)
+    orig = getattr(S, patch_name)
+    setattr(S, patch_name, patched)
+    saved = {n: getattr(S, n) for n in flag_names}
+    for n in flag_names:
+        setattr(S, n, True)
+
+    async def _go():
+        W._autostart.set(True)
+        flag, replies = [], []
+        W._launched.set(flag)
+        W._replies.set(replies)
+        ok = await getattr(S, handler_name)(update, context, payload)
+        return ok, flag, replies
+
+    try:
+        return (*asyncio.run(_go()), reply)
+    finally:
+        setattr(S, patch_name, orig)
+        for n, v in saved.items():
+            setattr(S, n, v)
+        S.queued_user_ids.discard(uid)
+        S.processing_user_ids.discard(uid)
+
+
+def test_block_29n_avatar_autostart_launches_and_refusal_goes_to_webapp():
+    uid = 31020
+
+    async def ok_start(update, context, query, user):
+        S.queued_user_ids.add(user.id)
+
+    ok, flag, replies, reply = _autostart_call(
+        "_apply_webapp_generation_avatar",
+        {"action": "sg", "product": "avatar", "avatar_type": "female", "refs": ["https://i.ibb.co/a.jpg"]},
+        "_cb_avatar_gen_start", ok_start, ["AVATAR_CONSTRUCTOR_ENABLED"], uid)
+    assert ok is True and flag == [True], f"29n.1 {ok} {flag}"
+    reply.assert_not_awaited()  # 29n.2 карточки в чате нет
+
+    async def refuse(update, context, query, user):
+        await query.answer("Сырник уже занят другой задачей. Подожди.", show_alert=True)
+
+    ok, flag, replies, _ = _autostart_call(
+        "_apply_webapp_generation_avatar",
+        {"action": "sg", "product": "avatar", "avatar_type": "female", "refs": ["https://i.ibb.co/a.jpg"]},
+        "_cb_avatar_gen_start", refuse, ["AVATAR_CONSTRUCTOR_ENABLED"], uid + 1)
+    assert flag == [] and replies == ["Сырник уже занят другой задачей. Подожди."], f"29n.3 {flag} {replies}"
+
+
+def test_block_29o_midjourney_autostart_launches():
+    uid = 31030
+
+    async def ok_start(update, context, query, user):
+        S.processing_user_ids.add(user.id)
+
+    ok, flag, _, reply = _autostart_call(
+        "_apply_webapp_generation_midjourney",
+        {"action": "sg", "product": "midjourney", "description": "замок на облаке"},
+        "_cb_mj_generate", ok_start, ["MIDJOURNEY_CONSTRUCTOR_ENABLED", "MIDJOURNEY_ENABLED"], uid)
+    assert ok is True and flag == [True], f"29o.1 {ok} {flag}"
+    reply.assert_not_awaited()
+
+
+def test_block_29p_enhance_autostart_runs_generation():
+    uid = 31040
+
+    async def fake_run_generation(update, context):
+        S.queued_user_ids.add(update.effective_user.id)
+
+    ok, flag, _, reply = _autostart_call(
+        "_apply_webapp_generation_enhance",
+        {"action": "sg", "product": "enhance", "refs": ["https://i.ibb.co/a.jpg", "https://i.ibb.co/b.jpg"]},
+        "run_generation", fake_run_generation, ["ENHANCE_CONSTRUCTOR_ENABLED"], uid)
+    assert ok is True and flag == [True], f"29p.1 {ok} {flag}"
+    reply.assert_not_awaited()
+
+
+def test_block_29q_progress_attached_only_for_webapp_jobs():
+    created = []
+
+    async def fake_create(pid, uid, product, meta):
+        created.append((pid, product))
+        return True
+
+    orig, orig_flag = S.gen_progress_create, S.GEN_PROGRESS_ENABLED
+    S.gen_progress_create, S.GEN_PROGRESS_ENABLED = fake_create, True
+    try:
+        job = S.GenerationJob(chat_id=1, user_id=1, prompt="p", references=[], cost=3)
+        asyncio.run(S._attach_webapp_progress(job, 1, "avatar"))
+        assert job.progress_id == "" and created == [], "29q.1 вне очереди вебаппа зеркала нет"
+
+        async def _go():
+            W._job_id.set("jobX")
+            await S._attach_webapp_progress(job, 1, "avatar")
+        asyncio.run(_go())
+        assert job.progress_id == "jobX" and created == [("jobX", "avatar")], f"29q.2 {job.progress_id} {created}"
+    finally:
+        S.gen_progress_create, S.GEN_PROGRESS_ENABLED = orig, orig_flag

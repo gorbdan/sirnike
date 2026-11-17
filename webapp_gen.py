@@ -62,6 +62,13 @@ def mark_launched() -> None:
         flag.append(True)
 
 
+def add_reply(text: str) -> None:
+    """Причина отказа из callback-обработчика (query.answer) — вебаппу."""
+    sink = _replies.get()
+    if sink is not None:
+        sink.append(str(text))
+
+
 class _SinkMessage(Message):
     """Обычное сообщение чата + копия текстов ответов, чтобы вернуть причину
     отказа («нужно фото…», «не хватает изюминок») вебаппу, а не только в чат."""

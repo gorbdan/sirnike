@@ -1,0 +1,127 @@
+<title>Сырник — экран прогресса</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f7f3ee; --surface: #fffaf4; --surface-2: #ffffff; --text: #1d1b20; --muted: #6d6472;
+  --line: #e7dccc; --brand: #b21f4a; --ok: #0f766e; --accent: #d9902f; --warn-bg: #fdebee;
+  --chat: #e8efe6; --bubble: #ffffff; --shadow: 0 16px 45px rgba(55,39,22,.1);
+  --font: -apple-system, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  color-scheme: dark; --bg:#0c0e18; --surface:#171b2b; --surface-2:#202538; --text:#f5f1ea; --muted:#b5abb9;
+  --line:#33394f; --brand:#ff7197; --ok:#58d6c8; --accent:#f1bd64; --warn-bg:#3a1f2b; --chat:#141a22; --bubble:#202a36; --shadow:0 18px 55px rgba(0,0,0,.28);
+} }
+:root[data-theme="dark"] {
+  color-scheme: dark; --bg:#0c0e18; --surface:#171b2b; --surface-2:#202538; --text:#f5f1ea; --muted:#b5abb9;
+  --line:#33394f; --brand:#ff7197; --ok:#58d6c8; --accent:#f1bd64; --warn-bg:#3a1f2b; --chat:#141a22; --bubble:#202a36; --shadow:0 18px 55px rgba(0,0,0,.28);
+}
+body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 15px; line-height: 1.45;
+  padding-block: 24px 56px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.wrap { max-width: 1040px; margin: 0 auto; display: flex; flex-direction: column; gap: 36px; }
+h1 { font-size: 24px; margin: 0 0 6px; text-wrap: balance; }
+h2 { font-size: 17px; margin: 0; }
+.lead { color: var(--muted); margin: 0; max-width: 62ch; }
+.row { display: grid; grid-template-columns: 1fr; gap: 16px; }
+.lane { display: flex; flex-direction: column; gap: 14px; }
+.lane-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.tag { font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; }
+.tag.was { background: var(--line); color: var(--muted); }
+.tag.now { background: var(--brand); color: #fff; }
+.steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+.step { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.cap { font-size: 12.5px; color: var(--muted); margin: 0; }
+.cap b { color: var(--text); }
+.phone { background: var(--bg); border: 1px solid var(--line); border-radius: 22px; padding: 14px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 10px; min-height: 250px; }
+.phone.chat { background: var(--chat); }
+.bar { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); font-weight: 700; }
+.bar .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.field { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 13px; color: var(--muted); }
+.field b { color: var(--text); font-weight: 600; }
+.primary { border: 0; background: var(--brand); color: #fff; min-height: 44px; border-radius: 10px; padding: 0 14px; font: 800 14.5px var(--font); width: 100%; font-variant-numeric: tabular-nums; }
+.primary.busy { opacity: .72; }
+.primary.ok { background: var(--ok); }
+.spin { display: inline-block; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+.err { background: var(--warn-bg); border: 1px solid var(--brand); color: var(--text); border-radius: 10px; padding: 8px 10px; font-size: 12.5px; font-weight: 600; }
+.err small { display: block; color: var(--muted); font-weight: 500; margin-top: 2px; }
+.bubble { background: var(--bubble); border-radius: 14px 14px 14px 4px; padding: 10px 12px; font-size: 13px; max-width: 92%; box-shadow: 0 1px 0 var(--line); }
+.bubble.me { align-self: flex-end; background: var(--brand); color: #fff; border-radius: 14px 14px 4px 14px; }
+.kb { display: flex; gap: 6px; }
+.kb span { flex: 1; text-align: center; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px 4px; font-size: 12px; font-weight: 700; }
+.kb span.hot { background: var(--brand); color: #fff; border-color: var(--brand); }
+.prog { height: 8px; border-radius: 99px; background: var(--line); overflow: hidden; }
+.prog i { display: block; height: 100%; width: 38%; background: var(--brand); border-radius: 99px; }
+.big { font-size: 28px; line-height: 1; }
+.arrow { color: var(--muted); font-size: 12px; text-align: center; }
+.note { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; }
+.note ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.states { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.state { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.state .label { font-size: 12px; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+
+.prog-shell { display:flex; flex-direction:column; align-items:center; gap:10px; text-align:center; padding:18px 8px; }
+.spinner { width:34px; height:34px; border-radius:50%; border:4px solid var(--line); border-top-color: var(--brand); animation: spin .9s linear infinite; }
+.spinner.done { animation:none; border-color: var(--ok); }
+.spinner.err { animation:none; border-color: var(--brand); }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation:none; } }
+.stage { font-weight: 800; font-size: 16px; margin:0; }
+.hint { color: var(--muted); font-size: 12.5px; margin:0; }
+.ghost { min-height:44px; width:100%; border-radius:10px; border:1px solid var(--line); background: var(--surface); color: var(--text); font: 800 14px var(--font); }
+.ghost.danger { color: var(--brand); border-color: var(--brand); }
+.video { width:100%; aspect-ratio: 9/14; max-height: 230px; border-radius:12px; background: linear-gradient(160deg,#3b2f4a,#b21f4a 70%,#d9902f); display:grid; place-items:center; color:#fff; font-size:34px; }
+.toast { background: var(--text); color: var(--bg); border-radius: 12px; padding: 10px 12px; font-size: 13px; font-weight: 700; text-align:center; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Экран прогресса: «Остановить» и видео по готовности</h1>
+    <p class="lead">Сейчас на экране прогресса только крутилка и «Закрыть». Станет: можно остановить видео (изюминки вернутся) и посмотреть готовый ролик, не открывая чат. Для фото кнопки «Остановить» нет, у фото общая очередь.</p>
+  </header>
+
+  <section class="lane">
+    <div class="lane-head"><span class="tag was">Было</span><h2>Крутилка и «Закрыть»</h2></div>
+    <div class="steps">
+      <div class="step"><div class="phone"><div class="bar"><span class="dot"></span>Вебапп · Прогресс</div>
+        <div class="prog-shell"><div class="spinner"></div><p class="stage">Рисуем кадры…</p><p class="hint">Можно закрыть — результат всё равно придёт в чат.</p></div></div>
+        <p class="cap"><b>1.</b> Идёт генерация. Остановить можно только в чате.</p></div>
+      <div class="step"><div class="phone"><div class="bar"><span class="dot"></span>Вебапп · Прогресс</div>
+        <div class="prog-shell"><div class="spinner done"></div><p class="stage">Готово! 🎉</p><p class="hint">Открой чат — результат уже там.</p><button class="primary" type="button">Закрыть</button></div></div>
+        <p class="cap"><b>2.</b> Видео придётся искать в чате.</p></div>
+    </div>
+  </section>
+
+  <section class="lane">
+    <div class="lane-head"><span class="tag now">Стало</span><h2>Видео: остановить и посмотреть</h2></div>
+    <div class="steps">
+      <div class="step"><div class="phone"><div class="bar"><span class="dot"></span>Вебапп · Прогресс</div>
+        <div class="prog-shell"><div class="spinner"></div><p class="stage">Рисуем кадры…</p><p class="hint">Можно закрыть — результат всё равно придёт в чат.</p><button class="ghost danger" type="button">❌ Остановить</button></div></div>
+        <p class="cap"><b>1.</b> Кнопка только у видео. Тап запрашивает отмену.</p></div>
+      <div class="step"><div class="phone"><div class="bar"><span class="dot"></span>Вебапп · Прогресс</div>
+        <div class="prog-shell"><div class="spinner err"></div><p class="stage">Остановлено</p><p class="hint">Изюминки вернутся на баланс.</p><button class="primary" type="button">Закрыть</button></div></div>
+        <p class="cap"><b>2.</b> После отмены. Если уже завершилось, под кнопкой появляется текст от бота («Уже готово»).</p></div>
+      <div class="step"><div class="phone"><div class="bar"><span class="dot"></span>Вебапп · Прогресс</div>
+        <div class="prog-shell"><div class="spinner done"></div><p class="stage">Готово! 🎉</p><div class="video" aria-label="Готовое видео">▶</div><p class="hint">Видео также пришло в чат. Ссылка живёт недолго, сохрани ролик.</p><button class="primary" type="button">Закрыть</button></div></div>
+        <p class="cap"><b>3.</b> Плеер с управлением. У фото плеера нет, фото приходит в чат.</p></div>
+    </div>
+  </section>
+
+  <section class="lane">
+    <div class="lane-head"><span class="tag now">Стало</span><h2>Быстрые действия без закрытия вебаппа</h2></div>
+    <div class="steps">
+      <div class="step"><div class="phone"><div class="bar"><span class="dot"></span>Вебапп · Аватар</div>
+        <div class="card"><div class="field"><b>Мои аватары:</b> 👩 Женский · активен &nbsp; 👨 Мужской</div></div>
+        <div class="toast">✓ Активен мужской аватар</div></div>
+        <p class="cap"><b>Смена аватара, выбор доски.</b> Тап → тост «Готово» на месте, вебапп не закрывается. Если бот отказал, тост с причиной.</p></div>
+      <div class="step"><div class="phone"><div class="bar"><span class="dot"></span>Вебапп · Фото, Аватар, Midjourney, Улучшить</div>
+        <div class="card"><div class="field"><b>Фото:</b> 1 · <b>Описание:</b> закат…</div></div>
+        <button class="primary" type="button">🚀 Создать</button>
+        <div class="err">Нужно описание или фото.<small>Ошибка показывается под кнопкой, как у видео.</small></div></div>
+        <p class="cap"><b>Остальные конструкторы</b> получают ту же кнопку «🚀 Создать» и тот же поток, что вы одобрили для видео. Цена остаётся в плашке «Будет стоить».</p></div>
+    </div>
+  </section>
+</div>

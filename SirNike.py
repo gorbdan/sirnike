@@ -311,7 +311,9 @@ BOT_START_TIME = datetime.now()
 LOG_DIR = os.getenv("BOT_LOG_DIR", RUNTIME_DIR).strip() or RUNTIME_DIR
 LOG_FILE_PATH = os.path.join(LOG_DIR, "bot.log")
 LOG_FILE_ERROR: Optional[str] = None
-PROMPT_WEBAPP_REV = os.getenv("PROMPT_WEBAPP_REV", "20260509v4").strip() or "20260509v4"
+# Версия в URL вебаппа — обход кеша Telegram WebView (тот же адрес = старая страница).
+# По умолчанию меняется при каждом старте бота (= каждом деплое); env — ручной override.
+PROMPT_WEBAPP_REV = os.getenv("PROMPT_WEBAPP_REV", "").strip() or time.strftime("%Y%m%d%H%M", time.gmtime())
 
 log_handlers = [logging.StreamHandler()]
 try:
